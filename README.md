@@ -2,6 +2,13 @@
 
 The memex Vannevar Bush imagined, built for people who think for a living.
 
+> **Requires a frontier model.** GBrain's skills, recipes, and integration guides
+> are written as markdown that your AI agent reads and implements. This only works
+> with models smart enough to interpret intent, not just follow instructions.
+> Tested with **Claude Opus 4.6** and **GPT-5.4 Thinking**. Likely to break with
+> smaller or less capable models. If your agent can't build a WebSocket bridge
+> from an architecture diagram, it's not ready for GBrain.
+
 ## How this happened
 
 I was setting up my [OpenClaw](https://openclaw.ai) agent and started a markdown brain repo. One page per person, one page per company, compiled truth on top, append-only timeline on the bottom. The agent got smarter the more it knew, so I kept feeding it. Meetings, emails, tweets, Apple Notes, calendar data, original ideas. One thing led to another. Within a week I had:
