@@ -34,7 +34,7 @@ archive raw, deduplicate, update canonical trackers, backlink entities.
 ## Contract
 
 One skill for any email-to-structured-data pipeline. The only differences
-between tracking investor updates, political donations, and company metrics
+between tracking investor updates, expenses, and company metrics
 are the **search queries**, **extraction schemas**, and **tracker page format**.
 All three use the same 7-phase pipeline with parameterized recipes.
 
@@ -50,7 +50,7 @@ All three use the same 7-phase pipeline with parameterized recipes.
 ### Phase 1: Define Research Recipe
 
 Ask the user what they want to track. Either:
-- Pick a built-in recipe: investor-updates, political-donations, company-updates
+- Pick a built-in recipe: investor-updates, expense-tracker, company-updates
 - Define a custom recipe with: source queries, classification rules, extraction schema,
   tracker page path, tracker format
 
@@ -109,7 +109,7 @@ Before adding to tracker:
 Three example recipes ship with GBrain (see `~/.gbrain/recipes/`):
 
 1. **investor-updates** — extract MRR, ARR, growth, burn, runway, headcount from investor update emails
-2. **political-donations** — extract amounts, recipients, platforms from donation receipt emails
+2. **expense-tracker** — extract amounts, recipients, platforms from receipt emails (subscriptions, services, recurring charges)
 3. **company-updates** — extract revenue, users, key metrics from portfolio company update emails
 
 ## Anti-Patterns

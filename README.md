@@ -2,9 +2,11 @@
 
 Your AI agent is smart but forgetful. GBrain gives it a brain.
 
-Meetings, emails, tweets, calendar events, voice calls, original ideas... all of it flows into a searchable knowledge base that your agent reads before every response and writes to after every conversation. 25 skills handle signal detection, content ingestion, entity enrichment, task management, cron scheduling, access control, and voice. The agent gets smarter every day.
+Built by the President and CEO of Y Combinator to run his actual AI agents. The production brain powering his OpenClaw and Hermes deployments: **17,888 pages, 4,383 people, 723 companies**, 21 cron jobs running autonomously, built in 12 days. The agent ingests meetings, emails, tweets, voice calls, and original ideas while you sleep. It enriches every person and company it encounters. It fixes its own citations and consolidates memory overnight. You wake up and the brain is smarter than when you went to bed.
 
-> **~30 minutes to a fully working brain.** Your agent does the work. Database ready in 2 seconds (PGLite, no server). You just answer questions about API keys.
+GBrain is those patterns, generalized. 25 skills. Install in 30 minutes. Your agent does the work. As Garry's personal agent gets smarter, so does yours.
+
+> **~30 minutes to a fully working brain.** Database ready in 2 seconds (PGLite, no server). You just answer questions about API keys.
 
 ## Install
 
@@ -33,6 +35,20 @@ gbrain import ~/notes/          # index your markdown
 gbrain query "what themes show up across my notes?"
 ```
 
+```
+3 results (hybrid search, 0.12s):
+
+1. concepts/do-things-that-dont-scale (score: 0.94)
+   PG's argument that unscalable effort teaches you what users want.
+   [Source: paulgraham.com, 2013-07-01]
+
+2. originals/founder-mode-observation (score: 0.87)
+   Deep involvement isn't micromanagement if it expands the team's thinking.
+
+3. concepts/build-something-people-want (score: 0.81)
+   The YC motto. Connected to 12 other brain pages.
+```
+
 ### MCP server (Claude Code, Cursor, Windsurf)
 
 GBrain exposes 30+ MCP tools via stdio:
@@ -59,7 +75,9 @@ Per-client guides: [`docs/mcp/`](docs/mcp/DEPLOY.md). ChatGPT requires OAuth 2.1
 
 ## The 25 Skills
 
-GBrain ships 25 skills organized by `skills/RESOLVER.md`. The resolver tells your agent which skill to read for any task. Skills are fat markdown files, not code. The agent reads them on demand.
+GBrain ships 25 skills organized by `skills/RESOLVER.md`. The resolver tells your agent which skill to read for any task.
+
+[Skill files are code.](https://x.com/garrytan/status/2042925773300908103) They're the most powerful way to get knowledge work done. A skill file is a fat markdown document that encodes an entire workflow: when to fire, what to check, how to chain with other skills, what quality bar to enforce. The agent reads the skill and executes it. Skills can also call deterministic TypeScript code bundled in GBrain (search, import, embed, sync) for the parts that shouldn't be left to LLM judgment. [Thin harness, fat skills](docs/ethos/THIN_HARNESS_FAT_SKILLS.md): the intelligence lives in the skills, not the runtime.
 
 ### Always-on
 
@@ -87,7 +105,7 @@ GBrain ships 25 skills organized by `skills/RESOLVER.md`. The resolver tells you
 | **citation-fixer** | Scans pages for missing or malformed citations. Fixes format to match the standard. |
 | **repo-architecture** | Where new brain files go. Decision protocol: primary subject determines directory, not format. |
 | **publish** | Share brain pages as password-protected HTML. Zero LLM calls. |
-| **data-research** | Structured data research with parameterized YAML recipes. Extract investor updates, donations, company metrics from email. |
+| **data-research** | Structured data research with parameterized YAML recipes. Extract investor updates, expenses, company metrics from email. |
 
 ### Operational
 
@@ -133,6 +151,8 @@ Signal arrives (meeting, email, tweet, link)
 
 Every cycle adds knowledge. The agent enriches a person page after a meeting. Next time that person comes up, the agent already has context. The difference compounds daily.
 
+The system gets smarter on its own. Entity enrichment auto-escalates: a person mentioned once gets a stub page (Tier 3). After 3 mentions across different sources, they get web + social enrichment (Tier 2). After a meeting or 8+ mentions, full pipeline (Tier 1). The brain learns who matters without being told. Deterministic classifiers improve over time via a fail-improve loop that logs every LLM fallback and generates better regex patterns from the failures. `gbrain doctor` shows the trajectory: "intent classifier: 87% deterministic, up from 40% in week 1."
+
 > "Prep me for my meeting with Jordan in 30 minutes"
 > ... pulls dossier, shared history, recent activity, open threads
 
@@ -153,13 +173,15 @@ GBrain ships integration recipes that your agent sets up for you. Each recipe te
 | [Calendar-to-Brain](recipes/calendar-to-brain.md) | credential-gateway | Google Calendar to searchable daily pages |
 | [Meeting Sync](recipes/meeting-sync.md) | — | Circleback transcripts to brain pages with attendees |
 
+**Data research recipes** extract structured data from email into tracked brain pages. Built-in recipes for investor updates (MRR, ARR, runway, headcount), expense tracking, and company metrics. Create your own with `gbrain research init`.
+
 Run `gbrain integrations` to see status.
 
 ## GBrain + GStack
 
-GStack is the engine. GBrain is the mod.
+[GStack](https://github.com/garrytan/gstack) is the engine. GBrain is the mod.
 
-- **GStack** = coding skills (ship, review, QA, investigate, office-hours, retro). 28 skills across 8 agent hosts. When your agent codes on itself, it uses GStack.
+- **[GStack](https://github.com/garrytan/gstack)** = coding skills (ship, review, QA, investigate, office-hours, retro). 70,000+ stars, 30,000 developers per day. When your agent codes on itself, it uses GStack.
 - **GBrain** = everything-else skills (brain ops, signal detection, ingestion, enrichment, cron, reports, identity). When your agent remembers, thinks, and operates, it uses GBrain.
 - **`hosts/gbrain.ts`** = the bridge. Tells GStack's coding skills to check the brain before coding.
 
@@ -223,7 +245,7 @@ Query
   -> Results
 ```
 
-Keyword alone misses conceptual matches. Vector alone misses exact phrases. RRF gets both. Search quality is benchmarked: `gbrain eval --qrels queries.json`.
+Keyword alone misses conceptual matches. Vector alone misses exact phrases. RRF gets both. Search quality is benchmarked and reproducible: `gbrain eval --qrels queries.json` measures P@k, Recall@k, MRR, and nDCG@k. A/B test config changes before deploying them.
 
 ## Voice
 
@@ -306,12 +328,16 @@ LINKS + GRAPH
   gbrain link|unlink|backlinks|graph    Cross-reference management
 
 ADMIN
-  gbrain doctor [--json]                Health checks
+  gbrain doctor [--json] [--fast]       Health checks (resolver, skills, DB, embeddings)
+  gbrain doctor --fix                   Auto-fix resolver issues
   gbrain stats                          Brain statistics
   gbrain serve                          MCP server (stdio)
   gbrain integrations                   Integration recipe dashboard
   gbrain check-backlinks check|fix      Back-link enforcement
   gbrain lint [--fix]                   LLM artifact detection
+  gbrain transcribe <audio>             Transcribe audio (Groq Whisper)
+  gbrain research init <name>           Scaffold a data-research recipe
+  gbrain research list                  Show available recipes
 ```
 
 Run `gbrain --help` for the full reference.
@@ -328,7 +354,7 @@ The skills in this repo are those patterns, generalized. What took 11 days to bu
 
 **For agents:**
 - **[skills/RESOLVER.md](skills/RESOLVER.md)** ... Start here. The skill dispatcher.
-- [Individual skill files](skills/) ... 24 standalone instruction sets
+- [Individual skill files](skills/) ... 25 standalone instruction sets
 - [GBRAIN_SKILLPACK.md](docs/GBRAIN_SKILLPACK.md) ... Legacy reference architecture
 - [Getting Data In](docs/integrations/README.md) ... Integration recipes and data flow
 - [GBRAIN_VERIFY.md](docs/GBRAIN_VERIFY.md) ... Installation verification

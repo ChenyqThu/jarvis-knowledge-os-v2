@@ -41,7 +41,7 @@ This skill guarantees:
 2. **Load latest.** Given a category, find the most recent report file.
 3. **Keyword routing.** Map common queries to report categories:
    - "email" / "inbox" → ea-inbox-sweep
-   - "social" / "mentions" → social-radar
+   - "social" / "mentions" → social-mentions
    - "briefing" / "morning" → morning-briefing
    - "meeting" → meeting-sync
    - Custom mappings configurable
