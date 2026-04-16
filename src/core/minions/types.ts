@@ -23,7 +23,8 @@ export type MinionJobStatus =
   | 'delayed'
   | 'dead'
   | 'cancelled'
-  | 'waiting-children';
+  | 'waiting-children'
+  | 'paused';
 
 export type BackoffType = 'fixed' | 'exponential';
 
@@ -59,6 +60,11 @@ export interface MinionJob {
   // Dependencies
   parent_job_id: number | null;
   on_child_fail: ChildFailPolicy;
+
+  // Token accounting
+  tokens_input: number;
+  tokens_output: number;
+  tokens_cache_read: number;
 
   // Results
   result: Record<string, unknown> | null;
@@ -105,15 +111,71 @@ export interface MinionJobContext {
   name: string;
   data: Record<string, unknown>;
   attempts_made: number;
+  /** AbortSignal for cooperative cancellation (fires on pause or lock loss). */
+  signal: AbortSignal;
   /** Update structured progress (not just 0-100). */
   updateProgress(progress: unknown): Promise<void>;
-  /** Append a log message to the job's stacktrace array. */
-  log(message: string): Promise<void>;
+  /** Accumulate token usage for this job. */
+  updateTokens(tokens: TokenUpdate): Promise<void>;
+  /** Append a log message or transcript entry to the job's stacktrace array. */
+  log(message: string | TranscriptEntry): Promise<void>;
   /** Check if the lock is still held (for long-running jobs). */
   isActive(): Promise<boolean>;
+  /** Read unread inbox messages (marks as read). */
+  readInbox(): Promise<InboxMessage[]>;
 }
 
 export type MinionHandler = (job: MinionJobContext) => Promise<unknown>;
+
+// --- Inbox Message ---
+
+export interface InboxMessage {
+  id: number;
+  job_id: number;
+  sender: string;
+  payload: unknown;
+  sent_at: Date;
+  read_at: Date | null;
+}
+
+export function rowToInboxMessage(row: Record<string, unknown>): InboxMessage {
+  return {
+    id: row.id as number,
+    job_id: row.job_id as number,
+    sender: row.sender as string,
+    payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload,
+    sent_at: new Date(row.sent_at as string),
+    read_at: row.read_at ? new Date(row.read_at as string) : null,
+  };
+}
+
+// --- Token Update ---
+
+export interface TokenUpdate {
+  input?: number;
+  output?: number;
+  cache_read?: number;
+}
+
+// --- Structured Progress (convention, not enforced) ---
+
+export interface AgentProgress {
+  step: number;
+  total: number;
+  message: string;
+  tokens_in: number;
+  tokens_out: number;
+  last_tool: string;
+  started_at: string;
+}
+
+// --- Transcript Entry ---
+
+export type TranscriptEntry =
+  | { type: 'log'; message: string; ts: string }
+  | { type: 'tool_call'; tool: string; args_size: number; result_size: number; ts: string }
+  | { type: 'llm_turn'; model: string; tokens_in: number; tokens_out: number; ts: string }
+  | { type: 'error'; message: string; stack?: string; ts: string };
 
 // --- Errors ---
 
@@ -148,6 +210,9 @@ export function rowToMinionJob(row: Record<string, unknown>): MinionJob {
     delay_until: row.delay_until ? new Date(row.delay_until as string) : null,
     parent_job_id: (row.parent_job_id as number) || null,
     on_child_fail: row.on_child_fail as ChildFailPolicy,
+    tokens_input: (row.tokens_input as number) ?? 0,
+    tokens_output: (row.tokens_output as number) ?? 0,
+    tokens_cache_read: (row.tokens_cache_read as number) ?? 0,
     result: row.result ? (typeof row.result === 'string' ? JSON.parse(row.result) : row.result) as Record<string, unknown> : null,
     progress: row.progress ? (typeof row.progress === 'string' ? JSON.parse(row.progress) : row.progress) : null,
     error_text: (row.error_text as string) || null,

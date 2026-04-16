@@ -269,6 +269,9 @@ CREATE TABLE IF NOT EXISTS minion_jobs (
   delay_until      TIMESTAMPTZ,
   parent_job_id    INTEGER     REFERENCES minion_jobs(id) ON DELETE SET NULL,
   on_child_fail    TEXT        NOT NULL DEFAULT 'fail_parent',
+  tokens_input     INTEGER     NOT NULL DEFAULT 0,
+  tokens_output    INTEGER     NOT NULL DEFAULT 0,
+  tokens_cache_read INTEGER    NOT NULL DEFAULT 0,
   result           JSONB,
   progress         JSONB,
   error_text       TEXT,
@@ -277,7 +280,7 @@ CREATE TABLE IF NOT EXISTS minion_jobs (
   started_at       TIMESTAMPTZ,
   finished_at      TIMESTAMPTZ,
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT chk_status CHECK (status IN ('waiting','active','completed','failed','delayed','dead','cancelled','waiting-children')),
+  CONSTRAINT chk_status CHECK (status IN ('waiting','active','completed','failed','delayed','dead','cancelled','waiting-children','paused')),
   CONSTRAINT chk_backoff_type CHECK (backoff_type IN ('fixed','exponential')),
   CONSTRAINT chk_on_child_fail CHECK (on_child_fail IN ('fail_parent','remove_dep','ignore','continue')),
   CONSTRAINT chk_jitter_range CHECK (backoff_jitter >= 0.0 AND backoff_jitter <= 1.0),
@@ -290,6 +293,31 @@ CREATE INDEX IF NOT EXISTS idx_minion_jobs_status ON minion_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_minion_jobs_stalled ON minion_jobs (lock_until) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_minion_jobs_delayed ON minion_jobs (delay_until) WHERE status = 'delayed';
 CREATE INDEX IF NOT EXISTS idx_minion_jobs_parent ON minion_jobs(parent_job_id);
+
+-- Inbox table for sidechannel messaging
+CREATE TABLE IF NOT EXISTS minion_inbox (
+  id          SERIAL PRIMARY KEY,
+  job_id      INTEGER NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
+  sender      TEXT NOT NULL,
+  payload     JSONB NOT NULL,
+  sent_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  read_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_minion_inbox_unread ON minion_inbox (job_id) WHERE read_at IS NULL;
+
+-- NOTIFY trigger for real-time job events (Postgres only, not PGLite)
+CREATE OR REPLACE FUNCTION notify_minion_job_change() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify('minion_jobs', json_build_object(
+    'id', NEW.id, 'status', NEW.status, 'name', NEW.name,
+    'queue', NEW.queue, 'prev_status', COALESCE(OLD.status, 'new')
+  )::text);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER minion_job_notify AFTER INSERT OR UPDATE OF status ON minion_jobs
+  FOR EACH ROW EXECUTE FUNCTION notify_minion_job_change();
 
 -- ============================================================
 -- Row Level Security: block anon access, postgres role bypasses

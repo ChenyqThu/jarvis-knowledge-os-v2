@@ -762,6 +762,71 @@ const get_job_progress: Operation = {
   },
 };
 
+const pause_job: Operation = {
+  name: 'pause_job',
+  description: 'Pause a waiting, active, or delayed job',
+  params: {
+    id: { type: 'number', required: true, description: 'Job ID' },
+  },
+  handler: async (ctx, p) => {
+    const { MinionQueue } = await import('./minions/queue.ts');
+    const queue = new MinionQueue(ctx.engine);
+    const job = await queue.pauseJob(p.id as number);
+    if (!job) throw new OperationError('invalid_params', `Job not found or not pausable: ${p.id}`);
+    return { id: job.id, status: job.status };
+  },
+};
+
+const resume_job: Operation = {
+  name: 'resume_job',
+  description: 'Resume a paused job back to waiting',
+  params: {
+    id: { type: 'number', required: true, description: 'Job ID' },
+  },
+  handler: async (ctx, p) => {
+    const { MinionQueue } = await import('./minions/queue.ts');
+    const queue = new MinionQueue(ctx.engine);
+    const job = await queue.resumeJob(p.id as number);
+    if (!job) throw new OperationError('invalid_params', `Job not found or not paused: ${p.id}`);
+    return { id: job.id, status: job.status };
+  },
+};
+
+const replay_job: Operation = {
+  name: 'replay_job',
+  description: 'Replay a completed/failed/dead job, optionally with modified data',
+  params: {
+    id: { type: 'number', required: true, description: 'Source job ID to replay' },
+    data_overrides: { type: 'object', required: false, description: 'Data fields to override (merged with original)' },
+  },
+  handler: async (ctx, p) => {
+    if (ctx.dryRun) return { dry_run: true, action: 'replay_job', id: p.id };
+    const { MinionQueue } = await import('./minions/queue.ts');
+    const queue = new MinionQueue(ctx.engine);
+    const job = await queue.replayJob(p.id as number, p.data_overrides as Record<string, unknown> | undefined);
+    if (!job) throw new OperationError('invalid_params', `Job not found or not in terminal state: ${p.id}`);
+    return { id: job.id, name: job.name, status: job.status, source_id: p.id };
+  },
+};
+
+const send_job_message: Operation = {
+  name: 'send_job_message',
+  description: 'Send a sidechannel message to a running job\'s inbox',
+  params: {
+    id: { type: 'number', required: true, description: 'Job ID to message' },
+    payload: { type: 'object', required: true, description: 'Message payload (arbitrary JSON)' },
+    sender: { type: 'string', required: false, description: 'Sender identity (default: admin)' },
+  },
+  handler: async (ctx, p) => {
+    if (ctx.dryRun) return { dry_run: true, action: 'send_job_message', id: p.id };
+    const { MinionQueue } = await import('./minions/queue.ts');
+    const queue = new MinionQueue(ctx.engine);
+    const msg = await queue.sendMessage(p.id as number, p.payload, (p.sender as string) ?? 'admin');
+    if (!msg) throw new OperationError('invalid_params', `Job not found, not messageable, or sender unauthorized: ${p.id}`);
+    return { sent: true, message_id: msg.id, job_id: p.id };
+  },
+};
+
 // --- Exports ---
 
 export const operations: Operation[] = [
@@ -789,6 +854,7 @@ export const operations: Operation[] = [
   file_list, file_upload, file_url,
   // Jobs (Minions)
   submit_job, get_job, list_jobs, cancel_job, retry_job, get_job_progress,
+  pause_job, resume_job, replay_job, send_job_message,
 ];
 
 export const operationsByName = Object.fromEntries(

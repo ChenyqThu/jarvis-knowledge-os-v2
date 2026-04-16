@@ -1,5 +1,8 @@
 /**
- * MinionWorker — In-process job worker with BullMQ-inspired patterns.
+ * MinionWorker — Concurrent in-process job worker with BullMQ-inspired patterns.
+ *
+ * Processes up to `concurrency` jobs simultaneously using a Promise pool.
+ * Each job gets its own AbortController, lock renewal timer, and isolated state.
  *
  * Usage:
  *   const worker = new MinionWorker(engine);
@@ -9,18 +12,26 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import type { MinionJob, MinionJobContext, MinionHandler, MinionWorkerOpts } from './types.ts';
+import type { MinionJob, MinionJobContext, MinionHandler, MinionWorkerOpts, TokenUpdate } from './types.ts';
 import { UnrecoverableError } from './types.ts';
 import { MinionQueue } from './queue.ts';
 import { calculateBackoff } from './backoff.ts';
 import { randomUUID } from 'crypto';
 
+/** Per-job in-flight state (isolated per job, not shared on the worker). */
+interface InFlightJob {
+  job: MinionJob;
+  lockToken: string;
+  lockTimer: ReturnType<typeof setInterval>;
+  abort: AbortController;
+  promise: Promise<void>;
+}
+
 export class MinionWorker {
   private queue: MinionQueue;
   private handlers = new Map<string, MinionHandler>();
   private running = false;
-  private currentJob: MinionJob | null = null;
-  private lockRenewalTimer: ReturnType<typeof setInterval> | null = null;
+  private inFlight = new Map<number, InFlightJob>();
   private workerId = randomUUID();
 
   private opts: Required<MinionWorkerOpts>;
@@ -87,22 +98,28 @@ export class MinionWorker {
           console.error('Promotion error:', e instanceof Error ? e.message : String(e));
         }
 
-        // Claim and execute
-        const lockToken = `${this.workerId}:${Date.now()}`;
-        const job = await this.queue.claim(
-          lockToken,
-          this.opts.lockDuration,
-          this.opts.queue,
-          this.registeredNames,
-        );
+        // Claim jobs up to concurrency limit
+        if (this.inFlight.size < this.opts.concurrency) {
+          const lockToken = `${this.workerId}:${Date.now()}`;
+          const job = await this.queue.claim(
+            lockToken,
+            this.opts.lockDuration,
+            this.opts.queue,
+            this.registeredNames,
+          );
 
-        if (job) {
-          this.currentJob = job;
-          await this.executeJob(job, lockToken);
-          this.currentJob = null;
+          if (job) {
+            this.launchJob(job, lockToken);
+          } else if (this.inFlight.size === 0) {
+            // No jobs and nothing in flight, poll
+            await new Promise(resolve => setTimeout(resolve, this.opts.pollInterval));
+          } else {
+            // Jobs are running but no new ones available, brief pause before re-checking
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
         } else {
-          // No jobs available, poll
-          await new Promise(resolve => setTimeout(resolve, this.opts.pollInterval));
+          // At concurrency limit, wait briefly before re-checking for free slots
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
       }
     } finally {
@@ -110,10 +127,14 @@ export class MinionWorker {
       process.removeListener('SIGTERM', shutdown);
       process.removeListener('SIGINT', shutdown);
 
-      // Wait for current job to finish (graceful shutdown)
-      if (this.currentJob && this.lockRenewalTimer) {
-        console.log('Waiting for current job to finish (30s timeout)...');
-        await new Promise(resolve => setTimeout(resolve, 30000));
+      // Graceful shutdown: wait for all in-flight jobs with timeout
+      if (this.inFlight.size > 0) {
+        console.log(`Waiting for ${this.inFlight.size} in-flight job(s) to finish (30s timeout)...`);
+        const pending = Array.from(this.inFlight.values()).map(f => f.promise);
+        await Promise.race([
+          Promise.allSettled(pending),
+          new Promise(resolve => setTimeout(resolve, 30000)),
+        ]);
       }
 
       console.log('Minion worker stopped.');
@@ -125,41 +146,61 @@ export class MinionWorker {
     this.running = false;
   }
 
-  private async executeJob(job: MinionJob, lockToken: string): Promise<void> {
+  /** Launch a job as an independent in-flight promise. */
+  private launchJob(job: MinionJob, lockToken: string): void {
+    const abort = new AbortController();
+
+    // Start lock renewal (per-job timer, not shared)
+    const lockTimer = setInterval(async () => {
+      const renewed = await this.queue.renewLock(job.id, lockToken, this.opts.lockDuration);
+      if (!renewed) {
+        console.warn(`Lock lost for job ${job.id}, aborting execution`);
+        clearInterval(lockTimer);
+        abort.abort();
+      }
+    }, this.opts.lockDuration / 2);
+
+    const promise = this.executeJob(job, lockToken, abort, lockTimer)
+      .finally(() => {
+        clearInterval(lockTimer);
+        this.inFlight.delete(job.id);
+      });
+
+    this.inFlight.set(job.id, { job, lockToken, lockTimer, abort, promise });
+  }
+
+  private async executeJob(
+    job: MinionJob,
+    lockToken: string,
+    abort: AbortController,
+    lockTimer: ReturnType<typeof setInterval>,
+  ): Promise<void> {
     const handler = this.handlers.get(job.name);
     if (!handler) {
-      // This shouldn't happen (claim filters by registered names), but be safe
       await this.queue.failJob(job.id, lockToken, `No handler for job type '${job.name}'`, 'dead');
       return;
     }
 
-    // Start lock renewal
-    this.lockRenewalTimer = setInterval(async () => {
-      const renewed = await this.queue.renewLock(job.id, lockToken, this.opts.lockDuration);
-      if (!renewed) {
-        // Lock was stolen (stall detector reclaimed it)
-        console.warn(`Lock lost for job ${job.id}, stopping execution`);
-        this.lockRenewalTimer && clearInterval(this.lockRenewalTimer);
-        this.lockRenewalTimer = null;
-      }
-    }, this.opts.lockDuration / 2);
-
-    // Build job context
+    // Build job context with per-job AbortSignal
     const context: MinionJobContext = {
       id: job.id,
       name: job.name,
       data: job.data,
       attempts_made: job.attempts_made,
+      signal: abort.signal,
       updateProgress: async (progress: unknown) => {
         await this.queue.updateProgress(job.id, lockToken, progress);
       },
-      log: async (message: string) => {
-        // Append to stacktrace as a log entry
+      updateTokens: async (tokens: TokenUpdate) => {
+        await this.queue.updateTokens(job.id, lockToken, tokens);
+      },
+      log: async (message: string | Record<string, unknown>) => {
+        const value = typeof message === 'string' ? message : JSON.stringify(message);
         await this.engine.executeRaw(
           `UPDATE minion_jobs SET stacktrace = COALESCE(stacktrace, '[]'::jsonb) || to_jsonb($1::text),
             updated_at = now()
            WHERE id = $2 AND status = 'active' AND lock_token = $3`,
-          [message, job.id, lockToken]
+          [value, job.id, lockToken]
         );
       },
       isActive: async () => {
@@ -169,16 +210,15 @@ export class MinionWorker {
         );
         return rows.length > 0;
       },
+      readInbox: async () => {
+        return this.queue.readInbox(job.id, lockToken);
+      },
     };
 
     try {
       const result = await handler(context);
 
-      // Clear renewal timer
-      if (this.lockRenewalTimer) {
-        clearInterval(this.lockRenewalTimer);
-        this.lockRenewalTimer = null;
-      }
+      clearInterval(lockTimer);
 
       // Complete the job (token-fenced)
       const completed = await this.queue.completeJob(
@@ -197,10 +237,12 @@ export class MinionWorker {
         await this.queue.resolveParent(job.parent_job_id);
       }
     } catch (err) {
-      // Clear renewal timer
-      if (this.lockRenewalTimer) {
-        clearInterval(this.lockRenewalTimer);
-        this.lockRenewalTimer = null;
+      clearInterval(lockTimer);
+
+      // If aborted (paused or lock lost), don't try to fail the job
+      if (abort.signal.aborted) {
+        console.log(`Job ${job.id} (${job.name}) aborted (paused or lock lost)`);
+        return;
       }
 
       const errorText = err instanceof Error ? err.message : String(err);

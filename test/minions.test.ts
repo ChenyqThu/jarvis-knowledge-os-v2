@@ -550,3 +550,262 @@ describe('MinionQueue: Cancel & Retry', () => {
     expect(retried!.error_text).toBeNull();
   });
 });
+
+// --- Pause / Resume (5 tests) ---
+
+describe('MinionQueue: Pause/Resume', () => {
+  test('pause waiting job → paused', async () => {
+    const job = await queue.add('sync', {});
+    const paused = await queue.pauseJob(job.id);
+    expect(paused!.status).toBe('paused');
+  });
+
+  test('pause active job clears lock', async () => {
+    const job = await queue.add('sync', {});
+    await queue.claim('tok1', 30000, 'default', ['sync']);
+    const paused = await queue.pauseJob(job.id);
+    expect(paused!.status).toBe('paused');
+    expect(paused!.lock_token).toBeNull();
+    expect(paused!.lock_until).toBeNull();
+  });
+
+  test('pause completed job returns null', async () => {
+    const job = await queue.add('sync', {});
+    await queue.claim('tok1', 30000, 'default', ['sync']);
+    await queue.completeJob(job.id, 'tok1');
+    const paused = await queue.pauseJob(job.id);
+    expect(paused).toBeNull();
+  });
+
+  test('resume paused job → waiting', async () => {
+    const job = await queue.add('sync', {});
+    await queue.pauseJob(job.id);
+    const resumed = await queue.resumeJob(job.id);
+    expect(resumed!.status).toBe('waiting');
+  });
+
+  test('resume non-paused job returns null', async () => {
+    const job = await queue.add('sync', {});
+    const resumed = await queue.resumeJob(job.id);
+    expect(resumed).toBeNull();
+  });
+});
+
+// --- Inbox (6 tests) ---
+
+describe('MinionQueue: Inbox', () => {
+  beforeEach(async () => {
+    await engine.executeRaw('DELETE FROM minion_inbox');
+  });
+
+  test('send message to active job from admin', async () => {
+    const job = await queue.add('sync', {});
+    await queue.claim('tok1', 30000, 'default', ['sync']);
+    const msg = await queue.sendMessage(job.id, { directive: 'focus on X' }, 'admin');
+    expect(msg).not.toBeNull();
+    expect(msg!.sender).toBe('admin');
+    expect(msg!.payload).toEqual({ directive: 'focus on X' });
+    expect(msg!.read_at).toBeNull();
+  });
+
+  test('send message from parent job succeeds', async () => {
+    const parent = await queue.add('orchestrate', {});
+    // Create child directly with waiting status so it's claimable
+    const childRows = await engine.executeRaw<Record<string, unknown>>(
+      `INSERT INTO minion_jobs (name, queue, status, data, parent_job_id)
+       VALUES ('research', 'default', 'waiting', '{}', $1) RETURNING *`,
+      [parent.id]
+    );
+    const childId = childRows[0].id as number;
+    await queue.claim('tok1', 30000, 'default', ['research']);
+    const msg = await queue.sendMessage(childId, { hint: 'dig deeper' }, String(parent.id));
+    expect(msg).not.toBeNull();
+  });
+
+  test('send message from unauthorized sender returns null', async () => {
+    const job = await queue.add('sync', {});
+    await queue.claim('tok1', 30000, 'default', ['sync']);
+    const msg = await queue.sendMessage(job.id, { hack: true }, 'rogue-agent');
+    expect(msg).toBeNull();
+  });
+
+  test('send message to completed job returns null', async () => {
+    const job = await queue.add('sync', {});
+    await queue.claim('tok1', 30000, 'default', ['sync']);
+    await queue.completeJob(job.id, 'tok1');
+    const msg = await queue.sendMessage(job.id, { too: 'late' }, 'admin');
+    expect(msg).toBeNull();
+  });
+
+  test('readInbox returns unread messages and marks read', async () => {
+    const job = await queue.add('sync', {});
+    await queue.claim('tok1', 30000, 'default', ['sync']);
+    await queue.sendMessage(job.id, { msg: 1 }, 'admin');
+    await queue.sendMessage(job.id, { msg: 2 }, 'admin');
+
+    const messages = await queue.readInbox(job.id, 'tok1');
+    expect(messages).toHaveLength(2);
+    expect(messages[0].payload).toEqual({ msg: 1 });
+    expect(messages[0].read_at).not.toBeNull();
+
+    // Second read returns empty (all marked read)
+    const empty = await queue.readInbox(job.id, 'tok1');
+    expect(empty).toHaveLength(0);
+  });
+
+  test('readInbox with wrong token returns empty', async () => {
+    const job = await queue.add('sync', {});
+    await queue.claim('tok1', 30000, 'default', ['sync']);
+    await queue.sendMessage(job.id, { msg: 1 }, 'admin');
+
+    const messages = await queue.readInbox(job.id, 'wrong-token');
+    expect(messages).toHaveLength(0);
+  });
+});
+
+// --- Token Accounting (4 tests) ---
+
+describe('MinionQueue: Token Accounting', () => {
+  test('updateTokens accumulates counts', async () => {
+    const job = await queue.add('agent', {});
+    await queue.claim('tok1', 30000, 'default', ['agent']);
+
+    await queue.updateTokens(job.id, 'tok1', { input: 100, output: 50 });
+    await queue.updateTokens(job.id, 'tok1', { input: 200, output: 100, cache_read: 50 });
+
+    const updated = await queue.getJob(job.id);
+    expect(updated!.tokens_input).toBe(300);
+    expect(updated!.tokens_output).toBe(150);
+    expect(updated!.tokens_cache_read).toBe(50);
+  });
+
+  test('updateTokens with wrong token returns false', async () => {
+    const job = await queue.add('agent', {});
+    await queue.claim('tok1', 30000, 'default', ['agent']);
+    const result = await queue.updateTokens(job.id, 'wrong', { input: 100 });
+    expect(result).toBe(false);
+  });
+
+  test('completeJob rolls up tokens to parent', async () => {
+    const parent = await queue.add('orchestrate', {});
+    // Create child with parent_job_id but manually set to 'waiting' so it's claimable
+    const childRows = await engine.executeRaw<Record<string, unknown>>(
+      `INSERT INTO minion_jobs (name, queue, status, data, parent_job_id)
+       VALUES ('research', 'default', 'waiting', '{}', $1) RETURNING *`,
+      [parent.id]
+    );
+    const childId = childRows[0].id as number;
+    await queue.claim('tok1', 30000, 'default', ['research']);
+    await queue.updateTokens(childId, 'tok1', { input: 500, output: 200 });
+    await queue.completeJob(childId, 'tok1', { done: true });
+
+    const parentJob = await queue.getJob(parent.id);
+    expect(parentJob!.tokens_input).toBe(500);
+    expect(parentJob!.tokens_output).toBe(200);
+  });
+
+  test('new jobs start with zero tokens', async () => {
+    const job = await queue.add('sync', {});
+    expect(job.tokens_input).toBe(0);
+    expect(job.tokens_output).toBe(0);
+    expect(job.tokens_cache_read).toBe(0);
+  });
+});
+
+// --- Job Replay (4 tests) ---
+
+describe('MinionQueue: Replay', () => {
+  test('replay completed job creates new job', async () => {
+    const job = await queue.add('research', { topic: 'AI' }, { priority: 5 });
+    await queue.claim('tok1', 30000, 'default', ['research']);
+    await queue.completeJob(job.id, 'tok1', { result: 'done' });
+
+    const replay = await queue.replayJob(job.id);
+    expect(replay).not.toBeNull();
+    expect(replay!.id).not.toBe(job.id);
+    expect(replay!.name).toBe('research');
+    expect(replay!.data).toEqual({ topic: 'AI' });
+    expect(replay!.status).toBe('waiting');
+    expect(replay!.priority).toBe(5);
+    expect(replay!.attempts_made).toBe(0);
+  });
+
+  test('replay with data override merges data', async () => {
+    const job = await queue.add('research', { topic: 'AI', depth: 'shallow' });
+    await queue.claim('tok1', 30000, 'default', ['research']);
+    await queue.completeJob(job.id, 'tok1');
+
+    const replay = await queue.replayJob(job.id, { depth: 'deep', focus: 'revenue' });
+    expect(replay!.data).toEqual({ topic: 'AI', depth: 'deep', focus: 'revenue' });
+  });
+
+  test('replay non-terminal job returns null', async () => {
+    const job = await queue.add('sync', {});
+    const replay = await queue.replayJob(job.id);
+    expect(replay).toBeNull();
+  });
+
+  test('replay nonexistent job returns null', async () => {
+    const replay = await queue.replayJob(99999);
+    expect(replay).toBeNull();
+  });
+});
+
+// --- Concurrent Worker (3 tests) ---
+
+describe('MinionWorker: Concurrent', () => {
+  test('worker provides AbortSignal in context', async () => {
+    let receivedSignal: AbortSignal | null = null;
+    const job = await queue.add('test-signal', {});
+
+    const worker = new MinionWorker(engine, { concurrency: 1, pollInterval: 100 });
+    worker.register('test-signal', async (ctx) => {
+      receivedSignal = ctx.signal;
+      return { ok: true };
+    });
+
+    const p = worker.start();
+    await new Promise(r => setTimeout(r, 500));
+    worker.stop();
+    await p;
+
+    expect(receivedSignal).not.toBeNull();
+    expect(receivedSignal!.aborted).toBe(false);
+  });
+
+  test('worker provides readInbox in context', async () => {
+    let hasReadInbox = false;
+    const job = await queue.add('test-inbox', {});
+
+    const worker = new MinionWorker(engine, { concurrency: 1, pollInterval: 100 });
+    worker.register('test-inbox', async (ctx) => {
+      hasReadInbox = typeof ctx.readInbox === 'function';
+      return { ok: true };
+    });
+
+    const p = worker.start();
+    await new Promise(r => setTimeout(r, 500));
+    worker.stop();
+    await p;
+
+    expect(hasReadInbox).toBe(true);
+  });
+
+  test('worker provides updateTokens in context', async () => {
+    let hasUpdateTokens = false;
+    const job = await queue.add('test-tokens', {});
+
+    const worker = new MinionWorker(engine, { concurrency: 1, pollInterval: 100 });
+    worker.register('test-tokens', async (ctx) => {
+      hasUpdateTokens = typeof ctx.updateTokens === 'function';
+      return { ok: true };
+    });
+
+    const p = worker.start();
+    await new Promise(r => setTimeout(r, 500));
+    worker.stop();
+    await p;
+
+    expect(hasUpdateTokens).toBe(true);
+  });
+});

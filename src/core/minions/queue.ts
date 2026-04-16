@@ -9,10 +9,10 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import type { MinionJob, MinionJobInput, MinionJobStatus } from './types.ts';
-import { rowToMinionJob } from './types.ts';
+import type { MinionJob, MinionJobInput, MinionJobStatus, InboxMessage, TokenUpdate } from './types.ts';
+import { rowToMinionJob, rowToInboxMessage } from './types.ts';
 
-const MIGRATION_VERSION = 5;
+const MIGRATION_VERSION = 6;
 
 export class MinionQueue {
   constructor(private engine: BrainEngine) {}
@@ -120,7 +120,7 @@ export class MinionQueue {
     const rows = await this.engine.executeRaw<Record<string, unknown>>(
       `UPDATE minion_jobs SET status = 'cancelled', lock_token = NULL, lock_until = NULL,
         finished_at = now(), updated_at = now()
-       WHERE id = $1 AND status IN ('waiting', 'active', 'delayed', 'waiting-children')
+       WHERE id = $1 AND status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused')
        RETURNING *`,
       [id]
     );
@@ -235,7 +235,7 @@ export class MinionQueue {
     return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
   }
 
-  /** Complete a job (token-fenced). Returns null if token mismatch. */
+  /** Complete a job (token-fenced). Rolls up token counts to parent if applicable. Returns null if token mismatch. */
   async completeJob(id: number, lockToken: string, result?: Record<string, unknown>): Promise<MinionJob | null> {
     const rows = await this.engine.executeRaw<Record<string, unknown>>(
       `UPDATE minion_jobs SET status = 'completed', result = $1,
@@ -244,7 +244,24 @@ export class MinionQueue {
        RETURNING *`,
       [result ? JSON.stringify(result) : null, id, lockToken]
     );
-    return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
+    if (rows.length === 0) return null;
+
+    const completed = rowToMinionJob(rows[0]);
+
+    // Roll up token counts to parent (if parent exists and is not in a terminal state)
+    if (completed.parent_job_id && (completed.tokens_input > 0 || completed.tokens_output > 0 || completed.tokens_cache_read > 0)) {
+      await this.engine.executeRaw(
+        `UPDATE minion_jobs SET
+          tokens_input = tokens_input + $1,
+          tokens_output = tokens_output + $2,
+          tokens_cache_read = tokens_cache_read + $3,
+          updated_at = now()
+         WHERE id = $4 AND status NOT IN ('completed', 'dead', 'cancelled')`,
+        [completed.tokens_input, completed.tokens_output, completed.tokens_cache_read, completed.parent_job_id]
+      );
+    }
+
+    return completed;
   }
 
   /** Fail a job (token-fenced). Sets delayed for retry or dead/failed for terminal. */
@@ -365,6 +382,105 @@ export class MinionQueue {
       [`child job ${childId} failed: ${errorText}`, parentId]
     );
     return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
+  }
+
+  /** Pause a waiting or active job. For active jobs, clears the lock so the worker's
+   *  AbortController fires and the handler stops gracefully. */
+  async pauseJob(id: number): Promise<MinionJob | null> {
+    const rows = await this.engine.executeRaw<Record<string, unknown>>(
+      `UPDATE minion_jobs SET status = 'paused',
+        lock_token = NULL, lock_until = NULL, updated_at = now()
+       WHERE id = $1 AND status IN ('waiting', 'active', 'delayed')
+       RETURNING *`,
+      [id]
+    );
+    return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
+  }
+
+  /** Resume a paused job back to waiting. */
+  async resumeJob(id: number): Promise<MinionJob | null> {
+    const rows = await this.engine.executeRaw<Record<string, unknown>>(
+      `UPDATE minion_jobs SET status = 'waiting',
+        lock_token = NULL, lock_until = NULL, updated_at = now()
+       WHERE id = $1 AND status = 'paused'
+       RETURNING *`,
+      [id]
+    );
+    return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
+  }
+
+  /** Send a message to a job's inbox. Sender must be the parent job or 'admin'. */
+  async sendMessage(jobId: number, payload: unknown, sender: string): Promise<InboxMessage | null> {
+    // Validate job exists and is in a messageable state
+    const job = await this.getJob(jobId);
+    if (!job) return null;
+    if (['completed', 'dead', 'cancelled', 'failed'].includes(job.status)) return null;
+
+    // Sender validation: must be parent job ID or 'admin'
+    if (sender !== 'admin' && sender !== String(job.parent_job_id)) {
+      return null;
+    }
+
+    const rows = await this.engine.executeRaw<Record<string, unknown>>(
+      `INSERT INTO minion_inbox (job_id, sender, payload)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [jobId, sender, JSON.stringify(payload)]
+    );
+    return rows.length > 0 ? rowToInboxMessage(rows[0]) : null;
+  }
+
+  /** Read unread inbox messages for a job. Token-fenced. Marks messages as read. */
+  async readInbox(jobId: number, lockToken: string): Promise<InboxMessage[]> {
+    // Verify lock ownership
+    const lockCheck = await this.engine.executeRaw<{ id: number }>(
+      `SELECT id FROM minion_jobs WHERE id = $1 AND lock_token = $2 AND status = 'active'`,
+      [jobId, lockToken]
+    );
+    if (lockCheck.length === 0) return [];
+
+    const rows = await this.engine.executeRaw<Record<string, unknown>>(
+      `UPDATE minion_inbox SET read_at = now()
+       WHERE job_id = $1 AND read_at IS NULL
+       RETURNING *`,
+      [jobId]
+    );
+    return rows.map(rowToInboxMessage);
+  }
+
+  /** Update token counts for a job. Accumulates (adds to existing). Token-fenced. */
+  async updateTokens(id: number, lockToken: string, tokens: TokenUpdate): Promise<boolean> {
+    const rows = await this.engine.executeRaw<Record<string, unknown>>(
+      `UPDATE minion_jobs SET
+        tokens_input = tokens_input + $1,
+        tokens_output = tokens_output + $2,
+        tokens_cache_read = tokens_cache_read + $3,
+        updated_at = now()
+       WHERE id = $4 AND status = 'active' AND lock_token = $5
+       RETURNING id`,
+      [tokens.input ?? 0, tokens.output ?? 0, tokens.cache_read ?? 0, id, lockToken]
+    );
+    return rows.length > 0;
+  }
+
+  /** Replay a completed/failed/dead job with optional data overrides. Creates a new job. */
+  async replayJob(id: number, dataOverrides?: Record<string, unknown>): Promise<MinionJob | null> {
+    const source = await this.getJob(id);
+    if (!source) return null;
+    if (!['completed', 'failed', 'dead'].includes(source.status)) return null;
+
+    const data = dataOverrides
+      ? { ...source.data, ...dataOverrides }
+      : source.data;
+
+    return this.add(source.name, data, {
+      queue: source.queue,
+      priority: source.priority,
+      max_attempts: source.max_attempts,
+      backoff_type: source.backoff_type,
+      backoff_delay: source.backoff_delay,
+      backoff_jitter: source.backoff_jitter,
+    });
   }
 
   /** Remove a child's dependency on its parent. */
