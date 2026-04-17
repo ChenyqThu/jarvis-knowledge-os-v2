@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.enrich-sweep</string>
+    <!--
+      Weekly enrich-sweep: scans the whole brain, extracts entities via Haiku,
+      and creates Tier-2/Tier-3 stubs. Keys live in .env.local (auto-loaded by
+      bun from WorkingDirectory). Tight --min-mentions 3 default matches what
+      produced a clean wave on 2026-04-17.
+
+      Manual invocation:
+        bun run skills/kos-jarvis/enrich-sweep/run.ts --plan --min-mentions 3
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/chenyuanquan/.bun/bin/bun</string>
+        <string>run</string>
+        <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/enrich-sweep/run.ts</string>
+        <string>--min-mentions</string>
+        <string>3</string>
+        <string>--max-tier2</string>
+        <string>30</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/chenyuanquan/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>GBRAIN_HOME</key>
+        <string>/Users/chenyuanquan/brain</string>
+    </dict>
+    <!-- Sunday 22:13 local. After end-of-week reading, before bedtime. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>22</integer>
+        <key>Minute</key>
+        <integer>13</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/enrich-sweep/sweep.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/enrich-sweep/sweep.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2</string>
+</dict>
+</plist>

@@ -13,3 +13,11 @@ scripts/launchd/*.plist
 supabase/.temp/
 .claude/skills/
 .idea
+
+# Claude Code / OMC runtime state — per-session, machine-local, not source
+.omc/
+
+# Launchd log outputs (kos-patrol / enrich-sweep / notion-poller)
+skills/kos-jarvis/kos-patrol/patrol.std*.log
+skills/kos-jarvis/enrich-sweep/sweep.std*.log
+workers/notion-poller/poller.std*.log

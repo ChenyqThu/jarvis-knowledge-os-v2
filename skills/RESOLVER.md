@@ -108,6 +108,10 @@ for boundary and upgrade policy.
 | Weekly push KOS digest → OpenClaw MEMORY.md 近期层 | `skills/kos-jarvis/digest-to-memory/SKILL.md` |
 | Notion → gbrain 5-min incremental sync | `skills/kos-jarvis/notion-ingest-delta/SKILL.md` |
 | OpenClaw 飞书 skill command-mapping (one-time migration) | `skills/kos-jarvis/feishu-bridge/SKILL.md` |
+| Batch scan brain, extract entities, create people/company stubs (G1 payoff) | `skills/kos-jarvis/enrich-sweep/SKILL.md` |
+| JSONL queue format for Feishu ambient entity mentions | `skills/kos-jarvis/pending-enrich/SKILL.md` |
 
 These chain into upstream skills: dikw-compile runs after idea-ingest;
-kos-lint extends maintain; digest-to-memory reads patrol output.
+kos-lint extends maintain; digest-to-memory reads patrol output;
+enrich-sweep wraps upstream `skills/enrich/` in bulk mode and consumes
+the `pending-enrich` queue as an optional v1.1 input.

@@ -1,6 +1,6 @@
 # Plan Adjustments — 迁移期间发现的偏差记录
 
-> Last updated: 2026-04-16 (Week 1 day 1)
+> Last updated: 2026-04-17 (post-cutover Phase 2+3 wave)
 
 主 plan 文件在 `/Users/chenyuanquan/.claude/plans/docs-gbrain-vs-kos-analysis-md-gbrain-parsed-candle.md`。
 本文件记录执行中发现与原 plan 的偏差、以及对应的处理方案。
@@ -91,7 +91,58 @@ ceo-review / investigate / retro），跟知识库本身正交。
 
 ---
 
-## 升级路径的假设验证（需持续观察）
+## 8. enrich-sweep Tier 1 降级(2026-04-17)
+
+**原 plan 假设**：Phase 3 有外部 API(Tavily/Brave/Exa for Tier 2,
+Crustdata/Proxycurl/PDL for Tier 1)。
+
+**实际**：只有 `TAVILY_API_KEY` 可用(Lucien 已配置);无 Crustdata 类
+结构化人物 API。
+
+**处理**:
+- Tier 1 候选(mention ≥ 8 或出现在 decisions/meetings)**降级为 Tier 2 处理**
+  — 走 Tavily web 搜索而非 LinkedIn-like 结构化数据
+- stub 里加 `tags: wants-tier1` 标记,enrich-sweep 报告里列出这批候选
+- 未来 Lucien 补 Crustdata key 后,针对 `wants-tier1` 名单重跑(增量模式)
+
+## 9. `gbrain put` 已自动 embed(2026-04-17)
+
+**原 plan**:enrich-sweep 需要先 `gbrain put` 再 `gbrain embed <slug>`。
+
+**实际**:`gbrain put --help` 文档里写着 "Chunks, embeds, and reconciles
+tags" — 写入时自动 chunk + embed + tag。无需显式调用 `gbrain embed`。
+
+**处理**:enrich-sweep/run.ts Phase D 只调 `gbrain put`,省去一次 embed
+往返。Gemini shim 必须在线(预飞检查已覆盖)。
+
+## 10. `~/brain/` 本地目录不存在(2026-04-17)
+
+**观察**:虽然 `digest-to-memory/run.ts` 和 `kos-patrol/SKILL.md` 都默认
+`BRAIN=~/brain`,但该目录实际上不存在 — GBrain 的页面只驻在 PGLite DB
+中。`~/brain/agent/` 子树只在有 skill 显式写入时才被 `mkdir -p` 出来。
+
+**处理**:enrich-sweep 的报告写入路径 `~/brain/agent/reports/` 在 run.ts
+里已加 `mkdir -p`。读/写"页面"走 `gbrain list/get/put`,不走文件系统。
+
+## 11. `gbrain list --json` 不支持(2026-04-17)
+
+**观察**:`gbrain list` 在带 `--json` flag 时仍输出 TSV(未实现)。
+
+**处理**:enrich-sweep 和 kos-patrol 都按 kos-lint 约定解析 TSV
+(`slug\tkind\tupdated\ttitle`)。
+
+## 12. P1 kos-lint path-resolver 尚未修,首次 patrol 报告 116 ERROR(2026-04-17)
+
+**观察**:kos-patrol 首跑报告 116 个 dead-link ERROR — 多半是 v1 导入的
+相对路径(`../syntheses/foo.md` vs 扁平 slug `foo`)。
+
+**处理**:归为 P1,不在本 wave 修。patrol 报告可读性可接受;enrich-sweep
+自身不依赖 lint 结果。下一个 wave 的第一件事应修 kos-lint/run.ts 的
+path-resolver,让数字回到真实值(< 20)。
+
+---
+
+## 升级路径的假设验证(需持续观察)
 
 - [ ] upstream merge 冲突面是否真的只在 RESOLVER.md? → 等第一次 upstream 有
       更新时验证

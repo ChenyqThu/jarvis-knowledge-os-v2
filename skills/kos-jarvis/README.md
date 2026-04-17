@@ -35,6 +35,8 @@ GBrain 的核心哲学是 Thin Harness, Fat Skills。其原生能力覆盖实体
 | MEMORY 回流到 OpenClaw `MEMORY.md` | 无 | `digest-to-memory/` |
 | Notion 实时增量摄入 | 仅一次性 migrate | `notion-ingest-delta/` |
 | 飞书消息通道 | 无 | `feishu-bridge/` |
+| 批量 86 页实体抽取 + stub 自动生成(G1 主收益) | `enrich/` 是单实体交互式 | `enrich-sweep/` |
+| Feishu 消息实体捕获队列 | 无 | `pending-enrich/` |
 
 ## 目录结构（计划）
 
@@ -58,9 +60,12 @@ skills/kos-jarvis/
 ├── confidence-score/               # Week 2
 ├── kos-lint/                       # Week 2
 ├── kos-patrol/                     # Week 2
-├── digest-to-memory/               # Week 3（保留澄清点）
+├── digest-to-memory/               # Week 3(保留澄清点)
 ├── notion-ingest-delta/            # Week 3
-└── feishu-bridge/                  # Week 3
+├── feishu-bridge/                  # Week 3
+├── gemini-embed-shim/              # Week 4 — OpenAI→Gemini embed 桥接
+├── enrich-sweep/                   # Phase 3 (2026-04-17) — G1 主收益
+└── pending-enrich/                 # Phase 2↔3 桥梁:Feishu 实体队列 schema
 ```
 
 ## 与 GBrain 原生 skills 的关系
@@ -78,11 +83,21 @@ skills/kos-jarvis/
 3. 每月对 upstream CHANGELOG.md 做一次 review，评估是否有 upstream 新能力
    可以替代本 pack 某一项扩展（扩展应随时间自愿退场，而非永久膨胀）
 
-## 当前状态（2026-04-16）
+## 当前状态(2026-04-17)
 
-- [x] Week 1: Fork，v1-frozen tag，bun install，gbrain init，5 页 import 冒烟（frontmatter 保真 100%）
-- [ ] Week 2: 5 个核心 skill 移植
-- [ ] Week 3: 桥接层（kos-worker、飞书、Notion delta、MEMORY 回流）
-- [ ] Week 4: 85 页全量 + 7 天双读验证
+- [x] Week 1: Fork,v1-frozen tag,bun install,gbrain init,5 页 import 冒烟(frontmatter 保真 100%)
+- [x] Week 2: 5 个核心 skill 移植
+- [x] Week 3: 桥接层(kos-worker、飞书、Notion delta、MEMORY 回流)
+- [x] Week 4: 85 页全量 + 7 天双读验证(Phase 1 观察 gate 已过)
+- [x] Phase 2+3 wave(2026-04-17):enrich-sweep 脚手架 + pending-enrich 队列 schema
+      + kos-patrol/run.ts(P0) + Feishu signal-detector 集成文档
+- [ ] Phase 3 live run:Lucien 导出 `ANTHROPIC_API_KEY` + `TAVILY_API_KEY` 后跑
+      `bun run skills/kos-jarvis/enrich-sweep/run.ts --plan`,review 后真跑
+- [ ] Phase 2 OpenClaw 侧落地:按 `docs/FEISHU-SIGNAL-DETECTOR-SETUP.md` 手工配
+- [ ] Phase 4 日历导入(下一 wave)
+- [ ] Phase 5 邮件导入(再下一 wave)
 
-详见 `/Users/chenyuanquan/.claude/plans/docs-gbrain-vs-kos-analysis-md-gbrain-parsed-candle.md`（主 plan 文件）
+详见:
+- 迁移源 plan:`/Users/chenyuanquan/.claude/plans/docs-gbrain-vs-kos-analysis-md-gbrain-parsed-candle.md`
+- 后续五阶段 roadmap:`docs/JARVIS-NEXT-STEPS.md`
+- 本 wave 执行计划:`/Users/chenyuanquan/.claude/plans/docs-jarvis-next-steps-md-review-validated-pond.md`

@@ -5,7 +5,15 @@
 
 ## P0 — blocking full autonomy
 
-### [ ] kos-patrol/run.ts (TypeScript helper)
+### [x] kos-patrol/run.ts (TypeScript helper) — 2026-04-17
+Landed as part of the Phase 2+3 wave. Runs six-phase protocol (inventory,
+lint delegation, staleness, gap detection, dashboard, digest). First-pass
+output on 86-page brain: 116 ERROR (legacy v1 path-resolver, see P1 below),
+0 stale (no decision/protocol/project page is yet >180d), 20 entity gaps
+(fodder for enrich-sweep). Writes to `~/brain/agent/dashboards/` and
+`~/brain/agent/digests/`. Exit codes: 0 clean, 1 lint ERROR, 2 WARN-only.
+
+### ~~[ ] kos-patrol/run.ts (TypeScript helper)~~
 **Why**: `skills/kos-jarvis/kos-patrol/SKILL.md` is markdown-only. OpenClaw
 feishu cron `f0709db6 知识库每日巡检` currently uses a stopgap pointing at
 `GET /digest?since=1 + /status` which gives inventory but not lint/staleness/
@@ -67,12 +75,34 @@ take `{markdown, slug, source, notion_id}`.
 ### [ ] upstream kos-compat-api to accept `markdown` field
 See above. Small change in `server/kos-compat-api.ts`.
 
-### [ ] enrich-sweep on existing 85 pages (primary G1 payoff)
-Create `skills/kos-jarvis/enrich-sweep/` (SKILL.md + run.ts + report template)
-to surface every person/company mentioned in existing brain and auto-create
-stubs. See [`docs/JARVIS-NEXT-STEPS.md`](../../docs/JARVIS-NEXT-STEPS.md) §5
-for full algorithm, pre-flight checks, exit criteria. Planned for Phase 3
-of the post-migration roadmap.
+### [x] enrich-sweep on existing 85 pages (primary G1 payoff) — scaffolded 2026-04-17
+`skills/kos-jarvis/enrich-sweep/` landed with SKILL.md, run.ts, lib/*.ts,
+and report.template.md. Scaffolding dry-ran cleanly on 86 pages
+(pre-flight OK, report writes, no NER in dry mode). Awaiting Lucien to:
+1. Export `ANTHROPIC_API_KEY` and `TAVILY_API_KEY` in shell
+2. Run `bun run skills/kos-jarvis/enrich-sweep/run.ts --plan` for
+   Haiku-driven candidate review
+3. Approve Tier distribution; run without flag for live stub creation
+No Crustdata — Tier 1 candidates auto-degrade to Tier 2 (logged in report
+as `wants-tier1`).
+
+### [ ] pending-enrich queue consumer (v1.1 of enrich-sweep)
+enrich-sweep v1 scans the brain only. Add a v1.1 pass that also drains
+`~/brain/agent/pending-enrich.jsonl` before Phase B dedupe so Feishu-only
+mentions can create stubs even when not yet written into a source page.
+Gate on Phase 2 (Feishu signal-detector) actually producing queue entries.
+
+### [ ] Phase 2 Feishu signal-detector wiring (OpenClaw side)
+Not a v2-repo task — executed by Lucien in `~/.openclaw/workspace/` per
+[`docs/FEISHU-SIGNAL-DETECTOR-SETUP.md`](../../docs/FEISHU-SIGNAL-DETECTOR-SETUP.md).
+Expected outcome: within a week of enabling, ≥ 5 Feishu-only candidates
+appear in the enrich-sweep report.
+
+### [ ] Crustdata / Proxycurl / PDL integration (deferred)
+Tier 1 structured-people enrichment is blocked on a paid API key. Lucien
+can trigger this later by exporting `CRUSTDATA_API_KEY` and adding a
+`lib/crustdata.ts` alongside `lib/tavily.ts`. Until then, enrich-sweep
+flags high-mention candidates as `wants-tier1` in the report.
 
 ### [ ] Stage 4 finalize: archive v1 repo
 After 7 days of stable v2:

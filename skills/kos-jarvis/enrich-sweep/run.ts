@@ -1,0 +1,580 @@
+#!/usr/bin/env bun
+/**
+ * enrich-sweep/run.ts — primary G1 payoff: batch entity extraction
+ * across the whole brain, stub page creation, Tier 2 web augmentation.
+ *
+ * See ./SKILL.md for protocol, flags, and pre-flight checks.
+ *
+ * Usage:
+ *   bun run skills/kos-jarvis/enrich-sweep/run.ts --dry        # fastest sanity
+ *   bun run skills/kos-jarvis/enrich-sweep/run.ts --plan       # Haiku NER only
+ *   bun run skills/kos-jarvis/enrich-sweep/run.ts              # full live run
+ *
+ * Exit: 0 clean | 1 fatal pre-flight failure | 2 partial success
+ */
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import Anthropic from "@anthropic-ai/sdk";
+
+import { extractWithRetry, type Extraction, type EntityKind } from "./lib/ner.ts";
+import { tavilySearch, buildEntityQuery, condense } from "./lib/tavily.ts";
+import { chooseSlug, renderStub, writeStub, type StubInput, type Tier } from "./lib/stub.ts";
+
+// ─────────────────────────── config ───────────────────────────
+
+const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
+const REPORT_DIR = join(BRAIN, "agent", "reports");
+const LOCK_PATH = join(homedir(), ".cache", "kos-jarvis", "enrich-sweep.lock");
+const SHIM_HEALTH = process.env.KOS_EMBED_SHIM ?? "http://127.0.0.1:7222/health";
+
+type Flags = {
+  dry: boolean;
+  plan: boolean;
+  maxTier2: number;
+  minMentions: number;
+  onlyKind?: EntityKind;
+  limit?: number;
+  help: boolean;
+};
+
+function parseFlags(argv: string[]): Flags {
+  const f: Flags = { dry: false, plan: false, maxTier2: 30, minMentions: 2, help: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--dry") f.dry = true;
+    else if (a === "--plan") f.plan = true;
+    else if (a === "--max-tier2") f.maxTier2 = Number(argv[++i]);
+    else if (a === "--min-mentions") f.minMentions = Number(argv[++i]);
+    else if (a === "--kind") f.onlyKind = argv[++i] as EntityKind;
+    else if (a === "--limit") f.limit = Number(argv[++i]);
+    else if (a === "--help" || a === "-h") f.help = true;
+  }
+  return f;
+}
+
+function usage() {
+  console.log(`enrich-sweep — scan brain, extract entities, create stubs
+
+Flags:
+  --dry                 Plan only; no Haiku calls, no Tavily, no writes
+  --plan                Haiku NER + Tier decisions, no stub writes, no Tavily
+  --max-tier2 N         Cap Tavily calls (default 30)
+  --kind K              person | company | concept | project (single-kind mode)
+  --limit N             Process only first N source pages (smoke test)
+  --help                This message
+`);
+}
+
+// ─────────────────────────── pre-flight ───────────────────────────
+
+async function preflight(flags: Flags): Promise<string[]> {
+  const errors: string[] = [];
+
+  // Shim reachable (unless --dry)
+  if (!flags.dry) {
+    try {
+      const r = await fetch(SHIM_HEALTH, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!r.ok) errors.push(`embed shim returned HTTP ${r.status} at ${SHIM_HEALTH}`);
+    } catch (e) {
+      errors.push(`embed shim unreachable at ${SHIM_HEALTH}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // gbrain CLI
+  const r = spawnSync("gbrain", ["list", "--limit", "1"], { encoding: "utf-8" });
+  if (r.status !== 0) errors.push(`gbrain list failed: ${r.stderr}`);
+
+  // API keys
+  if (!flags.dry) {
+    if (!process.env.ANTHROPIC_API_KEY) errors.push("ANTHROPIC_API_KEY not set");
+  }
+  if (!flags.dry && !flags.plan && !process.env.TAVILY_API_KEY) {
+    console.warn("⚠ TAVILY_API_KEY not set — Tier 2 candidates will degrade to Tier 3 (brain-only)");
+  }
+
+  // Lock
+  if (existsSync(LOCK_PATH)) {
+    errors.push(`lock exists at ${LOCK_PATH} (another sweep running or crashed — delete to retry)`);
+  }
+
+  return errors;
+}
+
+function acquireLock() {
+  mkdirSync(dirname(LOCK_PATH), { recursive: true });
+  writeFileSync(LOCK_PATH, `${process.pid}\n${new Date().toISOString()}\n`);
+}
+
+function releaseLock() {
+  try {
+    if (existsSync(LOCK_PATH)) unlinkSync(LOCK_PATH);
+  } catch {
+    /* ignore */
+  }
+}
+
+// ─────────────────────────── gbrain wrappers ───────────────────────────
+
+type ListRow = { slug: string; type: string; updated: string; title: string };
+
+function gbrainList(): ListRow[] {
+  const r = spawnSync("gbrain", ["list", "--limit", "10000"], { encoding: "utf-8" });
+  if (r.status !== 0) throw new Error(`gbrain list failed: ${r.stderr}`);
+  return r.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      return {
+        slug: parts[0],
+        type: parts[1] ?? "",
+        updated: parts[2] ?? "",
+        title: parts.slice(3).join("\t") ?? "",
+      };
+    });
+}
+
+function gbrainGet(slug: string): string {
+  const r = spawnSync("gbrain", ["get", slug], { encoding: "utf-8" });
+  if (r.status !== 0) return "";
+  return r.stdout;
+}
+
+function parseKindFromFrontmatter(body: string): string | undefined {
+  const m = body.match(/^---\n([\s\S]*?)\n---/);
+  if (!m) return undefined;
+  const kind = m[1].match(/^kind:\s*(\S+)/m);
+  return kind?.[1];
+}
+
+function parseUpdatedFromFrontmatter(body: string): string | undefined {
+  const m = body.match(/^---\n([\s\S]*?)\n---/);
+  if (!m) return undefined;
+  const u = m[1].match(/^updated:\s*'?([0-9]{4}-[0-9]{2}-[0-9]{2})'?/m);
+  return u?.[1];
+}
+
+// ─────────────────────────── dedupe ───────────────────────────
+
+type Canonical = {
+  key: string;            // lowercase normalized key
+  name: string;           // display name
+  aliases: Set<string>;
+  kind: EntityKind;
+  mentions: Extraction[];
+};
+
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\bmr\.?|\bmrs\.?|\bdr\.?|\bprof\.?/g, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function dedupe(extractions: Extraction[]): Canonical[] {
+  const byKey = new Map<string, Canonical>();
+  for (const ex of extractions) {
+    const key = normalizeName(ex.name);
+    if (!key || key.length < 2) continue;
+    const kindKey = `${ex.kind}:${key}`;
+    let c = byKey.get(kindKey);
+    if (!c) {
+      c = { key, name: ex.name, aliases: new Set([ex.name]), kind: ex.kind, mentions: [] };
+      byKey.set(kindKey, c);
+    } else {
+      c.aliases.add(ex.name);
+      // Prefer the longer / capitalized variant as display name
+      if (ex.name.length > c.name.length || /[A-Z]/.test(ex.name)) c.name = ex.name;
+    }
+    c.mentions.push(ex);
+  }
+  return Array.from(byKey.values());
+}
+
+// ─────────────────────────── tier classification ───────────────────────────
+
+function classifyTier(c: Canonical): { tier: Tier; tier1_blocked: boolean } {
+  const count = c.mentions.length;
+  const sources = new Set(c.mentions.map((m) => m.source_slug));
+  const touchesDecision = [...sources].some(
+    (s) => s.includes("decision") || s.includes("meeting") || s.includes("protocol"),
+  );
+  if (count >= 8 || touchesDecision) {
+    // Wants Tier 1 but no Crustdata — degrade to Tier 2 processing
+    return { tier: 2, tier1_blocked: true };
+  }
+  if (count >= 3 && sources.size >= 2) {
+    return { tier: 2, tier1_blocked: false };
+  }
+  return { tier: 3, tier1_blocked: false };
+}
+
+// Documentation-file naming conventions masquerading as concepts
+const DOC_FILE_STOPWORDS = new Set([
+  "soul md", "soulmd", "skill md", "skillmd", "agents md", "agentsmd",
+  "memory md", "memorymd", "user md", "usermd", "claude md", "claudemd",
+  "todos md", "todosmd", "readme md", "readmemd", "plan md", "planmd",
+  "resolver md", "resolvermd", "prompt md", "promptmd",
+]);
+
+function mentionNoise(c: Canonical): boolean {
+  // Single mention with very short context = likely header noise
+  if (c.mentions.length === 1) {
+    const ctx = c.mentions[0].context.length;
+    if (ctx < 50) return true;
+  }
+  // Documentation filename conventions picked up as "concepts"
+  if (c.kind === "concept" && DOC_FILE_STOPWORDS.has(c.key)) return true;
+  // Raw markdown filename survivors from NER (e.g. "SOUL.md" → "soul md")
+  if (c.kind === "concept" && /\bmd$/.test(c.key) && c.key.length < 16) return true;
+  return false;
+}
+
+// ─────────────────────────── existence check ───────────────────────────
+
+function pageExists(slug: string, knownSlugs: Set<string>, knownAliasKeys: Map<string, string>, aliases: Set<string>): boolean {
+  if (knownSlugs.has(slug)) return true;
+  // Check aliases against existing slug basenames
+  for (const alias of aliases) {
+    const normKey = normalizeName(alias);
+    if (knownAliasKeys.has(normKey)) return true;
+  }
+  return false;
+}
+
+function buildAliasIndex(rows: ListRow[]): Map<string, string> {
+  // Map normalized_title → slug. Also index each individual token of
+  // multi-word titles (first names, company roots) so NER hits like
+  // "Lucien" match existing "lucien-chen" page.
+  const idx = new Map<string, string>();
+  const recordKey = (key: string, slug: string) => {
+    if (!key || key.length < 2) return;
+    if (!idx.has(key)) idx.set(key, slug);
+  };
+  for (const row of rows) {
+    const title = row.title || row.slug.split("/").pop() || row.slug;
+    recordKey(normalizeName(title), row.slug);
+
+    const slugBase = row.slug.split("/").pop()?.replace(/-/g, " ") ?? "";
+    recordKey(normalizeName(slugBase), row.slug);
+
+    // Index individual tokens of 2-3 word titles (persons, short orgs)
+    const tokens = normalizeName(title).split(/\s+/).filter(Boolean);
+    if (tokens.length >= 2 && tokens.length <= 3) {
+      for (const t of tokens) if (t.length >= 3) recordKey(t, row.slug);
+    }
+    const slugTokens = normalizeName(slugBase).split(/\s+/).filter(Boolean);
+    if (slugTokens.length >= 2 && slugTokens.length <= 3) {
+      for (const t of slugTokens) if (t.length >= 3) recordKey(t, row.slug);
+    }
+  }
+  return idx;
+}
+
+// ─────────────────────────── main ───────────────────────────
+
+type Summary = {
+  started: string;
+  finished: string;
+  flags: Flags;
+  total_pages: number;
+  extraction_errors: number;
+  total_extractions: number;
+  unique_entities: number;
+  pre_existing: number;
+  by_tier: Record<string, number>;
+  by_kind: Record<string, number>;
+  tavily_calls: number;
+  stubs_written: number;
+  stubs_failed: number;
+  tier1_blocked: string[];
+  created_slugs: string[];
+  failed_slugs: string[];
+};
+
+async function main() {
+  const flags = parseFlags(process.argv.slice(2));
+  if (flags.help) {
+    usage();
+    process.exit(0);
+  }
+
+  console.log(`=== enrich-sweep @ ${new Date().toISOString()} ===`);
+  console.log(`flags: ${JSON.stringify(flags)}`);
+
+  const errors = await preflight(flags);
+  if (errors.length > 0) {
+    console.error("\n✗ Pre-flight failed:");
+    errors.forEach((e) => console.error(`  - ${e}`));
+    process.exit(1);
+  }
+  console.log("✓ Pre-flight OK\n");
+
+  acquireLock();
+  process.on("exit", releaseLock);
+  process.on("SIGINT", () => {
+    releaseLock();
+    process.exit(130);
+  });
+
+  const summary: Summary = {
+    started: new Date().toISOString(),
+    finished: "",
+    flags,
+    total_pages: 0,
+    extraction_errors: 0,
+    total_extractions: 0,
+    unique_entities: 0,
+    pre_existing: 0,
+    by_tier: { "2": 0, "3": 0 },
+    by_kind: { person: 0, company: 0, concept: 0, project: 0 },
+    tavily_calls: 0,
+    stubs_written: 0,
+    stubs_failed: 0,
+    tier1_blocked: [],
+    created_slugs: [],
+    failed_slugs: [],
+  };
+
+  try {
+    // ── Phase A: collect ──
+    console.log("[A] Listing brain …");
+    let rows = gbrainList();
+    if (flags.limit) rows = rows.slice(0, flags.limit);
+    summary.total_pages = rows.length;
+    console.log(`    ${rows.length} pages`);
+
+    const knownSlugs = new Set(rows.map((r) => r.slug));
+    const aliasIndex = buildAliasIndex(rows);
+
+    const extractions: Extraction[] = [];
+    if (flags.dry) {
+      console.log("[A] --dry: skipping Haiku NER (would call Haiku for each page)");
+    } else {
+      const anthropic = new Anthropic();
+      let i = 0;
+      for (const row of rows) {
+        i++;
+        process.stdout.write(`\r[A] NER ${i}/${rows.length} ${row.slug.slice(0, 50).padEnd(50)}`);
+        const body = gbrainGet(row.slug);
+        if (!body.trim()) continue;
+        try {
+          const ex = await extractWithRetry(body, row.slug, anthropic);
+          extractions.push(...ex);
+        } catch (e) {
+          summary.extraction_errors++;
+          console.error(`\n    ! NER failed for ${row.slug}: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+      process.stdout.write("\n");
+    }
+    summary.total_extractions = extractions.length;
+    console.log(`[A] collected ${extractions.length} extractions (${summary.extraction_errors} errors)\n`);
+
+    // ── Phase B: dedupe ──
+    console.log("[B] Deduping …");
+    let canonicals = dedupe(extractions);
+    const preFilter = canonicals.length;
+    canonicals = canonicals.filter((c) => !mentionNoise(c));
+    canonicals = canonicals.filter((c) => c.mentions.length >= flags.minMentions);
+    if (flags.onlyKind) canonicals = canonicals.filter((c) => c.kind === flags.onlyKind);
+    summary.unique_entities = canonicals.length;
+    console.log(
+      `    ${canonicals.length} unique entities after dedupe ` +
+        `(${preFilter - canonicals.length} dropped: noise / below --min-mentions=${flags.minMentions})\n`,
+    );
+
+    // ── Phase C: existence check + tier ──
+    console.log("[C] Filtering existing + tiering …");
+    const newCandidates: Array<{ canonical: Canonical; tier: Tier; tier1_blocked: boolean; slug: string }> = [];
+    for (const c of canonicals) {
+      const slug = chooseSlug(c.name, c.kind);
+      if (pageExists(slug, knownSlugs, aliasIndex, c.aliases)) {
+        summary.pre_existing++;
+        continue;
+      }
+      const { tier, tier1_blocked } = classifyTier(c);
+      newCandidates.push({ canonical: c, tier, tier1_blocked, slug });
+      summary.by_tier[String(tier)]++;
+      summary.by_kind[c.kind]++;
+      if (tier1_blocked) summary.tier1_blocked.push(c.name);
+    }
+    console.log(
+      `    ${newCandidates.length} new stubs planned ` +
+        `(${summary.pre_existing} pre-existing, ` +
+        `tier2=${summary.by_tier["2"]}, tier3=${summary.by_tier["3"]})\n`,
+    );
+
+    // Early exit for dry or plan modes
+    if (flags.dry || flags.plan) {
+      console.log(`[${flags.dry ? "DRY" : "PLAN"}] Candidate preview (top 20 by mentions):`);
+      const preview = [...newCandidates]
+        .sort((a, b) => b.canonical.mentions.length - a.canonical.mentions.length)
+        .slice(0, 20);
+      for (const c of preview) {
+        console.log(
+          `  [${c.tier}${c.tier1_blocked ? "!" : " "}] ${c.canonical.kind.padEnd(7)} ${c.slug.padEnd(40)} ` +
+            `(${c.canonical.mentions.length} mentions, ${new Set(c.canonical.mentions.map((m) => m.source_slug)).size} sources)`,
+        );
+      }
+      summary.finished = new Date().toISOString();
+      writeReport(summary, newCandidates);
+      console.log(`\nReport written: ${reportPath()}`);
+      process.exit(0);
+    }
+
+    // ── Phase D: write stubs (with Tavily for Tier 2) ──
+    console.log("[D] Writing stubs …");
+    let tavilyBudget = flags.maxTier2;
+    for (const cand of newCandidates) {
+      let tavilyBlock: string | undefined;
+      if (cand.tier === 2 && tavilyBudget > 0 && (cand.canonical.kind === "person" || cand.canonical.kind === "company")) {
+        const q = buildEntityQuery(cand.canonical.name, cand.canonical.kind);
+        const result = await tavilySearch(q);
+        summary.tavily_calls++;
+        tavilyBudget--;
+        tavilyBlock = condense(result);
+      }
+
+      const firstMention = cand.canonical.mentions
+        .map((m) => parseUpdatedFromFrontmatter(gbrainGet(m.source_slug)))
+        .filter((x): x is string => !!x)
+        .sort()[0];
+
+      const input: StubInput = {
+        slug: cand.slug,
+        name: cand.canonical.name,
+        aliases: [...cand.canonical.aliases],
+        kind: cand.canonical.kind,
+        tier: cand.tier,
+        mention_count: cand.canonical.mentions.length,
+        source_slugs: [...new Set(cand.canonical.mentions.map((m) => m.source_slug))],
+        first_mention_date: firstMention,
+        tavily_block: tavilyBlock,
+        seed_context: cand.canonical.mentions[0]?.context ?? "",
+        tier1_blocked: cand.tier1_blocked,
+      };
+
+      const res = writeStub(input, false);
+      if (res.ok) {
+        summary.stubs_written++;
+        summary.created_slugs.push(cand.slug);
+        console.log(`  ✓ ${cand.slug} (tier ${cand.tier}${cand.tier1_blocked ? "*" : ""})`);
+      } else {
+        summary.stubs_failed++;
+        summary.failed_slugs.push(cand.slug);
+        console.error(`  ✗ ${cand.slug}: ${res.message}`);
+      }
+    }
+
+    // ── Phase E: report ──
+    summary.finished = new Date().toISOString();
+    writeReport(summary, newCandidates);
+    console.log(`\nReport: ${reportPath()}`);
+    console.log(
+      `Summary: ${summary.stubs_written} written, ${summary.stubs_failed} failed, ` +
+        `${summary.tavily_calls} Tavily calls`,
+    );
+
+    process.exit(summary.stubs_failed > 0 ? 2 : 0);
+  } finally {
+    releaseLock();
+  }
+}
+
+// ─────────────────────────── report ───────────────────────────
+
+function reportPath(): string {
+  const date = new Date().toISOString().slice(0, 10);
+  return join(REPORT_DIR, `enrich-sweep-${date}.md`);
+}
+
+function writeReport(
+  s: Summary,
+  candidates: Array<{ canonical: Canonical; tier: Tier; tier1_blocked: boolean; slug: string }>,
+) {
+  mkdirSync(REPORT_DIR, { recursive: true });
+  const date = new Date().toISOString().slice(0, 10);
+
+  const md: string[] = [
+    `# enrich-sweep — ${date}`,
+    "",
+    `Started: ${s.started}  `,
+    `Finished: ${s.finished}  `,
+    `Mode: ${s.flags.dry ? "DRY" : s.flags.plan ? "PLAN" : "LIVE"}`,
+    "",
+    "## Inventory",
+    `- Source pages scanned: ${s.total_pages}`,
+    `- Raw extractions: ${s.total_extractions}`,
+    `- Unique entities after dedupe: ${s.unique_entities}`,
+    `- Pre-existing entity pages skipped: ${s.pre_existing}`,
+    `- NER errors: ${s.extraction_errors}`,
+    "",
+    "## Tier distribution",
+    `- Tier 2 (Tavily-augmented): ${s.by_tier["2"]}`,
+    `- Tier 3 (brain-only): ${s.by_tier["3"]}`,
+    "",
+    "## Kind distribution",
+    `- person: ${s.by_kind.person}`,
+    `- company: ${s.by_kind.company}`,
+    `- concept: ${s.by_kind.concept}`,
+    `- project: ${s.by_kind.project}`,
+    "",
+    "## Stubs",
+    `- Written: ${s.stubs_written}`,
+    `- Failed: ${s.stubs_failed}`,
+    `- Tavily calls: ${s.tavily_calls}`,
+    "",
+    "### Created slugs",
+    ...(s.created_slugs.length > 0 ? s.created_slugs.map((x) => `- \`${x}\``) : ["_none_"]),
+    "",
+    "### Failed slugs",
+    ...(s.failed_slugs.length > 0 ? s.failed_slugs.map((x) => `- \`${x}\``) : ["_none_"]),
+    "",
+    "## Tier 1 blocked (wanted Tier 1, no Crustdata key)",
+    s.tier1_blocked.length > 0
+      ? s.tier1_blocked.map((n) => `- ${n}`).join("\n")
+      : "_none_",
+    "",
+    "## Candidate preview (top 30 by mentions)",
+    "",
+    "| Tier | Kind | Slug | Mentions | Sources |",
+    "|------|------|------|----------|---------|",
+    ...[...candidates]
+      .sort((a, b) => b.canonical.mentions.length - a.canonical.mentions.length)
+      .slice(0, 30)
+      .map(
+        (c) =>
+          `| ${c.tier}${c.tier1_blocked ? "*" : ""} | ${c.canonical.kind} | \`${c.slug}\` | ${c.canonical.mentions.length} | ${new Set(c.canonical.mentions.map((m) => m.source_slug)).size} |`,
+      ),
+    "",
+    "_`*` next to tier = wanted Tier 1, degraded due to missing Crustdata key._",
+    "",
+    "## Rollback",
+    "",
+    "```bash",
+    ...s.created_slugs.map((x) => `gbrain delete ${x}`),
+    "```",
+  ];
+
+  const path = reportPath();
+  writeFileSync(path, md.join("\n"), "utf-8");
+
+  // JSON sidecar for machine rollback
+  writeFileSync(path + ".json", JSON.stringify(s, null, 2), "utf-8");
+}
+
+main().catch((e) => {
+  console.error("FATAL:", e);
+  releaseLock();
+  process.exit(1);
+});

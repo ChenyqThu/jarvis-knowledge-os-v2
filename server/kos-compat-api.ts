@@ -127,50 +127,112 @@ async function handleQuery(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function handleIngest(req: IncomingMessage, res: ServerResponse) {
-  let body: { url?: string; slug?: string };
+  let body: {
+    url?: string;
+    slug?: string;
+    markdown?: string;
+    title?: string;
+    source?: string;
+    kind?: string;
+    tags?: string[];
+    notion_id?: string;
+  };
   try {
     body = JSON.parse((await readBody(req)) || "{}");
   } catch {
     return send(res, 400, { error: "invalid JSON" });
   }
+
   const url = body.url?.trim();
-  if (!url) return send(res, 400, { error: "url is required" });
-  const slug =
-    body.slug?.trim() ||
-    url
+  const markdown = body.markdown?.trim();
+
+  if (!url && !markdown) {
+    return send(res, 400, { error: "either url or markdown is required" });
+  }
+
+  // Slug resolution: explicit > derived from title > derived from URL > timestamped
+  const deriveSlug = (s: string) =>
+    s
       .replace(/^https?:\/\//, "")
       .replace(/[^a-z0-9]+/gi, "-")
       .toLowerCase()
+      .replace(/^-+|-+$/g, "")
       .slice(0, 80);
+  const slug =
+    body.slug?.trim() ||
+    (body.title ? deriveSlug(body.title) : undefined) ||
+    (url ? deriveSlug(url) : undefined) ||
+    `ingest-${Date.now()}`;
 
-  // Fetch URL → write staging .md → gbrain import
+  // Stage dir
   const stage = join(tmpdir(), `gbrain-ingest-${Date.now()}`);
   mkdirSync(stage, { recursive: true });
 
-  let fetched: string;
-  try {
-    const r = await fetch(url, {
-      headers: { "User-Agent": "kos-compat-api/1.0 (gbrain-ingest)" },
-    });
-    if (!r.ok) throw new Error(`fetch ${r.status}`);
-    fetched = await r.text();
-  } catch (e) {
-    return send(res, 502, { error: `failed to fetch url: ${String(e)}` });
-  }
-
-  // Minimal HTML strip — full opencli 79-platform routing handled by v1 during
-  // transition; Week 4 replaces this with a proper ingest-via-idea-ingest path.
-  const plain = fetched
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim()
-    .slice(0, 50_000);
-
   const today = new Date().toISOString().slice(0, 10);
-  const md = `---
+  const kind = body.kind?.trim() || "source";
+  const sourceRef =
+    body.source?.trim() || url || (body.notion_id ? `notion:${body.notion_id}` : "manual");
+  const extraTags = Array.isArray(body.tags) ? body.tags : [];
+  const tagList = ["ingest-via-compat-api", ...extraTags];
+
+  let md: string;
+
+  if (markdown) {
+    // Direct markdown path (Notion worker, ad-hoc TS payloads, etc.)
+    const hasFrontmatter = /^---\n[\s\S]*?\n---/.test(markdown);
+    if (hasFrontmatter) {
+      // Trust caller's frontmatter as-is; assume they know what they're doing
+      md = markdown.endsWith("\n") ? markdown : markdown + "\n";
+    } else {
+      const title = body.title?.trim() || slug;
+      md = `---
+id: ${kind}-${slug}
+kind: ${kind}
+status: draft
+created: '${today}'
+updated: '${today}'
+owners:
+  - jarvis
+confidence: low
+source_of_truth: raw
+source_refs:
+  - ${sourceRef}
+tags: [${tagList.join(", ")}]
+---
+
+# ${title}
+
+> Ingested via kos-compat-api /ingest (markdown payload) on ${today}.
+> Source: ${sourceRef}
+
+${markdown}
+`;
+    }
+  } else {
+    // URL fetch path (unchanged from v1)
+    let fetched: string;
+    try {
+      const r = await fetch(url!, {
+        headers: { "User-Agent": "kos-compat-api/1.0 (gbrain-ingest)" },
+      });
+      if (!r.ok) throw new Error(`fetch ${r.status}`);
+      fetched = await r.text();
+    } catch (e) {
+      return send(res, 502, { error: `failed to fetch url: ${String(e)}` });
+    }
+
+    // Minimal HTML strip — full opencli 79-platform routing handled by v1 during
+    // transition; Week 4 replaces this with a proper ingest-via-idea-ingest path.
+    const plain = fetched
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .slice(0, 50_000);
+
+    md = `---
 id: source-${slug}
 kind: source
 status: draft
@@ -182,7 +244,7 @@ confidence: low
 source_of_truth: raw
 source_refs:
   - ${url}
-tags: [ingest-via-compat-api]
+tags: [${tagList.join(", ")}]
 ---
 
 # ${slug}
@@ -192,6 +254,7 @@ tags: [ingest-via-compat-api]
 
 ${plain}
 `;
+  }
   const path = join(stage, `${slug}.md`);
   writeFileSync(path, md, "utf-8");
 
