@@ -92,3 +92,22 @@ These apply to ALL brain-writing skills:
 - `skills/conventions/brain-first.md` — check brain before external APIs
 - `skills/_brain-filing-rules.md` — where files go
 - `skills/_output-rules.md` — output quality standards
+
+## KOS-Jarvis extensions (fork-only, append-only)
+
+Lucien's KOS-flavored quality pack. See `skills/kos-jarvis/README.md`
+for boundary and upgrade policy.
+
+| Trigger | Skill |
+|---------|-------|
+| Post-ingest strong-link compilation, A/B/C/F grading | `skills/kos-jarvis/dikw-compile/SKILL.md` |
+| Evidence-level gate (E0-E4) for decision/protocol pages | `skills/kos-jarvis/evidence-gate/SKILL.md` |
+| Auto-score high/medium/low confidence + compile grade | `skills/kos-jarvis/confidence-score/SKILL.md` |
+| Six-check lint (frontmatter/dupes/dead-links/orphans/weak-links/evidence) | `skills/kos-jarvis/kos-lint/SKILL.md` |
+| Daily patrol + staleness + gap detection + MEMORY digest | `skills/kos-jarvis/kos-patrol/SKILL.md` |
+| Weekly push KOS digest → OpenClaw MEMORY.md 近期层 | `skills/kos-jarvis/digest-to-memory/SKILL.md` |
+| Notion → gbrain 5-min incremental sync | `skills/kos-jarvis/notion-ingest-delta/SKILL.md` |
+| OpenClaw 飞书 skill command-mapping (one-time migration) | `skills/kos-jarvis/feishu-bridge/SKILL.md` |
+
+These chain into upstream skills: dikw-compile runs after idea-ingest;
+kos-lint extends maintain; digest-to-memory reads patrol output.
