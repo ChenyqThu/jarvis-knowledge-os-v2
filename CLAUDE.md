@@ -1,5 +1,63 @@
 # CLAUDE.md
 
+## Jarvis KOS v2 fork — read first (Lucien's context)
+
+This repo is a **fork of `garrytan/gbrain`**, not a vanilla install. When
+working on this codebase, before touching anything else:
+
+1. Read [`skills/kos-jarvis/README.md`](skills/kos-jarvis/README.md) — the
+   fork-local extension pack boundary. **All Jarvis-specific logic lives
+   under `skills/kos-jarvis/`**. Never modify `src/*`, `skills/RESOLVER.md`
+   outside the `## KOS-Jarvis extensions` append-only section, or other
+   upstream `skills/*`. If you think you need to change upstream, file an
+   issue on the fork instead so we can evaluate whether it's worth the
+   merge-conflict tax.
+2. Read [`docs/JARVIS-ARCHITECTURE.md`](docs/JARVIS-ARCHITECTURE.md) — the
+   full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
+   current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
+   / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
+   operates ↔ OpenClaw executes).
+3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
+   outstanding work (P0/P1/P2). Check here before suggesting "what should
+   we do next?"
+
+### Fork-specific rules (override upstream behavior)
+
+- **Embeddings route through Gemini**, not OpenAI. GBrain's
+  `src/core/embedding.ts` hardcodes `new OpenAI()`; we bridge it with
+  `skills/kos-jarvis/gemini-embed-shim/server.ts` on port 7222 and point
+  `OPENAI_BASE_URL` there. If you touch the embedding path, the shim
+  must keep returning base64-encoded 1536-dim vectors (SDK default).
+- **Chinese-first knowledge base.** Pure tsvector keyword search has no
+  CJK tokenizer. Always ensure vector search is live (shim reachable,
+  `OPENAI_API_KEY` env set to stub) before declaring queries broken.
+- **9 KOS page kinds coexist with GBrain's 20-dir MECE.** KOS `kind`
+  frontmatter (source/entity/concept/project/decision/synthesis/comparison/
+  protocol/timeline) is preserved on every page; it drives kos-jarvis
+  quality gates (evidence threshold per kind) while GBrain's directory
+  placement follows upstream RESOLVER.md. Mapping lives in
+  `skills/kos-jarvis/type-mapping.md`.
+- **`kos.chenge.ink` is the stable external boundary.** External systems
+  (Notion Knowledge Agent, OpenClaw feishu cron) never talk to gbrain
+  directly — they hit the compat-api. If you change request/response
+  shape, update `skills/kos-jarvis/feishu-bridge/SKILL.md` with the new
+  mapping and notify Lucien.
+- **Secrets stay out of git.** `scripts/launchd/*.plist` is gitignored;
+  only `*.plist.template` is tracked. `.env.local` (contains
+  `NANO_BANANA_API_KEY`) is also gitignored.
+
+### Upstream sync policy
+
+- Cherry-pick `garrytan/gbrain:master` monthly.
+- Prefer minimal conflict: if upstream touches `skills/RESOLVER.md`, resolve
+  by keeping our `## KOS-Jarvis extensions` section at the end.
+- If upstream fundamentally changes `src/core/embedding.ts` (e.g. switches
+  away from OpenAI SDK), our shim strategy may need re-evaluation.
+
+---
+
+## Upstream GBrain context (below, unchanged)
+
 GBrain is a personal knowledge brain and GStack mod for agent platforms. Pluggable
 engines: PGLite (embedded Postgres via WASM, zero-config default) or Postgres + pgvector
 + hybrid search in a managed Supabase instance. `gbrain init` defaults to PGLite;

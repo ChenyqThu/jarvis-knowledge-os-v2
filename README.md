@@ -1,4 +1,34 @@
-# GBrain
+# Jarvis Knowledge OS v2 (GBrain fork)
+
+> **Fork of [`garrytan/gbrain`](https://github.com/garrytan/gbrain)** maintained by
+> Lucien Chen. Adds a KOS-flavored quality layer (DIKW compilation, evidence
+> levels E0-E4, confidence scoring, lint/patrol) on top of upstream GBrain, plus
+> a translation shim so Gemini embeddings drop in where OpenAI is hardcoded.
+> Powers Lucien's personal Jarvis across Notion, OpenClaw, and Feishu via a
+> stable `kos.chenge.ink` HTTP boundary.
+>
+> **What's different from upstream:**
+> - `skills/kos-jarvis/` — fork-local extension pack (8 skills + templates);
+>   upstream `skills/*` and `src/*` are untouched so we can `git merge upstream/master`
+>   with minimal conflict surface. See [`skills/kos-jarvis/README.md`](skills/kos-jarvis/README.md).
+> - `server/kos-compat-api.ts` — drop-in replacement for the KOS v1 `kos-api.py`
+>   HTTP contract (`/query /ingest /digest /status /health`); lets the existing
+>   Notion Knowledge Agent keep working after the cutover without redeploy.
+> - `scripts/launchd/` — templates for the two macOS services
+>   (`com.jarvis.gemini-embed-shim` on 7222, `com.jarvis.kos-compat-api` on 7220).
+> - Full migration history, architecture, and operational runbook live in
+>   [`docs/JARVIS-ARCHITECTURE.md`](docs/JARVIS-ARCHITECTURE.md).
+>
+> **When to read what:**
+> - Starting here? → this file for upstream GBrain basics, then
+>   `docs/JARVIS-ARCHITECTURE.md` for the Jarvis-specific overlay
+> - Working on the fork? → `CLAUDE.md` (Jarvis-specific agent directives are
+>   prepended to the upstream contract)
+> - Outstanding work? → [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md)
+
+---
+
+## Upstream GBrain (below)
 
 Your AI agent is smart but forgetful. GBrain gives it a brain.
 
