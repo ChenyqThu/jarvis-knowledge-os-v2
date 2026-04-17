@@ -195,13 +195,32 @@ ${plain}
   const path = join(stage, `${slug}.md`);
   writeFileSync(path, md, "utf-8");
 
-  const r = gbrain(["import", stage, "--no-embed"], 180_000);
-  send(res, r.code === 0 ? 200 : 500, {
-    imported: r.code === 0,
+  const importRes = gbrain(["import", stage, "--no-embed"], 180_000);
+  if (importRes.code !== 0) {
+    return send(res, 500, {
+      imported: false,
+      slug,
+      staged_at: path,
+      output: importRes.stdout,
+    });
+  }
+
+  // Auto-embed the new page so vector/semantic search works immediately.
+  // Requires OPENAI_BASE_URL (gemini shim) and OPENAI_API_KEY in env —
+  // provided by launchd plist. Non-fatal on failure: ingest still succeeds,
+  // page just lacks vectors until next `gbrain embed --stale`.
+  const embedRes = gbrain(["embed", slug], 120_000);
+  const embedded = embedRes.code === 0;
+
+  send(res, 200, {
+    imported: true,
+    embedded,
     slug,
     staged_at: path,
-    output: r.stdout,
-    next: "run `gbrain embed --stale` with OPENAI_API_KEY set; dikw-compile will recompile strong links",
+    output: importRes.stdout + (embedded ? "" : `\n[embed failed] ${embedRes.stdout}`),
+    next: embedded
+      ? "page is searchable via keyword + vector; dikw-compile recommended for strong-link network"
+      : "page imported but not embedded — retry `gbrain embed " + slug + "` manually",
   });
 }
 
