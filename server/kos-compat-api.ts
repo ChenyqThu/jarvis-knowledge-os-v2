@@ -74,7 +74,7 @@ function handleHealth(res: ServerResponse) {
 }
 
 function handleStatus(res: ServerResponse) {
-  const list = gbrain(["list", "-n", "10000"], 30_000);
+  const list = gbrain(["list", "--limit", "10000"], 30_000);
   if (list.code !== 0) return send(res, 500, list.stdout);
   const rows = list.stdout.trim().split("\n").filter(Boolean);
   const byType: Record<string, number> = {};
@@ -106,7 +106,7 @@ function handleDigest(res: ServerResponse, sinceDays: number) {
     // digest dir doesn't exist yet
   }
   // Fallback: live inventory summary
-  const list = gbrain(["list", "-n", "10000"], 30_000);
+  const list = gbrain(["list", "--limit", "10000"], 30_000);
   const rows = list.stdout.trim().split("\n").filter(Boolean);
   const text = `[knowledge-os] (live, since ${sinceDays}d): ${rows.length} pages in gbrain.
 Patrol digest file not found at ${DIGEST_DIR}. Run kos-patrol first.`;

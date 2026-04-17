@@ -28,7 +28,7 @@ function gbrain(args: string[]): string {
 
 function listAll(): ListRow[] {
   // gbrain list prints TSV: slug \t type \t updated \t title
-  const out = gbrain(["list", "-n", "10000"]);
+  const out = gbrain(["list", "--limit", "10000"]);
   return out
     .trim()
     .split("\n")
