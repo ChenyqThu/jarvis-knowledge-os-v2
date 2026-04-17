@@ -5,6 +5,8 @@ bin/
 .env
 .env.*
 !.env.*.example
+scripts/launchd/*.plist
+!scripts/launchd/*.plist.template
 .18a49dfd730ff378-00000000.bun-build
 .18a49f9dfb996f70-00000000.bun-build
 .gstack/
