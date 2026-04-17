@@ -10,10 +10,10 @@
  *   GET  /health                     → { status, brain }
  *
  * Auth: Authorization: Bearer <token> (KOS_API_TOKEN env, optional).
- * Port: KOS_API_PORT env (default 7720 to match old kos-api.py).
+ * Port: KOS_API_PORT env (default 7220 to match old kos-api.py).
  *
  * Usage:
- *   bun run server/kos-compat-api.ts --port 7720
+ *   bun run server/kos-compat-api.ts --port 7220
  *   KOS_API_TOKEN=secret bun run server/kos-compat-api.ts
  */
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
@@ -22,7 +22,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
-const PORT = Number(process.env.KOS_API_PORT ?? readFlag("--port") ?? 7720);
+const PORT = Number(process.env.KOS_API_PORT ?? readFlag("--port") ?? 7220);
 const TOKEN = process.env.KOS_API_TOKEN ?? "";
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
 const DIGEST_DIR = join(BRAIN, "agent", "digests");

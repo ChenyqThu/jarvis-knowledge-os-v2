@@ -29,11 +29,11 @@ for the external OpenClaw skill file. Apply once during Week 3.2 cutover.
 
 | KOS v1 command | GBrain replacement |
 |----------------|--------------------|
-| `kos ingest <url>` | `curl -X POST http://127.0.0.1:7720/ingest -H 'Content-Type: application/json' -d '{"url":"<url>"}'` |
+| `kos ingest <url>` | `curl -X POST http://127.0.0.1:7220/ingest -H 'Content-Type: application/json' -d '{"url":"<url>"}'` |
 | `kos ingest <url> --confirm` | same, then re-run with `--dikw-recompile` helper (TODO: add server flag) |
-| `kos query "<q>"` | `curl -X POST http://127.0.0.1:7720/query -H 'Content-Type: application/json' -d '{"question":"<q>"}'` |
-| `kos digest --since 7` | `curl http://127.0.0.1:7720/digest?since=7` |
-| `kos status` | `curl http://127.0.0.1:7720/status` |
+| `kos query "<q>"` | `curl -X POST http://127.0.0.1:7220/query -H 'Content-Type: application/json' -d '{"question":"<q>"}'` |
+| `kos digest --since 7` | `curl http://127.0.0.1:7220/digest?since=7` |
+| `kos status` | `curl http://127.0.0.1:7220/status` |
 | `kos lint` | `bun run ~/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/kos-lint/run.ts` |
 | `kos patrol` | `bun run ~/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/kos-patrol/run.ts` (once implemented) |
 
@@ -57,9 +57,9 @@ at the `v1-frozen` tag and still runs.
 
 ## Cutover checklist (Week 3.2)
 
-- [ ] Stop launchd service that runs the v1 kos-api.py (port 7720)
-- [ ] Start kos-compat-api.ts via launchd on 7720
-- [ ] Verify `curl http://127.0.0.1:7720/health` returns v2 engine marker
+- [ ] Stop launchd service that runs the v1 kos-api.py (port 7220)
+- [ ] Start kos-compat-api.ts via launchd on 7220
+- [ ] Verify `curl http://127.0.0.1:7220/health` returns v2 engine marker
 - [ ] Test Notion Knowledge Agent (no deploy needed, upstream URL unchanged)
 - [ ] Edit OpenClaw skill per mapping table above
 - [ ] Send a feishu test message containing a URL → verify ingest
