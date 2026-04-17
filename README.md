@@ -25,6 +25,9 @@
 > - Working on the fork? → `CLAUDE.md` (Jarvis-specific agent directives are
 >   prepended to the upstream contract)
 > - Outstanding work? → [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md)
+> - Post-migration roadmap (5 phases including Phase 3 enrich-sweep that
+>   delivers the primary "auto-extract people/company graph" goal) →
+>   [`docs/JARVIS-NEXT-STEPS.md`](docs/JARVIS-NEXT-STEPS.md)
 
 ---
 

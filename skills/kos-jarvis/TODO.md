@@ -67,6 +67,13 @@ take `{markdown, slug, source, notion_id}`.
 ### [ ] upstream kos-compat-api to accept `markdown` field
 See above. Small change in `server/kos-compat-api.ts`.
 
+### [ ] enrich-sweep on existing 85 pages (primary G1 payoff)
+Create `skills/kos-jarvis/enrich-sweep/` (SKILL.md + run.ts + report template)
+to surface every person/company mentioned in existing brain and auto-create
+stubs. See [`docs/JARVIS-NEXT-STEPS.md`](../../docs/JARVIS-NEXT-STEPS.md) §5
+for full algorithm, pre-flight checks, exit criteria. Planned for Phase 3
+of the post-migration roadmap.
+
 ### [ ] Stage 4 finalize: archive v1 repo
 After 7 days of stable v2:
 1. Push v1-frozen tag
