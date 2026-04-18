@@ -86,11 +86,13 @@ and report.template.md. Scaffolding dry-ran cleanly on 86 pages
 No Crustdata — Tier 1 candidates auto-degrade to Tier 2 (logged in report
 as `wants-tier1`).
 
-### [ ] pending-enrich queue consumer (v1.1 of enrich-sweep)
-enrich-sweep v1 scans the brain only. Add a v1.1 pass that also drains
-`~/brain/agent/pending-enrich.jsonl` before Phase B dedupe so Feishu-only
-mentions can create stubs even when not yet written into a source page.
-Gate on Phase 2 (Feishu signal-detector) actually producing queue entries.
+### [ ] pending-enrich queue consumer (v1.1 of enrich-sweep) — P1
+enrich-sweep v1 scans the brain only. Add a `--queue` flag that also
+drains `~/brain/agent/pending-enrich.jsonl` before Phase B dedupe so
+Feishu-only mentions can create stubs even when not yet written into a
+source page. Producer (Feishu signal-detector plugin) is live as of
+2026-04-17 per OpenClaw Jarvis acceptance report — queue is already
+writing, consumer just needs to land.
 
 ### [ ] Phase 2 Feishu signal-detector wiring (OpenClaw side)
 Not a v2-repo task — executed by Lucien in `~/.openclaw/workspace/` per

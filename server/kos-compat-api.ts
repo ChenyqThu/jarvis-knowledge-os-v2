@@ -20,7 +20,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const PORT = Number(process.env.KOS_API_PORT ?? readFlag("--port") ?? 7220);
 const TOKEN = process.env.KOS_API_TOKEN ?? "";
@@ -256,6 +256,7 @@ ${plain}
 `;
   }
   const path = join(stage, `${slug}.md`);
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, md, "utf-8");
 
   const importRes = gbrain(["import", stage, "--no-embed"], 180_000);

@@ -85,6 +85,14 @@ type NotionPage = {
   archived: boolean;
 };
 
+// Properties whose value is auto-derived and rarely informative for retrieval.
+const BORING_PROPS = new Set([
+  "created_time",
+  "created_by",
+  "last_edited_time",
+  "last_edited_by",
+]);
+
 async function queryDatabase(dbId: string, since: string | null): Promise<NotionPage[]> {
   const pages: NotionPage[] = [];
   let cursor: string | undefined;
@@ -136,6 +144,91 @@ function extractTitle(page: NotionPage): string {
     }
   }
   return "(untitled)";
+}
+
+// ── properties → markdown + frontmatter hints ──
+
+function propValueToStr(prop: any): string {
+  if (!prop) return "";
+  const type = prop.type;
+  const v = prop[type];
+  if (v === null || v === undefined) return "";
+  switch (type) {
+    case "title":
+    case "rich_text":
+      if (!Array.isArray(v)) return "";
+      return v.map((rt: any) => rt.plain_text ?? "").join("").trim();
+    case "number":
+      return typeof v === "number" ? String(v) : "";
+    case "select":
+      return v?.name ?? "";
+    case "multi_select":
+      return Array.isArray(v) ? v.map((s: any) => s.name).filter(Boolean).join(", ") : "";
+    case "status":
+      return v?.name ?? "";
+    case "date": {
+      if (!v?.start) return "";
+      return v.end ? `${v.start} → ${v.end}` : v.start;
+    }
+    case "people":
+      return Array.isArray(v) ? v.map((p: any) => p.name ?? p.id).filter(Boolean).join(", ") : "";
+    case "files":
+      return Array.isArray(v) ? v.map((f: any) => f.name ?? "(unnamed file)").join(", ") : "";
+    case "checkbox":
+      return v === true ? "yes" : v === false ? "no" : "";
+    case "url":
+    case "email":
+    case "phone_number":
+      return typeof v === "string" ? v : "";
+    case "formula":
+      return propValueToStr({ type: v.type, [v.type]: v[v.type] });
+    case "rollup":
+      if (v.type === "array" && Array.isArray(v.array)) {
+        return v.array.map((item: any) => propValueToStr(item)).filter(Boolean).join(", ");
+      }
+      return propValueToStr({ type: v.type, [v.type]: v[v.type] });
+    case "relation":
+      return Array.isArray(v) && v.length > 0 ? `[${v.length} related]` : "";
+    case "unique_id":
+      return v ? `${v.prefix ?? ""}${v.number}` : "";
+    case "created_time":
+    case "last_edited_time":
+      return typeof v === "string" ? v : "";
+    case "created_by":
+    case "last_edited_by":
+      return v?.name ?? "";
+    default:
+      return "";
+  }
+}
+
+type PropBundle = {
+  body: string;           // "## Properties\n- Key: value\n..." or ""
+  notion_date?: string;   // first Date-typed value, for frontmatter
+  notion_status?: string; // first select/status, for frontmatter
+  notion_url?: string;    // first URL-typed value
+  meaningful_count: number;
+};
+
+function extractProperties(page: NotionPage): PropBundle {
+  const lines: string[] = [];
+  const out: PropBundle = { body: "", meaningful_count: 0 };
+
+  for (const [name, prop] of Object.entries(page.properties ?? {})) {
+    const type = (prop as any)?.type;
+    if (!type || type === "title") continue; // title already used
+    if (BORING_PROPS.has(type)) continue;
+    const val = propValueToStr(prop);
+    if (!val) continue;
+    lines.push(`- **${name}**: ${val}`);
+    out.meaningful_count++;
+    // Capture first-of-kind for frontmatter
+    if (!out.notion_date && type === "date") out.notion_date = val;
+    if (!out.notion_status && (type === "select" || type === "status")) out.notion_status = val;
+    if (!out.notion_url && type === "url") out.notion_url = val;
+  }
+  if (lines.length > 0) out.body = `## Properties\n\n${lines.join("\n")}\n`;
+  return out;
 }
 
 // ── block → markdown ──
@@ -253,7 +346,8 @@ function slugify(s: string): string {
     .trim()
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
-    .slice(0, 80) || `notion-${Date.now()}`;
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "untitled"; // id suffix provides uniqueness; fallback is deterministic
 }
 
 // ── ingest ──
@@ -263,7 +357,7 @@ async function ingest(payload: {
   markdown: string;
   notion_id: string;
   source: string;
-  slug: string;
+  slug: string;            // already prefixed with sources/notion/
 }): Promise<string> {
   const url = `${KOS_API_BASE}/ingest`;
   const r = await fetch(url, {
@@ -275,7 +369,7 @@ async function ingest(payload: {
     body: JSON.stringify({
       markdown: payload.markdown,
       title: payload.title,
-      slug: `notion/${payload.slug}`,
+      slug: payload.slug,
       kind: "source",
       source: payload.source,
       notion_id: payload.notion_id,
@@ -305,6 +399,7 @@ async function main() {
   const state = loadState();
   let totalSeen = 0;
   let totalIngested = 0;
+  let totalSkipped = 0;
 
   for (const dbId of DB_IDS) {
     console.log(`\n[DB ${dbId.slice(0, 8)}…]`);
@@ -325,20 +420,52 @@ async function main() {
 
     let newest = since;
     let ingested = 0;
+    let skipped = 0;
     for (const page of pages) {
       if (page.archived) continue;
       if (since && page.last_edited_time <= since) continue;
 
       const title = extractTitle(page);
-      const slug = slugify(title);
+      const notionRef = page.id.replace(/-/g, ""); // 32 hex chars, globally unique
+      // Use the full 32-char id as suffix. 8 chars collided (UUID v1-ish prefixes
+      // are shared within a DB); 12 chars still too risky. Full id is bulletproof.
+      const slug = `sources/notion/${slugify(title)}-${notionRef}`;
       console.log(`    • ${page.id.slice(0, 8)} ${title.slice(0, 60)}`);
+      let pageOk = false;
       if (DRY) {
         ingested++;
+        pageOk = true;
       } else {
         try {
+          const props = extractProperties(page);
           const blocks = await fetchChildren(page.id);
-          const md = await blocksToMarkdown(blocks);
-          const notionRef = page.id.replace(/-/g, "");
+          const bodyMd = await blocksToMarkdown(blocks);
+          const hasBody = bodyMd.trim().length > 0;
+
+          // Skip truly empty pages: no children + no meaningful properties.
+          if (!hasBody && props.meaningful_count === 0) {
+            skipped++;
+            console.log(`      – skip (empty: 0 blocks, 0 props)`);
+            pageOk = true; // advance cursor so we don't retry forever
+            if (!newest || page.last_edited_time > newest) newest = page.last_edited_time;
+            continue;
+          }
+
+          // Build markdown with a Properties section (if any) + body blocks.
+          const sections: string[] = [];
+          const fmHints: string[] = [];
+          if (props.notion_date) fmHints.push(`notion_date: '${props.notion_date}'`);
+          if (props.notion_status) fmHints.push(`notion_status: ${JSON.stringify(props.notion_status)}`);
+          fmHints.push(`notion_url: ${page.url}`);
+
+          // Caller provides no frontmatter → kos-compat-api adds its default one.
+          // We embed notion-specific hints as a visible HTML comment so they survive
+          // and can be grepped without competing with the default frontmatter.
+          sections.push(`<!-- notion-metadata\n${fmHints.join("\n")}\n-->`);
+          if (props.body) sections.push(props.body);
+          if (hasBody) sections.push(bodyMd);
+          const md = sections.join("\n\n");
+
           await ingest({
             title,
             markdown: md,
@@ -347,20 +474,25 @@ async function main() {
             slug,
           });
           ingested++;
+          pageOk = true;
         } catch (e) {
           console.error(`      ✗ ingest failed: ${e instanceof Error ? e.message : e}`);
         }
       }
-      if (!newest || page.last_edited_time > newest) newest = page.last_edited_time;
+      // Advance cursor ONLY on success so failed pages get retried next run.
+      if (pageOk && (!newest || page.last_edited_time > newest)) newest = page.last_edited_time;
     }
     totalIngested += ingested;
-    console.log(`  ${ingested} ingested${DRY ? " (dry)" : ""}`);
+    totalSkipped += skipped;
+    console.log(`  ${ingested} ingested, ${skipped} skipped (empty)${DRY ? " (dry)" : ""}`);
     if (!DRY && newest) state[dbId] = { last_edited_time: newest };
   }
 
   if (!DRY) saveState(state);
 
-  console.log(`\nSummary: ${DB_IDS.length} DBs, ${totalSeen} pages seen, ${totalIngested} ingested${DRY ? " (dry)" : ""}`);
+  console.log(
+    `\nSummary: ${DB_IDS.length} DBs, ${totalSeen} seen, ${totalIngested} ingested, ${totalSkipped} skipped${DRY ? " (dry)" : ""}`,
+  );
 }
 
 main().catch((e) => {
