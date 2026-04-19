@@ -19,7 +19,7 @@ export type Extraction = {
   source_slug: string;
 };
 
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = process.env.KOS_NER_MODEL ?? "claude-haiku-4-5-20251001";
 const MAX_CHARS = 50_000;
 
 const SYSTEM_PROMPT = `You extract named entities from knowledge-base pages.
