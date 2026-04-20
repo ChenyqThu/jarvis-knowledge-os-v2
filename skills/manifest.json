@@ -143,6 +143,56 @@
       "name": "skillpack-check",
       "path": "skillpack-check/SKILL.md",
       "description": "Agent-readable gbrain health report. Wraps doctor + apply-migrations --list into one JSON blob with exit codes. Cron-friendly for morning-briefing pipelines."
+    },
+    {
+      "name": "kos-jarvis/dikw-compile",
+      "path": "kos-jarvis/dikw-compile/SKILL.md",
+      "description": "Post-ingest strong-link compilation with A/B/C/F grading. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/evidence-gate",
+      "path": "kos-jarvis/evidence-gate/SKILL.md",
+      "description": "Evidence-level gate (E0-E4) for decision/protocol pages. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/confidence-score",
+      "path": "kos-jarvis/confidence-score/SKILL.md",
+      "description": "Auto-score high/medium/low confidence plus compile grade. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/kos-lint",
+      "path": "kos-jarvis/kos-lint/SKILL.md",
+      "description": "Six-check lint: frontmatter, dupes, dead-links, orphans, weak-links, evidence. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/kos-patrol",
+      "path": "kos-jarvis/kos-patrol/SKILL.md",
+      "description": "Daily patrol with staleness, gap detection, and MEMORY digest. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/digest-to-memory",
+      "path": "kos-jarvis/digest-to-memory/SKILL.md",
+      "description": "Weekly push KOS digest to OpenClaw MEMORY.md recent layer. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/notion-ingest-delta",
+      "path": "kos-jarvis/notion-ingest-delta/SKILL.md",
+      "description": "Notion to gbrain 5-minute incremental sync. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/feishu-bridge",
+      "path": "kos-jarvis/feishu-bridge/SKILL.md",
+      "description": "OpenClaw Feishu skill command mapping (one-time migration). KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/enrich-sweep",
+      "path": "kos-jarvis/enrich-sweep/SKILL.md",
+      "description": "Batch scan brain, extract entities, create people/company stubs. KOS-Jarvis fork extension."
+    },
+    {
+      "name": "kos-jarvis/pending-enrich",
+      "path": "kos-jarvis/pending-enrich/SKILL.md",
+      "description": "JSONL queue format for Feishu ambient entity mentions. KOS-Jarvis fork extension."
     }
   ],
   "dependencies": {
