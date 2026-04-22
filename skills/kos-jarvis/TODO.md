@@ -50,11 +50,68 @@ slugs.
 likely an unescaped multi-line value or missing quotes on the id field.
 Re-emit affected pages after fix.
 
+### [ ] upstream v0.13.0 orchestrator bug — `doctor` stuck on "partial" — 2026-04-22
+Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332).
+`src/commands/migrations/v0_13_0.ts:44` uses `process.execPath` for the
+gbrain binary — works on compiled-binary installs, but on our bun-runtime
+symlink install (`~/.bun/bin/gbrain -> src/cli.ts`) it resolves to `bun`,
+so the migration's `frontmatter_backfill` phase tries to run `bun extract`
+instead of `gbrain extract`, fails with "Script not found", and silently
+runs `bun init` as a side effect (pollutes package.json with `private:true`
++ typescript peerDep, creates `.cursor/rules/`).
+
+**Workaround applied today**: manually ran `gbrain extract links --source db
+--include-frontmatter` (170 frontmatter links extracted), reverted package.json
++ deleted `.cursor/`. Migration ledger still says `partial`, so `gbrain doctor`
+will permanently warn `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`
+until upstream fixes it or we patch locally.
+
+**Cost of leaving broken**: cosmetic. Doctor health_score drops; actual data
+is correct (frontmatter-link graph is wired). Don't patch `src/*` locally
+per fork policy (CLAUDE.md) unless upstream stalls.
+
 ### [ ] kos-compat-api `/ingest` HTTP 500 on some Notion pages
 Seen on `password-hashing-on-omada`. Error body truncated in shell-job
 stderr_tail. Reproduce with `curl ... /ingest` using the offending payload
 and read `gbrain import` error path.
 
+### [ ] notion-poller minion wrapper deadlocks on PGLite lock — 2026-04-22
+**Why**: `scripts/minions-wrap/notion-poller.sh` calls
+`gbrain jobs submit shell --follow` to queue + inline-execute the Notion
+delta sync. The inner shell command runs `workers/notion-poller/run.ts`,
+which HTTP-POSTs `/ingest` to `kos-compat-api` (:7220), which in turn
+`spawnSync("gbrain import", ...)` — a subprocess that wants the PGLite
+lock. But the outer `gbrain jobs submit --follow` process still holds
+that lock. Result: every ingest inside a poll cycle times out after 30s,
+the whole job hangs, and launchd gets stuck on a lease it won't release
+until the 10-minute job timeout hits. Triggered today during the v0.15.1
+sync; had to kill PID 22471 by hand to unwedge the CLI.
+
+**What** (pick one, not yet decided):
+1. **Drop `--follow`** from `scripts/minions-wrap/*.sh` and run a
+   `gbrain jobs work --queue notion,kos-patrol,enrich,lint` worker as
+   its own launchd service that starts before any poller. But PGLite's
+   single-writer lock means the worker itself becomes a serialization
+   point — any CLI `gbrain list` / `/ingest` / `/query` spawn blocks
+   while a job is active.
+2. **Retire minion wrappers for any job that calls back into
+   kos-compat-api or gbrain CLI.** Keep them for leaf work only
+   (e.g. `kos-deep-lint`, `kos-patrol` that only `gbrain list` + write
+   markdown). Put `notion-poller` back as a direct launchd job (pre-
+   minions-wrap design), since retry / timeout / audit can also be
+   solved at the poller level.
+3. **Refactor kos-compat-api to stop spawning `gbrain` subprocesses**
+   and run the import in-process. Removes the lock-contention root
+   cause across the board. Bigger refactor; unblocks future async work.
+
+**Acceptance**: `launchctl load com.jarvis.notion-poller` can run on a
+5-min cron for 24 h with zero wedged jobs; `gbrain stats` and `/query`
+stay responsive throughout; no manual kill required.
+
+**Cost of leaving broken**: `com.jarvis.notion-poller` stays unloaded
+(currently `Disabled=1`). Notion pages only land via manual
+`/ingest` call or explicit poller run. Feishu / Notion Knowledge Agent /
+kos.chenge.ink `/query` path is unaffected.
 
 ### [x] kos-patrol/run.ts (TypeScript helper) — 2026-04-17
 Landed as part of the Phase 2+3 wave. Runs six-phase protocol (inventory,
