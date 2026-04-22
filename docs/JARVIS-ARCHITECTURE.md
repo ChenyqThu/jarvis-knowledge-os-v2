@@ -80,8 +80,9 @@ two-sync Notion Worker idiom, and compounding signal-detector loop.
              │     gemini-embedding-2-preview │
              │            (1536 dim)          │
              ├────────────────────────────────┤
-             │  com.jarvis.kos-deep-lint      │ ← still lints v1 archive
-             │     (7-day observation)        │   (scheduled to retire)
+             │  com.jarvis.kos-deep-lint      │ ← cron-driven KOS lint
+             │  com.jarvis.enrich-sweep       │ ← cron-driven entity enrichment
+             │  com.jarvis.notion-poller      │ ← 5-min direct bun invocation (Path B)
              └────────────────────────────────┘
                               │
                               ▼
@@ -122,7 +123,7 @@ append-only `## KOS-Jarvis extensions` section at the end of `skills/RESOLVER.md
 | `evidence-gate` | Block claims below threshold (decision E3+, synthesis E2+, concept E2+, ...) | Not yet (TODO P1) |
 | `confidence-score` | Auto-score high/medium/low per page; compile-grade per ingest | Not yet (TODO P1) |
 | `kos-lint` | Six-check lint (frontmatter / duplicate id / dead links / orphans / weak links / evidence gaps) | ✅ `run.ts` |
-| `kos-patrol` | Daily sweep → dashboard + MEMORY-format digest | ⚠️ SKILL.md only (P0 TODO) |
+| `kos-patrol` | Daily sweep → dashboard + MEMORY-format digest | ✅ `run.ts` (6-phase protocol; writes `~/brain/agent/dashboards/knowledge-health-<date>.md`) |
 | `digest-to-memory` | Append weekly `[knowledge-os]` block to OpenClaw MEMORY.md | ✅ `run.ts` |
 | `notion-ingest-delta` | Notion-side backfill + delta sync design | Design only (to be implemented in kos-worker repo) |
 | `feishu-bridge` | Command-mapping manifest for OpenClaw feishu skill one-time edit | ✅ applied 2026-04-17 |
@@ -155,11 +156,12 @@ when request omits or chooses base64 encoding (commit 1b02162).
 
 ### Verify health at any time
 ```bash
-TOKEN=$(grep KOS_API_TOKEN ~/Library/LaunchAgents/com.jarvis.kos-api.plist \
-  | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -1)
+TOKEN=$(grep -o '[a-f0-9]\{64\}' ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist | head -1)
 
 curl -s -H "Authorization: Bearer $TOKEN" https://kos.chenge.ink/status | jq .
-# expect: total_pages >= 85, engine = "gbrain (pglite)"
+# expect: total_pages grows over time (1779+ as of 2026-04-22 v0.17 sync), engine = "gbrain (pglite)"
+# NOTE: /status scans /Users/chenyuanquan/brain/*.md filesystem mirror (~100 files).
+# The real DB page count lives in `gbrain stats` (1779 post-sync), not /status.
 
 curl -s http://127.0.0.1:7222/health | jq .
 # expect: upstream=gemini, model=gemini-embedding-2-preview
