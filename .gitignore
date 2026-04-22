@@ -7,8 +7,9 @@ bin/
 !.env.*.example
 scripts/launchd/*.plist
 !scripts/launchd/*.plist.template
-.18a49dfd730ff378-00000000.bun-build
-.18a49f9dfb996f70-00000000.bun-build
+# Bun --compile temp artifacts. Each build emits a new hash-named .bun-build
+# file in cwd; glob catches all of them.
+*.bun-build
 .gstack/
 supabase/.temp/
 .claude/skills/
