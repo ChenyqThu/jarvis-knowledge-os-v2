@@ -122,8 +122,86 @@ async function handleQuery(req: IncomingMessage, res: ServerResponse) {
   }
   const q = body.question?.trim();
   if (!q) return send(res, 400, { error: "question is required" });
+
+  // Phase 1 — retrieval
   const r = gbrain(["ask", q, "--no-expand"], 120_000);
-  send(res, r.code === 0 ? 200 : 500, r.stdout);
+  if (r.code !== 0) return send(res, 500, r.stdout);
+
+  // Phase 2 — LLM synthesis (matches v1 Python kos-api contract; consumers
+  // like Notion Knowledge Agent and feishu-bridge expect a prose answer,
+  // not raw ranked chunks)
+  const answer = await synthesizeAnswer(q, r.stdout);
+  const out = `=== KOS Query ===
+Q: ${q}
+
+Phase 1: Retrieval
+${r.stdout.trim()}
+
+Phase 2: Synthesize (LLM)
+
+─── Answer ───
+${answer}
+──────────────
+`;
+  send(res, 200, out);
+}
+
+async function synthesizeAnswer(q: string, retrieval: string): Promise<string> {
+  const apiBase = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com";
+  const apiKey =
+    process.env.ANTHROPIC_API_KEY ??
+    process.env.ANTHROPIC_AUTH_TOKEN ??
+    "";
+  if (!apiKey) {
+    return `[synthesis skipped: ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN not set in kos-compat-api environment]`;
+  }
+  const model = process.env.KOS_LLM_MODEL_QUERY ?? "claude-sonnet-4-6";
+  const maxTokens = Number(process.env.KOS_LLM_MAX_TOKENS_QUERY ?? "4096");
+  const ctx = retrieval.length > 30000 ? retrieval.slice(0, 30000) : retrieval;
+
+  const system = `基于下方 wiki 检索片段回答用户问题。
+严格要求：
+1. 直接输出中文答案正文，不要 YAML/JSON 元数据块
+2. 不要输出 <file_read> 或其他工具调用标签
+3. 引用来源时用 wiki 路径（例如 sources/... 或 concepts/...）
+4. 若检索片段不足以回答，明确说明缺少什么；不要编造`;
+
+  try {
+    const resp = await fetch(`${apiBase.replace(/\/$/, "")}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "User-Agent": "kos-compat-api/1.0",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        system,
+        messages: [
+          {
+            role: "user",
+            content: `问题：${q}\n\n检索到的 wiki 片段：\n\n${ctx}`,
+          },
+        ],
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      return `ERROR: LLM 调用失败 (HTTP ${resp.status}): ${err.slice(0, 300)}`;
+    }
+    const data = (await resp.json()) as {
+      content?: Array<{ type: string; text?: string }>;
+    };
+    const text = (data.content ?? [])
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text!)
+      .join("\n");
+    return text.trim() || "ERROR: empty LLM response";
+  } catch (e) {
+    return `ERROR: LLM fetch exception: ${String(e).slice(0, 300)}`;
+  }
 }
 
 async function handleIngest(req: IncomingMessage, res: ServerResponse) {
@@ -186,7 +264,7 @@ async function handleIngest(req: IncomingMessage, res: ServerResponse) {
     } else {
       const title = body.title?.trim() || slug;
       md = `---
-id: ${kind}-${slug}
+id: '${kind}-${slug}'
 kind: ${kind}
 status: draft
 created: '${today}'
@@ -233,7 +311,7 @@ ${markdown}
       .slice(0, 50_000);
 
     md = `---
-id: source-${slug}
+id: 'source-${slug}'
 kind: source
 status: draft
 created: '${today}'

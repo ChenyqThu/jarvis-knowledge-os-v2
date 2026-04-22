@@ -5,6 +5,57 @@
 
 ## P0 — blocking full autonomy
 
+### [x] v1 wiki migration into v2 PGLite brain — 2026-04-20
+85 pages imported via `gbrain import` in 25.4 s (91 chunks, 0 errors).
+Port swap complete: v2 bun `kos-compat-api` now owns :7220 (production);
+v1 Python `kos-api.py` unloaded (plist bak retained). `kos.chenge.ink`
+tunnel verified end-to-end through 5 Chinese queries with LLM synthesis
+via new `synthesizeAnswer()` in `server/kos-compat-api.ts`.
+
+### ~~[ ] v1 wiki migration into v2 PGLite brain~~
+**Why**: Production `kos.chenge.ink` is still served by v1 Python
+`kos-api.py` on :7220 because v2 PGLite has only Notion-sourced pages (no
+wiki). Cutting the tunnel over today would strand 85 wiki pages and break
+Notion Knowledge Agent + feishu-bridge queries.
+
+**What**:
+1. `gbrain import /Users/chenyuanquan/Projects/jarvis-knowledge-os/knowledge/wiki/`
+   into `~/.gbrain/brain.pglite`
+2. Verify Chinese retrieval 5/5 with regression prompts
+3. Swap `com.jarvis.kos-api.plist` (v1 python :7220) with
+   `com.jarvis.kos-compat-api.plist` (v2 bun :7220) — requires repointing
+   kos-compat-api from staging :7221 back to :7220 and unloading v1
+4. Confirm `kos.chenge.ink /query` hits v2 code path
+
+**Acceptance**: `kos.chenge.ink` query returns v2-synthesized answer with
+citation paths that resolve inside PGLite; notion-poller's own ingest
+continues to land without port changes.
+
+### [x] Notion poller frontmatter `id: ">-"` bug — 2026-04-20
+Two-layer fix: `server/kos-compat-api.ts` now single-quotes the id field
+on emission (`id: '${kind}-${slug}'`); `skills/kos-jarvis/kos-lint/run.ts`
+`parseFrontmatter` now handles YAML block-scalar forms (`>`, `>-`, `|`,
+`|-`). kos-lint drops from 1 ERROR (22 slugs listed) to 0 ERROR / 0 WARN
+on 41 pages. 22 pre-fix Notion pages still carry the ugly frontmatter on
+disk; will re-ingest on the next Notion edit cycle or via a bulk delete +
+backfill.
+
+### ~~[ ] Notion poller frontmatter `id: ">-"` bug~~
+**Why**: All 22+ Notion-sourced pages in v2 brain have malformed YAML
+`id: ">-"` (block-scalar indicator instead of a string). `kos-lint --check 2`
+fires on every run with one giant "duplicate id" error listing all affected
+slugs.
+
+**What**: fix `workers/notion-poller/run.ts` frontmatter serialization —
+likely an unescaped multi-line value or missing quotes on the id field.
+Re-emit affected pages after fix.
+
+### [ ] kos-compat-api `/ingest` HTTP 500 on some Notion pages
+Seen on `password-hashing-on-omada`. Error body truncated in shell-job
+stderr_tail. Reproduce with `curl ... /ingest` using the offending payload
+and read `gbrain import` error path.
+
+
 ### [x] kos-patrol/run.ts (TypeScript helper) — 2026-04-17
 Landed as part of the Phase 2+3 wave. Runs six-phase protocol (inventory,
 lint delegation, staleness, gap detection, dashboard, digest). First-pass
@@ -62,6 +113,21 @@ Ditto.
 
 ## P2 — ecosystem wiring
 
+### [ ] Evaluate 3072-dim Gemini embeddings vs current 1536-dim
+`skills/kos-jarvis/gemini-embed-shim/` truncates Gemini's native 3072-dim
+output to 1536 (OpenAI SDK default for text-embedding-3-large). Gemini's
+native dim is 3072; truncation loses signal. Worth measuring retrieval
+gain on the 39-page brain before committing to a full reindex.
+**What**: A/B run identical retrieval queries at 1536 vs 3072. If win
+>5 % precision@5, reindex + update pgvector index.
+
+### [ ] Evaluate BrainWriter `strict_mode=strict` flip
+Upstream policy requires 7-day observational soak before flipping strict.
+`writer.lint_on_put_page=true` as of 2026-04-20. Review
+`~/.gbrain/validator-lint.jsonl` after 2026-04-27; if zero false positives
+on KOS pages, flip.
+
+
 ### [ ] notionToBrain sync in kos-worker (src/index.ts)
 `skills/kos-jarvis/notion-ingest-delta/SKILL.md` describes the contract.
 Actual @notionhq/workers `backfill + delta` sync pair still needs to be
@@ -72,8 +138,11 @@ not this fork). Delta schedule 5m.
 in addition to `url` (currently only URL fetch path). Extend endpoint to
 take `{markdown, slug, source, notion_id}`.
 
-### [ ] upstream kos-compat-api to accept `markdown` field
-See above. Small change in `server/kos-compat-api.ts`.
+### [x] upstream kos-compat-api to accept `markdown` field — 2026-04-20
+`handleIngest` now accepts both `url` and `markdown` payloads
+(`server/kos-compat-api.ts`). Verified via Notion poller end-to-end:
+38 pages ingested through the `{markdown, title, source, notion_id, kind}`
+path after pointing the poller at staging :7221.
 
 ### [x] enrich-sweep on existing 85 pages (primary G1 payoff) — scaffolded 2026-04-17
 `skills/kos-jarvis/enrich-sweep/` landed with SKILL.md, run.ts, lib/*.ts,
@@ -117,6 +186,17 @@ After 7 days of stable v2:
 
 ## Done (reference)
 
+- [x] 2026-04-20: **Upstream v0.14.0 sync** — merged 9 upstream releases
+  (v0.10.1 → v0.14.0). Tests 1762 unit + 138 E2E green. Merge commit
+  `0c0ceec`; rollback tag `pre-sync-v0.14`. 10 kos-jarvis skills
+  registered in manifest.json (orphan_trigger test fixed). All 4 crons
+  migrated to Minions shell-job wrappers at `scripts/minions-wrap/*.sh`.
+  BrainWriter `writer.lint_on_put_page=true` enabled (observational).
+  kos-lint check #3 (dead internal links) retired — BrainWriter's
+  `linkValidator` covers. kos-compat-api moved to staging :7221; v1
+  Python kos-api remains on :7220 (prod). Notion poller re-pointed at
+  :7221 after `gbrain init` recreated an empty PGLite at
+  `~/.gbrain/brain.pglite` (config.json had been corrupted by test DB URL).
 - [x] Week 1: fork + v1-frozen tag + 5-page smoke
 - [x] Week 2: 5 skill SKILL.md files + kos-lint run.ts
 - [x] Week 3: kos-compat-api + digest-to-memory + notion-ingest-delta

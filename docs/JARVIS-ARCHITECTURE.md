@@ -1,8 +1,8 @@
 # Jarvis Knowledge OS v2 — Architecture & Runbook
 
-> 2026-04-17 | Lucien × Jarvis
+> 2026-04-17 | Lucien × Jarvis (last sync: 2026-04-20 → upstream v0.14.0)
 > Fork: [`ChenyqThu/jarvis-knowledge-os-v2`](https://github.com/ChenyqThu/jarvis-knowledge-os-v2)
-> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.10.1
+> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.14.0
 > Previous: [`ChenyqThu/jarvis-knowledge-os`](https://github.com/ChenyqThu/jarvis-knowledge-os) (v1, frozen at tag `v1-frozen` on 2026-04-16)
 
 ---
@@ -39,9 +39,10 @@ two-sync Notion Worker idiom, and compounding signal-detector loop.
               ╱           ↕
   Knowledge-OS v2 ────────────── OpenClaw Jarvis
   (GBrain fork)                  (execution orchestrator)
-   85 compiled pages             3-agent topology
-   kos-compat-api 7220           6 cron jobs
+   100 compiled pages            3-agent topology
+   kos-compat-api (v2) 7220      6 cron jobs
    gemini-embed-shim 7222        feishu skill (HTTP to kos.chenge.ink)
+   v1 kos-api.py unloaded        MEMORY reflux (digest-to-memory)
    skills/kos-jarvis/            MEMORY reflux (digest-to-memory)
 ```
 
@@ -193,17 +194,59 @@ See [`scripts/launchd/README.md`](../scripts/launchd/README.md).
 
 ---
 
+## 6.5 Upstream v0.14.0 sync (2026-04-20)
+
+GBrain upstream jumped 9 releases (v0.10.1 → v0.14.0): knowledge graph layer,
+Minions orchestration, canonical migration, reliability wave, Knowledge
+Runtime (Resolver SDK + BrainWriter + `gbrain integrity` + BudgetLedger +
+quiet-hours), and shell job type. We merged, ran the full test suite
+(1762 unit + 138 E2E, 0 fail) and adopted the subset that fits our stack.
+
+### What we adopted
+
+| Feature | Status | Surface |
+|---|---|---|
+| Frontmatter → typed graph edges (auto-link) | Live (default on) | `related:` → `related_to` edges. ~54 % of v1 wiki pages carry `related:`; they auto-edge on ingest. No hand-maintained adjacency files in v2. |
+| BrainWriter observational lint | Enabled | `gbrain config set writer.lint_on_put_page true`. Findings → `~/.gbrain/validator-lint.jsonl`. Strict mode **not** flipped (upstream policy: 7-day soak). |
+| Minions shell job — all 4 crons | Migrated | `notion-poller`, `kos-patrol`, `enrich-sweep`, `kos-deep-lint` now run via `gbrain jobs submit shell --follow` wrappers at `scripts/minions-wrap/*.sh`. PGLite constraint: `--follow` inline, no daemon. Retry, timeout, unified `gbrain jobs list` visibility. |
+| Schema migrations v2–v13 | Applied | PGLite at `~/.gbrain/brain.pglite` includes `budget_ledger`, `links_provenance_columns`, `minion_quiet_hours_stagger`. |
+| kos-lint check #3 (dead internal links) | Retired | BrainWriter's `linkValidator` covers this. `kos-lint --check 3` still works for manual invocation. |
+
+### What we skipped (intentional)
+
+- **`gbrain integrity` bare-tweet repair** — no Twitter/X citations in our KB
+- **Resolver SDK builtins** (`url_reachable`, `x_handle_to_tweet`) — no external resolvers in pipeline
+- **BudgetLedger** — no external API spend to cap
+- **BrainWriter `strict_mode=strict`** — wait for upstream 7-day soak
+- **Supabase migration** — v2 stays on PGLite at `~/.gbrain/brain.pglite`
+
+### Topology changes (post-cutover)
+
+- **v1 wiki imported**: 85 pages from `/Users/chenyuanquan/Projects/jarvis-knowledge-os/knowledge/wiki/` imported into v2 PGLite (`~/.gbrain/brain.pglite`) via `gbrain import` in 25.4 s / 91 chunks / 0 errors.
+- **Port cutover**: v2 bun `kos-compat-api` now owns :7220 (production, serves `kos.chenge.ink` through the cloudflared token tunnel). v1 Python `kos-api.py` is unloaded (`.plist.bak` retained for 30-s rollback).
+- **Poller cutover**: `notion-poller` now posts to :7220 (v2). Notion content and v1 wiki content both live in `~/.gbrain/brain.pglite`. Total 100 pages as of 2026-04-20.
+- **Phase-2 synthesis**: `kos-compat-api` `/query` now does retrieval (`gbrain ask`) + LLM synthesis (Anthropic Messages API via `crs.chenge.ink`, model `claude-sonnet-4-6` by default). Matches v1's `{result: "...Phase 2..."}` response shape so Notion Knowledge Agent and feishu-bridge consumers keep working without changes.
+
+### Rollback
+
+- Merge commit: `0c0ceec` on master; rollback tag: `pre-sync-v0.14`
+  (`382e407`).
+- Launchd plists: every modified plist has a `.plist.bak` sibling in
+  `~/Library/LaunchAgents/`. `launchctl unload` current + load the bak.
+- PGLite rollback: schema migrations are additive and idempotent; drop
+  the v11–v13 tables manually only if a downgrade breaks something.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
-- **P0**: `kos-patrol/run.ts` not implemented — OpenClaw cron f0709db6 uses
-  `/digest+/status` stopgap.
-- **P1**: `kos-lint` path resolver reports ~112 false-positive dead links
-  from legacy KOS v1 relative link syntax.
+- **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
 - **P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable
-  helpers — agent-driven only.
-- **P2**: `notionToBrain` sync not yet in kos-worker repo (design done).
-- **P2**: `kos-compat-api /ingest` accepts `url` only; should also accept
-  `markdown` payload for the notion-ingest-delta path.
+  helpers — agent-driven only. Observed in the post-cutover query regression — questions about these skills return "not in retrieval" because there's no page describing them in the v2 brain (only SKILL.md files).
+- **P2**: v1 Python `kos-api.py` + `kos` CLI still live in `/Users/chenyuanquan/Projects/jarvis-knowledge-os/`. Unloaded from launchd (`com.jarvis.kos-api.plist.bak`) but not archived. After a 7-day v2 soak, move the plist bak into `~/Library/LaunchAgents/_archive/` and archive the v1 repo.
+- **P2**: Evaluate Gemini 3072-dim embeddings vs current 1536-dim truncation; requires full reindex if adopted.
+- **P2**: Evaluate BrainWriter `strict_mode=strict` flip after 7-day lint-observer soak.
+- **P2**: Unify LLM telemetry — v1 repo's `llm-runner.py` writes `knowledge/logs/llm-calls.jsonl`; v2's new `synthesizeAnswer` in `kos-compat-api.ts` does not log. Add a shared JSONL sink.
 
 ---
 

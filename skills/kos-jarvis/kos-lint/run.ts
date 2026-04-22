@@ -44,12 +44,32 @@ function getPage(slug: string): string {
 }
 
 function parseFrontmatter(raw: string): Record<string, string> {
+  // Minimal YAML parser for kos-lint's needs: top-level scalar fields plus
+  // the two block-scalar forms (`>-`, `>`, `|`, `|-`) that `gbrain put`
+  // emits for long values. Strips YAML surrounding quotes.
   const m = raw.match(/^---\n([\s\S]*?)\n---/);
   if (!m) return {};
   const fm: Record<string, string> = {};
-  for (const line of m[1].split("\n")) {
-    const mm = line.match(/^([a-z_]+):\s*(.*)$/);
-    if (mm) fm[mm[1]] = mm[2].trim();
+  const lines = m[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const mm = lines[i].match(/^([a-z_]+):\s*(.*)$/);
+    if (!mm) continue;
+    const key = mm[1];
+    let value = mm[2].trim();
+    // Block scalar: gather indented continuation lines, join with spaces (fold).
+    if (value === ">" || value === ">-" || value === "|" || value === "|-") {
+      const parts: string[] = [];
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) {
+        parts.push(lines[++i].trim());
+      }
+      value = parts.join(value.startsWith("|") ? "\n" : " ");
+    }
+    // Strip matching quotes.
+    if ((value.startsWith("'") && value.endsWith("'")) ||
+        (value.startsWith('"') && value.endsWith('"'))) {
+      value = value.slice(1, -1);
+    }
+    fm[key] = value;
   }
   return fm;
 }
@@ -233,10 +253,17 @@ function main() {
   console.log(`=== kos-lint @ ${new Date().toISOString().slice(0, 10)} ===`);
   const rows = listAll();
 
+  // Check 3 (dead internal links) is retired from the default sweep when
+  // upstream BrainWriter lint is enabled (writer.lint_on_put_page=true).
+  // BrainWriter's linkValidator runs on every put_page and covers the same
+  // surface with better semantics. Pass --check 3 to force-run it manually.
+  const brainWriterLintOn =
+    gbrain(["config", "get", "writer.lint_on_put_page"]).trim() === "true";
+
   const runs: [number, (r: ListRow[]) => Finding[]][] = [
     [1, check1],
     [2, check2],
-    [3, check3],
+    ...(brainWriterLintOn ? [] : [[3, check3] as [number, (r: ListRow[]) => Finding[]]]),
     [4, check4],
     [5, check5],
     [6, check6],
