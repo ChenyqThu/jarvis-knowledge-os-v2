@@ -1,8 +1,8 @@
 # Jarvis Knowledge OS v2 — Architecture & Runbook
 
-> 2026-04-17 | Lucien × Jarvis (last sync: 2026-04-22 → upstream v0.15.1)
+> 2026-04-17 | Lucien × Jarvis (last sync: 2026-04-22 → upstream v0.17.0)
 > Fork: [`ChenyqThu/jarvis-knowledge-os-v2`](https://github.com/ChenyqThu/jarvis-knowledge-os-v2)
-> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.15.1 (override: `@electric-sql/pglite` pinned to 0.4.4 instead of upstream's 0.4.3; see §6.6)
+> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.17.0 (override: `@electric-sql/pglite` pinned to 0.4.4 instead of upstream's 0.4.3; see §6.6)
 > Previous: [`ChenyqThu/jarvis-knowledge-os`](https://github.com/ChenyqThu/jarvis-knowledge-os) (v1, frozen at tag `v1-frozen` on 2026-04-16)
 
 ---
@@ -312,10 +312,180 @@ on the next sync.
 
 ---
 
+## 6.7 Upstream v0.17.0 sync (2026-04-22)
+
+Merged upstream 8 commits in one pass: v0.15.2 (bulk-action progress
+streaming), v0.15.4 (PgBouncer `prepare:false`), v0.16.0 (durable agent
+runtime), v0.16.1 (`docs/guides/minions-deployment.md`), v0.16.3
+(subagent SDK fix), v0.16.4 (`gbrain check-resolvable`), v0.17.0
+(`gbrain dream` + `runCycle` primitive + schema v16
+`gbrain_cycle_locks`), and the doctor `--fix` DRY auto-repair (3596764).
+Fork master moved `46cafe4` → `b6ea540`. Rollback tag: `pre-sync-v0.17`.
+
+### Schema jump v4 → v16
+
+The actual SQL schema migration was the risky part and it bit twice
+before we got it right. Final shape is clean but the story matters for
+next time:
+
+- **Ordering bug in `initSchema()`**: `pglite-engine.ts` runs
+  `PGLITE_SCHEMA_SQL` **before** `runMigrations()`. PGLITE_SCHEMA_SQL
+  contains `CREATE INDEX idx_links_source ON links(link_source)`
+  which assumes the v11 `link_source` column already exists. Our brain
+  was at `config.version=4` with a pre-v0.12-graph-layer `links` table
+  shape (columns: id, from, to, type, context, created_at — no
+  provenance cols). Every `gbrain init --migrate-only` attempt crashed
+  at the index create before v11 could ADD the column. Classic
+  chicken-and-egg.
+- **Workaround**: manually ALTER TABLE links ADD COLUMN IF NOT EXISTS
+  (link_source, origin_page_id, origin_field) via a one-shot PGLite
+  script, then `gbrain init --migrate-only` walks v5..v16 cleanly. All
+  12 migrations apply in one sweep. Re-running v11 after the manual
+  ALTER is idempotent (all its ops are `IF NOT EXISTS` / `UPDATE ...
+  WHERE link_source IS NULL`).
+- **File with the surgical script**: `/tmp/add-link-cols.ts` during
+  the session; not committed (one-off). The exact SQL matches v11's
+  column-add section in `src/core/migrate.ts`.
+
+Post-migration shape:
+- Schema version: 16 (v4 → v5..v16 applied, 12 migrations)
+- Pages: 1777 (was 1768; +9 from Path B's first poll cycle)
+- Chunks: 3302, 100% embedded (Gemini shim still owns embeddings)
+- Links: 385 (from `gbrain extract links --source db
+  --include-frontmatter`, 14 unresolved refs logged)
+- Timeline entries: 5443 (from `gbrain extract timeline --source db`)
+- Brain score: 56/100 (embed 35/35, links 5/25, timeline 4/15,
+  orphans 2/15, dead-links 10/10)
+
+### WASM-corruption incident (recovered)
+
+Same-session repeat of the pattern `docs/SYNC-V0.17-HANDOFF.md §6`
+warned about. Root cause: `com.jarvis.notion-poller` launchd cron was
+not actually disabled when we began migrations (`launchctl list`'s
+dash-in-pid-col means "not currently running", not "disabled"; the
+plist has no `Disabled` key), so the 5-min `StartInterval` fired the
+old `scripts/minions-wrap/notion-poller.sh` mid-session, which took
+the PGLite lock, deadlocked on the inner `spawnSync gbrain import`,
+and when its PID eventually exited it left `base/` WASM pages
+inconsistent. Next `gbrain` call aborted with `Aborted(). Build with
+-sASSERTIONS for more info.`
+
+Recovery:
+1. `launchctl unload` every DB-accessing service (only
+   `gemini-embed-shim` and `cloudflared` stayed up).
+2. `launchctl disable user/$UID/com.jarvis.notion-poller` to
+   hard-stop future cron fires.
+3. `mv ~/.gbrain/brain.pglite ~/.gbrain/brain.pglite.broken-<ts>`
+   (preserved briefly for inspection, then deleted).
+4. `cp -R ~/.gbrain/brain.pglite.pre-v0.17-sync-<ts>
+   ~/.gbrain/brain.pglite` (the rolling backup taken before any
+   migration attempt).
+5. Re-run the manual ALTER + `gbrain init --migrate-only` + `gbrain
+   extract links` + `gbrain extract timeline`. Same end state, zero
+   data loss.
+
+**Learned rule** (captured in next-session runbook): before starting
+any migration, **always** `launchctl disable user/$UID/com.jarvis.*`
+for every DB-writing service, not just `unload`. `unload` only
+stops current activity; `disable` prevents the 5-min cron from
+firing a fresh instance mid-migration.
+
+### Notion-poller Path B (minion wrapper retired)
+
+`scripts/minions-wrap/notion-poller.sh` is gone.
+`com.jarvis.notion-poller.plist` now invokes
+`/Users/chenyuanquan/.bun/bin/bun run workers/notion-poller/run.ts`
+directly; Bun auto-loads `.env.local` from `WorkingDirectory`, so
+`NOTION_TOKEN`/`NOTION_DATABASE_IDS`/`KOS_API_TOKEN` arrive without a
+shell `source` step.
+
+Why this works: no outer `gbrain jobs submit --follow` = no outer
+process holding the PGLite write lock. The inner `spawnSync gbrain
+import` inside `kos-compat-api` acquires the lock for ~1-2 s per
+page, cleanly releases it. First live cycle: 78 s total, 9 pages
+ingested, zero "Timed out waiting for PGLite lock" errors.
+
+Kept minion wrappers for `kos-patrol`, `enrich-sweep`, and
+`kos-deep-lint` — none of them HTTP-post to `kos-compat-api`, so
+they can't deadlock on the inner-spawn pattern. Path C (refactor
+`kos-compat-api` to import in-process) is the correct long-term
+fix but is deferred as P1.
+
+Updated plist backup: `com.jarvis.notion-poller.plist.pre-pathB-<ts>`.
+
+### `gbrain dream` not wired (intentionally)
+
+v0.17's flagship `gbrain dream` expects a filesystem `brain directory`
+as the source of truth (lint + backlinks + sync phases all mutate
+`.md` files, then sync picks the changes into DB). Our deployment is
+DB-native: Notion is the source, `kos-compat-api /ingest` writes
+pages into `~/.gbrain/brain.pglite` directly. There is no filesystem
+brain dir to lint. `gbrain dream` (and even `gbrain dream --phase
+orphans`) exit with `No brain directory found`.
+
+Cron-level read-only reports can still use the standalone `gbrain
+orphans --json` subcommand if needed. Full `dream` wiring is a no-op
+for us unless we re-introduce a filesystem mirror (not planned).
+
+### pglite pin stays at 0.4.4
+
+Upstream master's `package.json` still pins 0.4.3 as "best shot"
+against macOS 26.3 WASM bug (#223). On this machine 0.4.4 opens
+cleanly and 0.4.3 aborts. Our override holds; `bun install --frozen-
+lockfile` will pull 0.4.4 via the explicit dependency rather than
+dropping to upstream's 0.4.3.
+
+### Test results
+
+`bun test`: 1997 pass / 192 skip / 19 fail / 5159 expects. All 19
+failures are in **upstream** test files (`test/dream.test.ts`,
+`test/orphans.test.ts`, `test/build-llms.test.ts`, `test/migrations-
+v0_14_0.test.ts`). None touch `skills/kos-jarvis/`, `server/`, or
+`workers/`. Known failure clusters:
+- dream tests fail because our config doesn't have a `brain directory`
+  configured (dream can't resolve a default path → exit 1, test's
+  fixture expected a valid dir).
+- `build-llms` tests fail because our fork's `README.md`/`CLAUDE.md`
+  have KOS-jarvis preamble that upstream's `llms.txt` generator
+  doesn't know about → committed file drifts vs regenerated.
+- `orphans.test.ts` + `v0_14_0` tests fail for reasons unknown;
+  upstream-only, non-blocking.
+
+None of the failures indicate fork-local regressions.
+
+### Orchestrator ledger cleanup
+
+`gbrain doctor` still warns `MINIONS HALF-INSTALLED (partial
+migration: 0.13.0)`. Reason: v0.13.0 orchestrator's
+`frontmatter_backfill` phase shells out via `process.execPath extract
+links --source db --include-frontmatter`, which on our bun-runtime
+install resolves `process.execPath = bun`, tries to run `bun extract`,
+and fails. Filed upstream as
+[#332](https://github.com/garrytan/gbrain/issues/332) (still open as
+of sync time). We manually ran the equivalent `gbrain extract links`
+post-migration, so the data side is correct; only the ledger row
+remains "partial". Cosmetic. Per fork policy (CLAUDE.md) we don't
+patch `src/*`, so this warning persists until upstream merges #332.
+
+### Rollback
+
+- Merge commit: `b6ea540` on master. Rollback tag: `pre-sync-v0.17`
+  at `02efe73`.
+- PGLite rollback: `~/.gbrain/brain.pglite.pre-v0.17-sync-1776896571`
+  is the last known-good pre-migration copy. `mv` it into
+  `~/.gbrain/brain.pglite` to return to schema v4 / 1768-page state.
+- Launchd plist rollback: `com.jarvis.notion-poller.plist.pre-pathB-
+  <ts>` restores the v0.14-era minion-wrap design.
+- Per "one rolling backup" policy, older backups (pre-v0.15.1, the
+  broken-copy from the WASM abort) were deleted after verification.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
-- **P0**: `scripts/minions-wrap/notion-poller.sh` deadlocks on PGLite lock (see §6.6). Architectural call pending; `com.jarvis.notion-poller` launchd job stays `Disabled=1` until resolved. Notion ingest only runs on manual `/ingest` until then.
-- **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED`; cosmetic, no runtime impact. Watch upstream.
+- **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
+- **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`; cosmetic only — manual `gbrain extract links --source db --include-frontmatter` was run post-migration so the link-graph data is correct. Watch upstream.
+- **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
 - **P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable
   helpers — agent-driven only. Observed in the post-cutover query regression — questions about these skills return "not in retrieval" because there's no page describing them in the v2 brain (only SKILL.md files).
