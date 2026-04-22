@@ -79,6 +79,112 @@ describe('migrations v8 + v9 — structural guard for helper-index fix', () => {
   });
 });
 
+// v0.14.1 — fix wave structural assertions (migrations renumbered from v12/v13 to
+// v14/v15 after master merged budget_ledger (v12) + minion_quiet_hours_stagger (v13)).
+describe('migrate v14 — pages_updated_at_index (handler-based, engine-aware)', () => {
+  const v14 = MIGRATIONS.find(m => m.version === 14);
+  test('v14 exists and uses a handler (not pure SQL) for engine-aware branching', () => {
+    expect(v14).toBeDefined();
+    expect(v14!.name).toBe('pages_updated_at_index');
+    expect(typeof v14!.handler).toBe('function');
+    expect(v14!.sql).toBe('');
+  });
+
+  test('v14 handler source contains CONCURRENTLY + invalid-index cleanup for Postgres branch', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/core/migrate.ts', 'utf-8');
+    const v14Start = src.indexOf("name: 'pages_updated_at_index'");
+    expect(v14Start).toBeGreaterThan(-1);
+    const v14Block = src.slice(v14Start, v14Start + 3000);
+    expect(v14Block).toContain('pg_index');
+    expect(v14Block).toContain('indisvalid');
+    expect(v14Block).toContain('DROP INDEX CONCURRENTLY IF EXISTS idx_pages_updated_at_desc');
+    expect(v14Block).toContain('CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pages_updated_at_desc');
+    // Order within the handler body: DROP IF EXISTS must precede CREATE IF NOT EXISTS,
+    // so a failed prior CONCURRENTLY build is cleaned before re-create. Anchor on the
+    // explicit "IF EXISTS" / "IF NOT EXISTS" phrases so the header doc-comment
+    // (which mentions both unqualified) doesn't fool the ordering assertion.
+    const dropIdx = v14Block.indexOf('DROP INDEX CONCURRENTLY IF EXISTS');
+    const createIdx = v14Block.indexOf('CREATE INDEX CONCURRENTLY IF NOT EXISTS');
+    expect(dropIdx).toBeLessThan(createIdx);
+    expect(v14Block).toContain('engine.kind');
+  });
+});
+
+describe('migrate v15 — minion_jobs_max_stalled_default_5', () => {
+  const v15 = MIGRATIONS.find(m => m.version === 15);
+  test('v15 exists and alters max_stalled default to 5', () => {
+    expect(v15).toBeDefined();
+    expect(v15!.name).toBe('minion_jobs_max_stalled_default_5');
+    expect(v15!.sql).toContain('ALTER TABLE minion_jobs ALTER COLUMN max_stalled SET DEFAULT 5');
+  });
+
+  test('v15 backfill UPDATE targets the correct non-terminal statuses', () => {
+    const sql = v15!.sql;
+    expect(sql).toContain(`'waiting'`);
+    expect(sql).toContain(`'active'`);
+    expect(sql).toContain(`'delayed'`);
+    expect(sql).toContain(`'waiting-children'`);
+    expect(sql).toContain(`'paused'`);
+    expect(sql).not.toContain(`'completed'`);
+    expect(sql).not.toContain(`'dead'`);
+    expect(sql).not.toContain(`'cancelled'`);
+    expect(sql).not.toContain(`'claimed'`);
+    expect(sql).not.toContain(`'running'`);
+    expect(sql).not.toContain(`'stalled'`);
+  });
+
+  test('v15 UPDATE clause has the < 5 guard so idempotent re-runs are no-ops', () => {
+    expect(v15!.sql).toContain('max_stalled < 5');
+  });
+});
+
+describe('migrate — runner behavioral (v14 handler + v15 backfill)', () => {
+  let engine: PGLiteEngine;
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+  });
+
+  test('v14 created idx_pages_updated_at_desc on PGLite via handler branch', async () => {
+    const rows = await (engine as any).db.query(
+      `SELECT indexname FROM pg_indexes WHERE indexname = 'idx_pages_updated_at_desc'`
+    );
+    expect(rows.rows.length).toBe(1);
+  });
+
+  test('v15 backfilled any max_stalled=1 rows (smoke: schema default is 5)', async () => {
+    await (engine as any).db.exec(
+      `INSERT INTO minion_jobs (name, queue, status, max_stalled) VALUES ('test', 'default', 'waiting', 1)`
+    );
+    await (engine as any).db.exec(
+      `UPDATE minion_jobs SET max_stalled = 5
+         WHERE status IN ('waiting','active','delayed','waiting-children','paused')
+           AND max_stalled < 5`
+    );
+    const rows = await (engine as any).db.query(
+      `SELECT max_stalled FROM minion_jobs WHERE name = 'test'`
+    );
+    expect((rows.rows[0] as any).max_stalled).toBe(5);
+
+    await (engine as any).db.exec(
+      `UPDATE minion_jobs SET max_stalled = 5
+         WHERE status IN ('waiting','active','delayed','waiting-children','paused')
+           AND max_stalled < 5`
+    );
+    const rows2 = await (engine as any).db.query(
+      `SELECT max_stalled FROM minion_jobs WHERE name = 'test'`
+    );
+    expect((rows2.rows[0] as any).max_stalled).toBe(5);
+  });
+});
+
 describe('migrate: v8 (links_dedup) regression — must be fast on 1K duplicate rows', () => {
   let engine: PGLiteEngine;
 
@@ -199,5 +305,51 @@ describe('migrate: v9 (timeline_dedup_index) regression — must be fast on 1K d
       WHERE tablename = 'timeline_entries' AND indexname = 'idx_timeline_dedup_helper'
     `)).rows;
     expect(helperIdx.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// resolvePoolSize — GBRAIN_POOL_SIZE env override
+// ─────────────────────────────────────────────────────────────────
+//
+// Guards the Bug 2 fix: users on constrained poolers (Supabase port 6543)
+// must be able to cap the pool size via GBRAIN_POOL_SIZE. The default
+// (10) is unchanged when the env var is unset.
+
+describe('resolvePoolSize — env var + explicit override', () => {
+  const { resolvePoolSize } = require('../src/core/db.ts');
+  const original = process.env.GBRAIN_POOL_SIZE;
+
+  afterAll(() => {
+    if (original === undefined) delete process.env.GBRAIN_POOL_SIZE;
+    else process.env.GBRAIN_POOL_SIZE = original;
+  });
+
+  test('returns 10 default when unset and no explicit override', () => {
+    delete process.env.GBRAIN_POOL_SIZE;
+    expect(resolvePoolSize()).toBe(10);
+  });
+
+  test('reads GBRAIN_POOL_SIZE as an integer', () => {
+    process.env.GBRAIN_POOL_SIZE = '2';
+    expect(resolvePoolSize()).toBe(2);
+    process.env.GBRAIN_POOL_SIZE = '5';
+    expect(resolvePoolSize()).toBe(5);
+  });
+
+  test('ignores invalid GBRAIN_POOL_SIZE values', () => {
+    process.env.GBRAIN_POOL_SIZE = 'not-a-number';
+    expect(resolvePoolSize()).toBe(10);
+    process.env.GBRAIN_POOL_SIZE = '0';
+    expect(resolvePoolSize()).toBe(10);
+    process.env.GBRAIN_POOL_SIZE = '-1';
+    expect(resolvePoolSize()).toBe(10);
+  });
+
+  test('explicit argument wins over env + default', () => {
+    delete process.env.GBRAIN_POOL_SIZE;
+    expect(resolvePoolSize(3)).toBe(3);
+    process.env.GBRAIN_POOL_SIZE = '7';
+    expect(resolvePoolSize(3)).toBe(3);
   });
 });

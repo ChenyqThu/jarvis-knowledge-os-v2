@@ -2,6 +2,292 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.15.1] - 2026-04-21
+
+## **Fix wave: 4 hot issues that blocked real brains, landed together.**
+## **PGLite survives macOS 26.3. Minions actually rescues SIGKILL'd jobs. Autopilot dashboards stop the 14.6s seqscan. `bun install -g` tells you when it's broken.**
+
+v0.15.1 is the hotfix wave on top of the v0.14.x stack (shell job type in v0.14.0, doctor DRY + `--fix` in v0.14.1, 8 deferred bug fixes in v0.14.2) plus v0.15.0 (llms.txt + AGENTS.md): four user-filed issues against v0.13.x, fixed and verified together, plus three scope expansions that close adjacent footguns. Upgrade is automatic. If `gbrain upgrade` runs clean, your brain gets faster and more reliable on the next sync cycle.
+
+### The numbers that matter
+
+The four issues this release closes, with measured impact:
+
+| Issue | Before v0.15.1 | After v0.15.1 | Δ |
+|-------|----------------|----------------|---|
+| #170 `SELECT * FROM pages ORDER BY updated_at DESC` on 31k rows (Postgres) | ~14.6s seqscan | <20ms index scan | ~700x |
+| #219 `max_stalled` default on `minion_jobs` | 3 (three rescues before dead, v0.14.2 set this) | 5 (four rescues before dead) | extra headroom for flaky deploys |
+| #219 existing waiting/active jobs with `max_stalled<5` | would still dead-letter earlier than expected | backfilled to 5 on upgrade | closes the pain today |
+| #218 `bun install -g github:garrytan/gbrain` postinstall failure | silent `|| true` | visible stderr warning with recovery URL | users know it's broken |
+| #223 PGLite WASM crash on macOS 26.3 | raw `Aborted()`, no hint | pinned `@electric-sql/pglite` to `0.4.3` + actionable error message naming the issue | users can route to #223 |
+
+### What this means for you
+
+If you run autopilot against a Supabase brain with 30k+ pages, your health/dashboard cycle was silently burning 14.6 seconds on every iteration. The new index drops that to single-digit milliseconds without locking writes (Postgres gets `CREATE INDEX CONCURRENTLY` with an invalid-index cleanup DO block; PGLite gets plain `CREATE INDEX` since it has no concurrent writers). Your agent stops blocking on list-pages-by-date queries.
+
+If you use Minions, the "SIGKILL mid-flight, 10/10 rescued" claim is now actually true out-of-the-box with generous headroom. Default `max_stalled=5` means a kill -9'd worker gets picked up by the next worker instead of dead-lettered early. v15 migration backfills existing non-terminal rows (`waiting/active/delayed/waiting-children/paused`) so upgrading doesn't leave a queue full of doomed jobs.
+
+If you install via `bun install -g github:...` (not recommended but people try it), you'll now see a loud stderr warning with a link to #218 instead of a broken CLI that fails on next invocation. The real fix is `git clone + bun link`, documented in README and INSTALL_FOR_AGENTS.md.
+
+If you're on macOS 26.3 and PGLite was crashing with `Aborted()`, the pin to 0.4.3 gives us the best shot at avoiding the WASM regression (noting: 0.4.3 is unverified against 26.3 in CI — the error-wrap at `pglite-engine.ts connect()` is the safety net if the pin doesn't hold). Any PGLite init failure now shows the #223 link instead of a raw runtime error.
+
+## To take advantage of v0.15.1
+
+`gbrain upgrade` should do this automatically. If it didn't, or if `gbrain doctor` warns about a partial migration:
+
+1. **Run the orchestrator manually:**
+   ```bash
+   gbrain apply-migrations --yes
+   ```
+2. **Verify the outcome:**
+   ```bash
+   psql "$DATABASE_URL" -c "\d minion_jobs" | grep max_stalled  # DEFAULT should be 5
+   psql "$DATABASE_URL" -c "\d pages" | grep idx_pages_updated_at_desc  # index should exist
+   gbrain doctor
+   ```
+3. **If any step fails or the numbers look wrong,** file an issue with `gbrain doctor` output and the contents of `~/.gbrain/upgrade-errors.jsonl` if it exists. https://github.com/garrytan/gbrain/issues
+
+### Itemized changes
+
+#### Added
+- Schema migration **v14** — `CREATE INDEX [CONCURRENTLY] IF NOT EXISTS idx_pages_updated_at_desc ON pages (updated_at DESC)` (engine-aware; Postgres uses CONCURRENTLY with an invalid-index DO-block cleanup, PGLite uses plain CREATE). Closes #170. Contributed by @fuleinist (#215).
+- Schema migration **v15** — `ALTER TABLE minion_jobs ALTER COLUMN max_stalled SET DEFAULT 5` (bumps v0.14.2's default of 3 to 5 for extra flaky-deploy headroom) + `UPDATE` backfill scoped to non-terminal statuses (`waiting/active/delayed/waiting-children/paused`) so existing queued work benefits on upgrade. Closes #219. Reported by @macbotmini-eng.
+- `MinionJobInput.max_stalled` — new optional field, plumbed through `queue.add()` with `[1, 100]` clamp.
+- `gbrain jobs submit --max-stalled N` — CLI flag to set per-job stall tolerance.
+- `gbrain jobs submit --backoff-type`, `--backoff-delay`, `--backoff-jitter`, `--timeout-ms`, `--idempotency-key` — scope-expansion audit exposing existing `MinionJobInput` fields as first-class CLI flags.
+- `gbrain jobs smoke --sigkill-rescue` — opt-in regression smoke case that simulates a killed worker and asserts the v0.15.1 default actually rescues.
+- `gbrain doctor --index-audit` — new opt-in Postgres check that reports zero-scan indexes from `pg_stat_user_indexes`. Informational only (no auto-drop). PGLite no-ops.
+- `BrainEngine.kind` readonly discriminator (`'postgres' | 'pglite'`) — lets migrations and consumers branch on engine without `instanceof` + dynamic imports.
+- `package.json trustedDependencies: ["@electric-sql/pglite"]` — lets Bun run PGLite's dep postinstall on global installs.
+
+#### Changed
+- `@electric-sql/pglite` pinned to exactly `0.4.3` (was `^0.4.4`) — best-available mitigation for the macOS 26.3 WASM abort. Reported by @AndreLYL (#223). Flagged as unverified; reproduce on a 26.3 machine and file a follow-up if it still aborts.
+- `package.json postinstall` — now warns loudly on stderr with a recovery URL instead of silencing errors with `2>/dev/null || true`. `bun install -g` hitting a migration failure now tells you what to do. Reported by @gopalpatel (#218).
+- `src/core/pglite-engine.ts connect()` — wraps `PGlite.create()` with a friendly error pointing at #223 and `gbrain doctor`. Nests the original error for debuggability.
+- `doctor` `schema_version` check — now fails loudly when `version=0` (migrations never ran), linking #218.
+- `README.md` + `INSTALL_FOR_AGENTS.md` — explicit warning against `bun install -g github:garrytan/gbrain`.
+
+#### Fixed
+- **The "SIGKILL mid-flight, 10/10 rescued" claim is now accurate** out-of-the-box with headroom (#219). Schema default 3 → 5.
+- **Autopilot dashboards stop blocking on list-pages queries** on 30k+ row Postgres brains (#170).
+- **PGLite error on macOS 26.3** is now actionable instead of a raw `Aborted()` (#223).
+- **`bun install -g` no longer produces a silently broken CLI** (#218) — postinstall surfaces failures.
+
+#### Internal
+- `Migration` interface extended with `sqlFor: { postgres?, pglite? }` + `transaction: boolean` fields. Runner picks the engine-specific SQL branch and (on Postgres only) bypasses `engine.transaction()` when `transaction: false` (required for CONCURRENTLY).
+- `scripts/check-jsonb-pattern.sh` extended with a CI guard against `max_stalled DEFAULT 1` regressing.
+- ~15 new unit tests covering max_stalled default/clamp/backfill/v14/v15 semantics. 3 regression tests pinned by IRON RULE.
+- `test/e2e/` now runs test files sequentially via `scripts/run-e2e.sh` to eliminate shared-DB races that caused ~3/5 runs to have 4-10 flaky fails. Every run post-fix: 13 files, 138 tests, 0 fails.
+
+## [0.15.0] - 2026-04-21
+
+## **GBrain now talks to LLMs the way modern docs sites do.**
+## **One URL, full context. Three files, zero drift.**
+
+Three new artifacts ship at the repo root: `llms.txt` (llmstxt.org-spec index), `llms-full.txt` (same map with core docs inlined, ~225KB, fits well under a 150k-token context window), and `AGENTS.md` (the non-Claude-agent operating protocol). All three are generator-driven. `scripts/build-llms.ts` reads a curated `scripts/llms-config.ts` and emits `llms.txt` + `llms-full.txt` deterministically; `AGENTS.md` is hand-written and uses relative links so it survives forks and rename. Every agent that clones GBrain now has a one-screen answer to "I just got here, what do I do?"
+
+README and `INSTALL_FOR_AGENTS.md` now point agents at `AGENTS.md` first. The old install prompt still works, but the leverage point, Codex's read of the plan, was that these files are invisible unless the install path references them. Fixed.
+
+### The numbers that matter
+
+Measured on this release:
+
+| Metric                                          | BEFORE                          | AFTER                            | Δ                          |
+|-------------------------------------------------|----------------------------------|-----------------------------------|----------------------------|
+| Agent entry points with clear install protocol  | 1 (CLAUDE.md, Claude Code only) | 3 (CLAUDE.md + AGENTS.md + llms.txt) | +non-Claude coverage       |
+| Docs referenced at a single canonical URL       | 0                               | 20 (across 5 H2 sections)        | index exists               |
+| Full-context fetch round-trips                  | ~20 (one per doc)               | 1 (`llms-full.txt`, 224 KB)      | ~20x fewer fetches         |
+| Tests guarding the doc index                    | 0                               | 7 (paths resolve, idempotent, spec shape, regen-drift, content contract, AGENTS mirror, size budget) | +7                         |
+| Pre-existing repo bugs found and fixed          | —                               | 1 (`git pull origin main` → `master`) | drive-by                   |
+
+The 7 tests enforce content contract: removing `skills/RESOLVER.md` or the Debugging H2 from the config fails `bun test`. Forgetting to rerun `bun run build:llms` after adding a new doc fails `bun test`. The size budget (600KB) fails `bun test` if `llms-full.txt` balloons.
+
+### What this means for you
+
+If you're running GBrain: nothing to do. Your agent already has CLAUDE.md. But next time you install GBrain on Codex, Cursor, or OpenClaw, the agent lands on `AGENTS.md` and walks the install without hunting. If you run a fork, regenerate with `LLMS_REPO_BASE=https://raw.githubusercontent.com/your-org/your-fork/main bun run build:llms` to rewrite URLs. If you publish GBrain docs alongside your own, `llms.txt` is the index; `llms-full.txt` is the drop-into-a-context-window bundle.
+
+Credit to Codex for catching that the original plan's AGENTS.md was underpowered, that the eng review missed a content-contract test, and that the install prompt was the real leverage point. Seven of the fifteen Codex findings landed directly in the plan; three went to user decision; five stayed as intentional NOT-in-scope.
+
+## To take advantage of this release
+
+`gbrain upgrade` does not need to do anything. These are new public files; existing installs pick them up on their next pull.
+
+1. **If you wrote a downstream fork:** regenerate with your URL base.
+   ```bash
+   LLMS_REPO_BASE=https://raw.githubusercontent.com/your-org/your-fork/main bun run build:llms
+   git add llms.txt llms-full.txt && git commit
+   ```
+2. **If you add a new doc under `docs/`:** add it to `scripts/llms-config.ts`, then
+   ```bash
+   bun run build:llms
+   bun test test/build-llms.test.ts
+   ```
+   CI blocks ship if these drift.
+3. **Verify it actually works:** ask a fresh LLM
+   ```
+   Fetch https://raw.githubusercontent.com/garrytan/gbrain/master/llms.txt and tell me
+   how I'd debug a broken live sync.
+   ```
+   Answer should cite `docs/GBRAIN_VERIFY.md`, `docs/guides/live-sync.md`, and `gbrain doctor`.
+
+### Itemized changes
+
+#### Added
+- `AGENTS.md` at repo root — ~45-line non-Claude-agent operating protocol. Install, read order, trust boundary, config/debug/migration pointers, fork instructions. Uses relative links so it survives renames.
+- `llms.txt` at repo root — llmstxt.org-spec index. H1 + blockquote + 5 required H2 sections (Core entry points, Configuration, Debugging, Migrations) plus an Operational tips block with `gbrain doctor`, `gbrain orphans`, `gbrain repair-jsonb`. ~4KB.
+- `llms-full.txt` at repo root — same index with core docs inlined under `## {path}` headings for single-fetch ingestion. ~225KB, under the 600KB `FULL_SIZE_BUDGET`.
+- `scripts/llms-config.ts` — curated TS config. `LLMS_REPO_BASE` env var lets forks regenerate with their own URL base. `includeInFull: false` flags entries that should appear in `llms.txt` but not be inlined in `llms-full.txt` (Philosophy, Optional, CHANGELOG).
+- `scripts/build-llms.ts` — the generator. Deterministic, no timestamps, sorted by config order. Warns (does not fail) if `llms-full.txt` exceeds `FULL_SIZE_BUDGET` with the biggest entries listed.
+- `test/build-llms.test.ts` — 7 cases: paths resolve on disk, generator idempotent, llms.txt spec shape, checked-in files match generator output (drift guard), content contract (RESOLVER / AGENTS / INSTALL_FOR_AGENTS referenced), AGENTS mirrors README+INSTALL install path, size budget enforcement.
+- `bun run build:llms` script in `package.json`.
+
+#### Changed
+- `README.md` — adds a one-line LLMs/Agents pointer above the install CTA and a follow-up paragraph under the agent paste block naming `AGENTS.md` + `llms.txt` as fallback entry points for non-Claude agents.
+- `INSTALL_FOR_AGENTS.md` — new "Step 0: If you are not Claude Code" prelude points agents at `AGENTS.md` first.
+- `CLAUDE.md` — adds `scripts/llms-config.ts`, `scripts/build-llms.ts`, and `AGENTS.md` to Key files. Explicitly notes that committed generator output is NOT analogous to `schema-embedded.ts` (no runtime consumer; committed for GitHub browsing + fork safety).
+
+#### Fixed
+- `INSTALL_FOR_AGENTS.md:136` — `git pull origin main` → `git pull origin master`. Pre-existing drift: README and CI use `master`, `origin/HEAD -> master`, but the upgrade instructions told users to pull from a branch that doesn't exist. Folded into this release as a drive-by fix.
+
+## [0.14.2] - 2026-04-20
+
+## **Eight deferred bugs, root-cause fixes, one clean wave.**
+## **Sync stops losing files. Migrations stop retrying forever. Pooler users get a knob.**
+
+Eight bugs were previously scoped out of a PR after Codex review caught wrong root causes and unimplementable architectures. v0.14.2 takes each back to the actual code and fixes the structural gap. `/plan-eng-review` + `/codex consult` verified every load-bearing claim before a single line of code ran (20 findings, 12 triggered plan revisions before implementation).
+
+The practical wins for a busy brain: `gbrain sync` no longer silently loses files with unquoted-colon YAML titles across any of the three sync paths. `gbrain upgrade` can't get stuck in an infinite retry loop on a wedged migration (3-partial cap + `--force-retry` escape hatch). Supabase pooler users have `GBRAIN_POOL_SIZE` to throttle without touching schemas. `gbrain doctor --fast` tells you WHY it's skipping DB checks instead of lying about no database being configured. `brain_score` gets a breakdown so 79/100 tells you which component is costing you the 21 points.
+
+### The numbers that matter
+
+Measured on this branch's diff against origin/master:
+
+| Metric                                            | BEFORE v0.14.2      | AFTER v0.14.2              | Δ                       |
+|---------------------------------------------------|---------------------|-----------------------------|-------------------------|
+| Sync paths that silently drop files on YAML break | 3 of 3              | 0 of 3                      | **no more silent loss** |
+| Wedged-migration retry loops                      | infinite            | 3-partial cap + `--force-retry` | bounded              |
+| Pool-size knob for Supabase pooler                | none                | `GBRAIN_POOL_SIZE` env      | **first-class knob**    |
+| `doctor --fast` messages                          | 1 catch-all         | 3 source-specific           | honest signal           |
+| `brain_score` observability                       | one number          | 5-field breakdown (sum == total) | diagnosable         |
+| Duplicate edges in `gbrain graph` output          | leaked per-origin   | deduped at presentation      | schema preserved        |
+| `minion_jobs.max_stalled` default                 | 1 (dead-letter on first stall) | 3                | autopilot survives long embed runs |
+| New + extended unit tests                         | 1696                | **1743 (+47 + 119 new assertions)** | +47                |
+| Root-cause fixes vs symptom patches               | 0                   | **8 / 8**                   | structural              |
+
+### What this means for you
+
+Your agent's feedback loops tighten. When sync blocks, doctor surfaces the exact file with the YAML problem and the commit where it showed up. When a migration gets stuck, there's a cap and a clear escape. When you're on Supabase's transaction pooler and `gbrain upgrade` spawns subprocesses, set `GBRAIN_POOL_SIZE=2` and stop MaxClients crashes. Run `gbrain doctor` and the `brain_score` breakdown points at what to fix first: embed coverage, link density, timeline coverage, orphans, or dead links.
+
+## To take advantage of v0.14.2
+
+`gbrain upgrade` should do this automatically. If it didn't, or if `gbrain doctor` warns about a partial migration:
+
+1. **Run the orchestrator manually:**
+   ```bash
+   gbrain apply-migrations --yes
+   ```
+2. **Supabase pooler users (port 6543) now have a knob.** If you hit MaxClients during upgrades, set `GBRAIN_POOL_SIZE=2` (or lower) in your environment before running `gbrain upgrade`.
+3. **Check sync health after the upgrade:**
+   ```bash
+   gbrain doctor
+   ```
+   If it warns about `sync_failures`, the paths and errors are in `~/.gbrain/sync-failures.jsonl`. Fix the offending YAML frontmatter and re-run `gbrain sync`, or use `gbrain sync --skip-failed` to acknowledge known-broken files and advance past them.
+4. **Wedged migrations:** If `doctor` ever flags a version with 3 consecutive partials, run `gbrain apply-migrations --force-retry vX.Y.Z` to reset the state machine, then `gbrain apply-migrations --yes` to re-attempt.
+5. **If any step fails or the numbers look wrong,** file an issue: https://github.com/garrytan/gbrain/issues with:
+   - output of `gbrain doctor`
+   - contents of `~/.gbrain/upgrade-errors.jsonl` if it exists
+   - which step broke
+
+### Itemized changes
+
+#### Reliability
+- **Bug 2: `GBRAIN_POOL_SIZE` env knob** (`src/core/db.ts`, `src/commands/import.ts`). Honored by both the singleton pool and the parallel-import worker pool. Defaults to 10; lower for Supabase transaction pooler. `initPostgres` / `initPGLite` now wrap lifecycle in `try { ... } finally { await engine.disconnect() }`.
+- **Bug 3: Migration ledger centralization + wedge cap** (`src/commands/apply-migrations.ts`, `src/core/preferences.ts`). Runner owns all ledger writes. 3 consecutive partials = wedged, skipped with a loud message. New `--force-retry <version>` flag writes a `'retry'` marker without faking success. `complete` status never regresses. `appendCompletedMigration` is idempotent on double-complete.
+- **Bug 8: `max_stalled` default 1 → 3** (`src/core/schema-embedded.ts`, `src/core/pglite-schema.ts`, `src/schema.sql`). First lock-lost tick no longer dead-letters. `v0_14_0` Phase A ALTERs existing installs. `autopilot-cycle` handler yields to the event loop between phases so the worker's lock-renewal timer fires. (v0.15.1 further bumps this to 5 and adds a non-terminal row backfill — see #219.)
+- **Bug 9: Sync gate + acknowledge mechanism** (`src/commands/sync.ts`, `src/commands/import.ts`, `src/core/sync.ts`). All 3 sync paths (incremental, full via `runImport`, `gbrain import` git continuity) gate `sync.last_commit` on no-failures. Failures append to `~/.gbrain/sync-failures.jsonl` with dedup key. New `gbrain sync --skip-failed` + `--retry-failed` flags. Doctor surfaces unacknowledged failures.
+
+#### Observability
+- **Bug 7: `doctor --fast` source-aware messages** (`src/core/config.ts`, `src/cli.ts`, `src/commands/doctor.ts`). New `getDbUrlSource()` returns `'env:GBRAIN_DATABASE_URL' | 'env:DATABASE_URL' | 'config-file' | null`. Doctor emits `Skipping DB checks (--fast mode, URL present from env:GBRAIN_DATABASE_URL)` when applicable.
+- **Bug 11: `brain_score` breakdown + metric clarity** (`src/core/types.ts`, both engines' `getHealth()`). Added `embed_coverage_score`, `link_density_score`, `timeline_coverage_score`, `no_orphans_score`, `no_dead_links_score`. Sum equals `brain_score` by construction. `dead_links` now on `BrainHealth` (resolves a pre-existing `featuresTeaserForDoctor` drift). `orphan_pages` docs clarified — it's "islanded" (no inbound AND no outbound), not the stricter "zero inbound" graph definition.
+
+#### Graph correctness
+- **Bug 6/10: `jsonb_agg(DISTINCT ...)` in legacy `traverseGraph`** (`src/core/postgres-engine.ts`, `src/core/pglite-engine.ts`). Presentation-level dedup only — the schema continues to preserve per-`origin_page_id` / per-`link_source` provenance rows. Fixes duplicate edges like `works_at → companies/brex` appearing twice in `gbrain graph`.
+
+#### New migration
+- **Bug 5: `v0_14_0` migration registered** (`src/commands/migrations/v0_14_0.ts`). Phase A: `ALTER minion_jobs.max_stalled SET DEFAULT 3` (idempotent). Phase B: emits `pending-host-work.jsonl` entry pointing at `skills/migrations/v0.14.0.md` for shell-jobs adoption. Registered in `src/commands/migrations/index.ts`. `package.json` bumped to 0.14.2 (0.14.0 and 0.14.1 were taken by upstream during this branch's work).
+
+#### Tests
+- New: `test/traverse-graph-dedup.test.ts`, `test/sync-failures.test.ts`, `test/brain-score-breakdown.test.ts`, `test/migration-resume.test.ts`, `test/migrations-v0_14_0.test.ts`.
+- Extended: `test/migrate.test.ts` (`resolvePoolSize`), `test/doctor.test.ts` (`dbSource`), `test/apply-migrations.test.ts` (`skippedFuture` includes `0.14.0`).
+- E2E updated: `test/e2e/migration-flow.test.ts` assertions aligned with the new runner-owned-ledger contract (orchestrator no longer writes completed.jsonl directly).
+
+#### Deferred to v0.15
+- Deep `AbortSignal` threading through `runEmbedCore` / `runExtractCore` / `runBacklinksCore` / `performSync`. Between-phase yield addresses the Bug 8 lock-renewal root cause; mid-phase cancellation on huge brains belongs in the queue-polish PR.
+- `failJobFromSweeper` for `handleTimeouts` / `handleStalled`. Current direct `status='dead'` writes kept.
+
+## [0.14.1] - 2026-04-20
+
+## **`gbrain doctor` stops crying wolf on DRY, and now repairs the real ones.**
+## **Skill delegations via `_brain-filing-rules.md` finally count.**
+
+`gbrain doctor --fast` was flagging 9 DRY violations on this repo, every run, for skills that properly delegated to `skills/_brain-filing-rules.md`. The old check only accepted `conventions/quality.md` as a valid delegation target, so every skill that correctly filed notability rules through the brain-filing-rules module got flagged anyway. Alert fatigue eroded every other doctor warning. v0.14.1 swaps the substring match for proximity-based suppression: a delegation reference within 40 lines of a pattern match (across `> **Convention:**`, `> **Filing rule:**`, and inline backtick paths) now correctly suppresses the violation.
+
+The release also adds `gbrain doctor --fix` and `gbrain doctor --fix --dry-run`. Instead of telling you what's wrong, doctor can now repair it. Five guards keep the edits safe: refuses if the working tree is dirty (git is the rollback), refuses if the skill isn't inside a git repo (no rollback available), skips matches inside fenced code blocks (examples are not violations), skips when the pattern matches more than once (ambiguous), skips when a delegation reference already exists within 40 lines. Shell-injection safe via `execFileSync` array args. Trailing newline preserved. No `.bak` clutter, git is the backup contract.
+
+### The numbers that matter
+
+Measured on this repo's real skill library (28 skills, 3 cross-cutting patterns):
+
+| Metric                                         | BEFORE v0.14.1      | AFTER v0.14.1                | Δ                 |
+|------------------------------------------------|---------------------|------------------------------|-------------------|
+| False-positive DRY violations                  | 1 flagged, 0 fixable| 0 flagged                    | **cleaner signal**|
+| Genuine DRY violations surfaced                | 8                   | 8 (unchanged)                | honest count      |
+| Auto-repairable via `--fix --dry-run`          | 0                   | 7 proposed, 4 intelligently skipped | new capability |
+| Unit tests for doctor/resolver/dry-fix         | 24                  | **55 (+31)**                 | +31               |
+| Adversarial review fixes in ship               | 0                   | **4 ship-blockers caught + fixed** | defense in depth |
+
+The 4 adversarial fixes are worth calling out: shell injection via `execFileSync` array args, a silent-overwrite bug when skills live outside a git repo (now returns `no_git_backup`), EOF newline preservation on splice, and delegation-proximity consistency between detector (40 lines) and idempotency guard (now also 40 lines, was 10).
+
+### What this means for you
+
+Your agent's `gbrain doctor` output now means something again. Nine warnings a run was noise you learned to ignore; one real warning is signal. And when the doctor does flag an inlined rule, `gbrain doctor --fast --fix --dry-run` shows you exactly what the repair looks like before you commit to it. Run `gbrain doctor --fast --fix` to apply. Git is the undo button.
+
+## To take advantage of v0.14.1
+
+`gbrain upgrade` does this automatically. No manual migration required.
+
+1. **Verify the detection fix:**
+   ```bash
+   gbrain doctor --fast --json | jq '.checks[] | select(.name=="resolver_health")'
+   ```
+2. **Try the auto-fix preview on your own brain:**
+   ```bash
+   gbrain doctor --fast --fix --dry-run
+   ```
+3. **Apply when ready:**
+   ```bash
+   gbrain doctor --fast --fix
+   ```
+4. **If anything looks wrong,** please file an issue:
+   https://github.com/garrytan/gbrain/issues with the `gbrain doctor --json` output.
+
+### Itemized changes
+
+#### Added
+- `gbrain doctor --fix` applies `> **Convention:**` reference callouts to skills that inline cross-cutting rules (Iron Law back-linking, citation format, notability gate). `--dry-run` previews the diff without writing.
+- Three shape-aware block expanders (bullet, blockquote, paragraph) in `src/core/dry-fix.ts`, each a pure function, each with unit tests.
+- New `extractDelegationTargets()` helper in `src/core/check-resolvable.ts` parses `> **Convention:** `, `> **Filing rule:** `, and inline backtick references, normalizing paths to the `CROSS_CUTTING_PATTERNS.conventions` shape.
+- `getWorkingTreeStatus()` returns 3-state `'clean' | 'dirty' | 'not_a_repo'` so the fixer never writes to files git can't roll back.
+
+#### Changed
+- `CROSS_CUTTING_PATTERNS` each list multiple valid delegation targets (notability gate accepts both `conventions/quality.md` and `_brain-filing-rules.md`).
+- DRY suppression is proximity-based: `DRY_PROXIMITY_LINES = 40` for detector AND the fix-module's idempotency check (was inconsistent: 40 vs 10).
+- Shell execution uses `execFileSync` with array args (no shell, no injection surface from manifest-derived paths).
+
+#### Tests
+- 31 new tests across `test/check-resolvable.test.ts` (DRY detection, 13 cases), `test/dry-fix.test.ts` (unit, 28 cases including expander pure-function tests), `test/doctor-fix.test.ts` (CLI integration, 3 cases).
+- Full suite: 1694 pass, 0 fail.
+
 ## [0.14.0] - 2026-04-20
 
 ## **Move gateway crons to Minions. Zero LLM tokens per cron fire.**

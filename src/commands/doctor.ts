@@ -2,7 +2,9 @@ import type { BrainEngine } from '../core/engine.ts';
 import * as db from '../core/db.ts';
 import { LATEST_VERSION } from '../core/migrate.ts';
 import { checkResolvable } from '../core/check-resolvable.ts';
+import { autoFixDryViolations, type AutoFixReport, type FixOutcome } from '../core/dry-fix.ts';
 import { loadCompletedMigrations } from '../core/preferences.ts';
+import type { DbUrlSource } from '../core/config.ts';
 import { join } from 'path';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 
@@ -17,11 +19,19 @@ export interface Check {
  * Run doctor with filesystem-first, DB-second architecture.
  * Filesystem checks (resolver, conformance) run without engine.
  * DB checks run only if engine is provided.
+ *
+ * `dbSource` is passed only from the `--fast` and DB-unavailable paths in
+ * cli.ts so we can emit a precise "why no DB check" message. When null, the
+ * user has no DB configured anywhere; otherwise the caller chose --fast or
+ * we failed to connect despite a configured URL.
  */
-export async function runDoctor(engine: BrainEngine | null, args: string[]) {
+export async function runDoctor(engine: BrainEngine | null, args: string[], dbSource?: DbUrlSource) {
   const jsonOutput = args.includes('--json');
   const fastMode = args.includes('--fast');
+  const doFix = args.includes('--fix');
+  const dryRun = args.includes('--dry-run');
   const checks: Check[] = [];
+  let autoFixReport: AutoFixReport | null = null;
 
   // --- Filesystem checks (always run, no DB needed) ---
 
@@ -29,6 +39,15 @@ export async function runDoctor(engine: BrainEngine | null, args: string[]) {
   const repoRoot = findRepoRoot();
   if (repoRoot) {
     const skillsDir = join(repoRoot, 'skills');
+
+    // --fix: run auto-repair BEFORE checkResolvable so the post-fix scan
+    // reflects the new state. Auto-fix only targets DRY violations today;
+    // other resolver issues are left to human repair.
+    if (doFix) {
+      autoFixReport = autoFixDryViolations(skillsDir, { dryRun });
+      printAutoFixReport(autoFixReport, dryRun, jsonOutput);
+    }
+
     const report = checkResolvable(skillsDir);
     if (report.ok && report.issues.length === 0) {
       checks.push({
@@ -123,11 +142,54 @@ export async function runDoctor(engine: BrainEngine | null, args: string[]) {
     // Read/parse failure is itself best-effort; skip silently.
   }
 
+  // 3c. Sync failure trail (Bug 9). sync.ts gates the `sync.last_commit`
+  // bookmark when per-file parse errors happen, and appends each failure
+  // to ~/.gbrain/sync-failures.jsonl with the commit hash + exact error.
+  // Without this doctor check, users see "sync blocked" and have no
+  // surface showing which files to fix.
+  try {
+    const { unacknowledgedSyncFailures, loadSyncFailures } = await import('../core/sync.ts');
+    const unacked = unacknowledgedSyncFailures();
+    const all = loadSyncFailures();
+    if (unacked.length > 0) {
+      const preview = unacked.slice(0, 3).map(f => `${f.path} (${f.error.slice(0, 60)})`).join('; ');
+      checks.push({
+        name: 'sync_failures',
+        status: 'warn',
+        message:
+          `${unacked.length} unacknowledged sync failure(s). ${preview}` +
+          `${unacked.length > 3 ? `, and ${unacked.length - 3} more` : ''}. ` +
+          `Fix the file(s) and re-run 'gbrain sync', or use 'gbrain sync --skip-failed' to acknowledge.`,
+      });
+    } else if (all.length > 0) {
+      // Acknowledged-only: informational, not a warning.
+      checks.push({
+        name: 'sync_failures',
+        status: 'ok',
+        message: `${all.length} historical sync failure(s), all acknowledged.`,
+      });
+    }
+  } catch {
+    // Best-effort. A broken JSONL should not stop doctor.
+  }
+
   // --- DB checks (skip if --fast or no engine) ---
 
   if (fastMode || !engine) {
     if (!engine) {
-      checks.push({ name: 'connection', status: 'warn', message: 'No database configured (filesystem checks only)' });
+      // Pick the precise message. When dbSource is provided, we know
+      // whether a URL exists (env or config-file) — the caller simply
+      // skipped the connection. When null, there really is no config
+      // anywhere.
+      let msg: string;
+      if (fastMode && dbSource) {
+        msg = `Skipping DB checks (--fast mode, URL present from ${dbSource})`;
+      } else if (!fastMode && dbSource) {
+        msg = `Could not connect to configured DB (URL from ${dbSource}); filesystem checks only`;
+      } else {
+        msg = 'No database configured (filesystem checks only). Set GBRAIN_DATABASE_URL or run `gbrain init`.';
+      }
+      checks.push({ name: 'connection', status: 'warn', message: msg });
     }
     const earlyFail1 = outputResults(checks, jsonOutput);
     process.exit(earlyFail1 ? 1 : 0);
@@ -179,15 +241,30 @@ export async function runDoctor(engine: BrainEngine | null, args: string[]) {
     checks.push({ name: 'rls', status: 'warn', message: 'Could not check RLS status' });
   }
 
-  // 6. Schema version
+  // 6. Schema version — also surfaces the #218 "postinstall silently failed"
+  // state: if schema_version is 0/missing but the DB connected, migrations
+  // never ran. That's the same class as a half-migrated install, just from a
+  // different root cause (Bun blocked our top-level postinstall on global
+  // install). Message is actionable either way.
   let schemaVersion = 0;
   try {
     const version = await engine.getConfig('version');
     schemaVersion = parseInt(version || '0', 10);
     if (schemaVersion >= LATEST_VERSION) {
       checks.push({ name: 'schema_version', status: 'ok', message: `Version ${schemaVersion} (latest: ${LATEST_VERSION})` });
+    } else if (schemaVersion === 0) {
+      checks.push({
+        name: 'schema_version',
+        status: 'fail',
+        message: `No schema version recorded. Migrations never ran. Fix: gbrain apply-migrations --yes. ` +
+                 `If you installed via 'bun install -g github:...', see https://github.com/garrytan/gbrain/issues/218.`,
+      });
     } else {
-      checks.push({ name: 'schema_version', status: 'warn', message: `Version ${schemaVersion}, latest is ${LATEST_VERSION}. Run gbrain init to migrate.` });
+      checks.push({
+        name: 'schema_version',
+        status: 'warn',
+        message: `Version ${schemaVersion}, latest is ${LATEST_VERSION}. Fix: gbrain apply-migrations --yes`,
+      });
     }
   } catch {
     checks.push({ name: 'schema_version', status: 'warn', message: 'Could not check schema version' });
@@ -216,7 +293,6 @@ export async function runDoctor(engine: BrainEngine | null, args: string[]) {
   }
 
   // 8. Graph health (link + timeline coverage on entity pages).
-  // dead_links removed in v0.10.1: ON DELETE CASCADE on link FKs makes it always 0.
   try {
     const health = await engine.getHealth();
     const linkPct = ((health.link_coverage ?? 0) * 100).toFixed(0);
@@ -229,6 +305,27 @@ export async function runDoctor(engine: BrainEngine | null, args: string[]) {
         status: 'warn',
         message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}%. Run: gbrain link-extract && gbrain timeline-extract`,
       });
+    }
+
+    // Bug 11 — brain_score breakdown. When the total is < 100, show which
+    // components contributed the deficit so users know what to fix.
+    // Uses distinct *_score field names (not overloading link_coverage /
+    // timeline_coverage, which are entity-scoped).
+    if (health.brain_score < 100) {
+      const parts = [
+        `embed ${health.embed_coverage_score}/35`,
+        `links ${health.link_density_score}/25`,
+        `timeline ${health.timeline_coverage_score}/15`,
+        `orphans ${health.no_orphans_score}/15`,
+        `dead-links ${health.no_dead_links_score}/10`,
+      ];
+      checks.push({
+        name: 'brain_score',
+        status: health.brain_score >= 70 ? 'ok' : 'warn',
+        message: `Brain score ${health.brain_score}/100 (${parts.join(', ')})`,
+      });
+    } else {
+      checks.push({ name: 'brain_score', status: 'ok', message: `Brain score 100/100` });
     }
   } catch {
     checks.push({ name: 'graph_coverage', status: 'warn', message: 'Could not check graph coverage' });
@@ -333,6 +430,51 @@ export async function runDoctor(engine: BrainEngine | null, args: string[]) {
     checks.push({ name: 'markdown_body_completeness', status: 'ok', message: 'Skipped (raw_data unavailable)' });
   }
 
+  // 11. Index audit (opt-in via --index-audit). v0.13.1 follow-up to #170.
+  // Reports indexes with zero recorded scans on Postgres. Informational only;
+  // we DO NOT auto-drop. On #170's brain, idx_pages_frontmatter and
+  // idx_pages_trgm showed 0 scans — the suggestion there is "consider
+  // investigating on YOUR brain," not "drop these globally." Zero scans on a
+  // fresh install is also normal (nothing has queried yet); the real signal
+  // is zero scans on a long-running active brain.
+  if (args.includes('--index-audit')) {
+    if (engine.kind === 'pglite') {
+      checks.push({
+        name: 'index_audit',
+        status: 'ok',
+        message: 'Skipped (PGLite — pg_stat_user_indexes is a Postgres extension)',
+      });
+    } else {
+      try {
+        const sql = db.getConnection();
+        const rows = await sql`
+          SELECT schemaname, relname AS table, indexrelname AS index,
+                 idx_scan, pg_size_pretty(pg_relation_size(indexrelid)) AS size
+            FROM pg_stat_user_indexes
+           WHERE schemaname = 'public'
+             AND idx_scan = 0
+           ORDER BY pg_relation_size(indexrelid) DESC
+           LIMIT 20
+        `;
+        if (rows.length === 0) {
+          checks.push({ name: 'index_audit', status: 'ok', message: 'All public indexes have recorded scans' });
+        } else {
+          const list = rows.map((r: any) => `${r.index}(${r.size})`).join(', ');
+          checks.push({
+            name: 'index_audit',
+            status: 'warn',
+            message: `${rows.length} zero-scan index(es): ${list}. ` +
+                     `Consider investigating whether they're used on YOUR workload (fresh brains naturally show zero scans until queries accumulate). ` +
+                     `Do not drop without confirming.`,
+          });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        checks.push({ name: 'index_audit', status: 'warn', message: `Index audit failed: ${msg}` });
+      }
+    }
+  }
+
   const hasFail = outputResults(checks, jsonOutput);
 
   // Features teaser (non-JSON, non-failing only)
@@ -350,6 +492,36 @@ export async function runDoctor(engine: BrainEngine | null, args: string[]) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Print the auto-fix report in human-readable form. JSON output goes through
+ *  outputResults alongside the check list; this is the pretty-print path. */
+function printAutoFixReport(report: AutoFixReport, dryRun: boolean, jsonOutput: boolean): void {
+  if (jsonOutput) return; // JSON consumers read autoFixReport via the check issues / caller
+  const verb = dryRun ? 'PROPOSED' : 'APPLIED';
+  for (const outcome of report.fixed) {
+    console.log(`[${verb}] ${outcome.skillPath} (${outcome.patternLabel})`);
+    if (outcome.before) {
+      console.log('--- before');
+      console.log(outcome.before);
+      console.log('--- after');
+      console.log(outcome.after ?? '');
+      console.log('');
+    }
+  }
+  const n = report.fixed.length;
+  const s = report.skipped.length;
+  if (n === 0 && s === 0) {
+    console.log('Doctor --fix: no DRY violations to repair.');
+    return;
+  }
+  const label = dryRun ? 'fixes proposed' : 'fixes applied';
+  console.log(`${n} ${label}${s > 0 ? `, ${s} skipped:` : '.'}`);
+  for (const sk of report.skipped) {
+    const hint = sk.reason === 'working_tree_dirty' ? ' (run `git stash` first)' : '';
+    console.log(`  - ${sk.skillPath}: ${sk.reason}${hint}`);
+  }
+  if (dryRun && n > 0) console.log('\nRun without --dry-run to apply.');
+}
 
 /** Find the GBrain repo root by walking up from cwd looking for skills/RESOLVER.md */
 function findRepoRoot(): string | null {
