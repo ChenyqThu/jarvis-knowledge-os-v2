@@ -1,8 +1,8 @@
 # Jarvis Knowledge OS v2 — Architecture & Runbook
 
-> 2026-04-17 | Lucien × Jarvis (last sync: 2026-04-20 → upstream v0.14.0)
+> 2026-04-17 | Lucien × Jarvis (last sync: 2026-04-22 → upstream v0.15.1)
 > Fork: [`ChenyqThu/jarvis-knowledge-os-v2`](https://github.com/ChenyqThu/jarvis-knowledge-os-v2)
-> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.14.0
+> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.15.1 (override: `@electric-sql/pglite` pinned to 0.4.4 instead of upstream's 0.4.3; see §6.6)
 > Previous: [`ChenyqThu/jarvis-knowledge-os`](https://github.com/ChenyqThu/jarvis-knowledge-os) (v1, frozen at tag `v1-frozen` on 2026-04-16)
 
 ---
@@ -39,7 +39,7 @@ two-sync Notion Worker idiom, and compounding signal-detector loop.
               ╱           ↕
   Knowledge-OS v2 ────────────── OpenClaw Jarvis
   (GBrain fork)                  (execution orchestrator)
-   100 compiled pages            3-agent topology
+   ~1800 compiled pages          3-agent topology
    kos-compat-api (v2) 7220      6 cron jobs
    gemini-embed-shim 7222        feishu skill (HTTP to kos.chenge.ink)
    v1 kos-api.py unloaded        MEMORY reflux (digest-to-memory)
@@ -86,7 +86,7 @@ two-sync Notion Worker idiom, and compounding signal-detector loop.
                               │
                               ▼
              PGLite database at ~/.gbrain/brain.pglite
-             (85 pages, 92 chunks, pgvector HNSW index)
+             (~1800 pages, ~3300 chunks, pgvector HNSW index)
 ```
 
 ### Port map
@@ -238,8 +238,84 @@ quiet-hours), and shell job type. We merged, ran the full test suite
 
 ---
 
+## 6.6 Upstream v0.15.1 sync (2026-04-22)
+
+Routine follow-on to 6.5. Merged upstream four releases (v0.14.1 doctor
+DRY detection, v0.14.2 eight root-cause fixes, v0.15.0 llms.txt +
+AGENTS.md generation, v0.15.1 fix wave). No code conflicts. The whole
+trigger for this sync was today's production outage: `bun update` had
+earlier pulled in the wrong same-named npm package (`gbrain@1.3.1`, a
+browser charting library) which transitively downgraded
+`@electric-sql/pglite` to 0.3.6; that version connects to `template1` by
+default against a 0.4.x-created data directory, so every `gbrain` call
+returned "relation pages does not exist". The whole DB-corruption story
+in the initial triage was a misdiagnosis — fixing the dep restored full
+service.
+
+### What we adopted
+
+| Feature | Status | Surface |
+|---|---|---|
+| Pglite pin (`@electric-sql/pglite`) | **Overridden** | Upstream pinned 0.4.3 as a "best shot" against the macOS 26.3 WASM init bug ([#223](https://github.com/garrytan/gbrain/issues/223)). On this machine 0.4.3 still aborts; `0.4.4` opens the same data dir cleanly. Pin in our `package.json` sits one patch ahead of upstream until upstream promotes. |
+| `doctor --fix` auto-repair | Live | `gbrain doctor --fix` closes the 9 DRY warnings we've been carrying. Not run yet (cosmetic; would touch upstream skills). |
+| `gbrain check-resolvable --json` | Not used | Agent-facing resolver validation; our RESOLVER.md has no broken trigger map. |
+| `llms.txt` / `AGENTS.md` generation | Inherited upstream files | Shipped but not customized. |
+
+### Schema state: stayed at v4 intentionally
+
+Running `gbrain apply-migrations` today reached v15 but the schema-level
+migration pipeline requires `gbrain init --migrate-only` to run twice
+(once before orchestrator phase A, once inside it); the second call's
+PGLite handle collides with the first's. When a process holding PGLite
+mid-transaction is killed (which happened here — notion-poller
+wrapper wedged on the lock, had to SIGTERM it), the on-disk WASM page
+cache left the data dir in a state where subsequent `PGlite.create()`
+throws `Aborted()` unconditionally. Current live DB was restored from
+`brain.pglite.pre-v0.15.1-sync-<ts>` (pre-migration state, schema v4)
+and stays there until the migration sequence gets reworked (see P0
+below). External consumers only use `/query` + `/ingest`; neither
+touches v5–v15 surfaces, so schema v4 is production-safe.
+
+### Filed upstream
+
+- **[garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332)**
+  — v0.13.0 migration orchestrator uses `process.execPath` for the
+  gbrain binary, which on bun-runtime installs resolves to the bun
+  interpreter itself. Effect: `frontmatter_backfill` phase calls
+  `bun extract` (not `gbrain extract`), bun interprets it as an npm
+  script and fires `bun init` as a side effect — silently polluting
+  `package.json` (`"private": true`, typescript peerDep) and creating
+  `.cursor/rules/`. Our worktree got bitten once today; both artifacts
+  were reverted. Pending upstream fix.
+
+### New P0 surfaced during sync
+
+`scripts/minions-wrap/notion-poller.sh` deadlocks on the PGLite lock
+under the current `--follow` design: outer `gbrain jobs submit --follow`
+holds the lock while the inline shell runs `workers/notion-poller/run.ts`,
+which posts `/ingest` back to `kos-compat-api`, which `spawnSync`s
+`gbrain import` — the subprocess can't get the lock. Launchd unloaded
+the job (`com.jarvis.notion-poller` stays `Disabled=1`). Three
+architectural options in `skills/kos-jarvis/TODO.md`; upstream v0.16.1
+ships a `docs/guides/minions-deployment.md` that may decide it for us
+on the next sync.
+
+### Rollback
+
+- Merge commit: `44c7001` fast-forwarded onto master → current tip.
+  Rollback tag: `pre-sync-v0.15.1` at `0c0ceec`.
+- PGLite rollback: `~/.gbrain/brain.pglite.pre-v0.15.1-sync-1776819001`
+  is the last known-good pre-migration copy. `mv` it into
+  `~/.gbrain/brain.pglite` and the service is restored to the 1767-page
+  state at 2026-04-22 01:30 UTC.
+- No launchd plist changes in this sync.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
+- **P0**: `scripts/minions-wrap/notion-poller.sh` deadlocks on PGLite lock (see §6.6). Architectural call pending; `com.jarvis.notion-poller` launchd job stays `Disabled=1` until resolved. Notion ingest only runs on manual `/ingest` until then.
+- **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED`; cosmetic, no runtime impact. Watch upstream.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
 - **P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable
   helpers — agent-driven only. Observed in the post-cutover query regression — questions about these skills return "not in retrieval" because there's no page describing them in the v2 brain (only SKILL.md files).
