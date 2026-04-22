@@ -10,6 +10,7 @@
  * Exit: 0 clean | 1 any ERROR | 2 only WARN
  */
 import { spawnSync } from "node:child_process";
+import { BrainDb, type PageRow } from "../_lib/brain-db.ts";
 
 type Severity = "ERROR" | "WARN";
 type Finding = { check: number; severity: Severity; slug?: string; message: string };
@@ -21,26 +22,47 @@ type ListRow = { slug: string; type?: string; title?: string; updated?: string }
 function gbrain(args: string[]): string {
   const r = spawnSync("gbrain", args, { encoding: "utf-8" });
   if (r.status !== 0) {
+    // `config get <key>` exits non-zero on "Config key not found"; for our
+    // callers that's equivalent to "not set" and should not kill the process.
+    if (args[0] === "config" && args[1] === "get" && /Config key not found/i.test(r.stderr)) {
+      return "";
+    }
     throw new Error(`gbrain ${args.join(" ")} failed: ${r.stderr}`);
   }
   return r.stdout;
 }
 
+// BrainDb-backed caches. Before v0.17 sync, kos-lint shelled `gbrain list` +
+// `gbrain get` per page, which capped at 100 rows (MCP list_pages clamp) and
+// took ~1 subprocess per page. The direct DB read is unlimited, ~100x faster,
+// and gives a complete slug set for dead-link resolution.
+let _allPagesCache: PageRow[] | null = null;
+let _bodyCache = new Map<string, string>();
+
+function setupBrainCache(rows: PageRow[]): void {
+  _allPagesCache = rows;
+  _bodyCache = new Map<string, string>();
+  for (const r of rows) {
+    const fmYaml = Object.entries(r.frontmatter)
+      .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+      .join("\n");
+    const body = `---\n${fmYaml}\n---\n\n${r.compiled_truth}\n\n${r.timeline}`.trimEnd();
+    _bodyCache.set(r.slug, body);
+  }
+}
+
 function listAll(): ListRow[] {
-  // gbrain list prints TSV: slug \t type \t updated \t title
-  const out = gbrain(["list", "--limit", "10000"]);
-  return out
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [slug, type, updated, ...titleParts] = line.split("\t");
-      return { slug, type, updated, title: titleParts.join("\t") };
-    });
+  if (_allPagesCache === null) throw new Error("setupBrainCache() not called");
+  return _allPagesCache.map((p) => ({
+    slug: p.slug,
+    type: p.type,
+    updated: p.updated_at,
+    title: p.title,
+  }));
 }
 
 function getPage(slug: string): string {
-  return gbrain(["get", slug]);
+  return _bodyCache.get(slug) ?? "";
 }
 
 function parseFrontmatter(raw: string): Record<string, string> {
@@ -125,27 +147,40 @@ function check2(rows: ListRow[]): Finding[] {
   return out;
 }
 
-// Check 3: dead internal links (markdown [...](slug.md) pointing nowhere)
+// Check 3: dead internal links (markdown [...](slug.md) pointing nowhere).
+// v0.17 sync: try BOTH the dir-prefixed slug (v2 gbrain shape, `sources/foo`)
+// AND the flat basename (v1 legacy shape, `foo`) before declaring dead. v1
+// wiki imports heavily cross-link via `../sources/foo.md`; the old resolver
+// only matched the basename and falsely flagged ~112 dead links.
+function candidateSlugs(target: string): string[] {
+  // Strip leading `./` and any number of `../`
+  const cleaned = target.replace(/^(?:\.\.?\/)+/, "").replace(/\.md$/, "");
+  const basename = cleaned.replace(/.*\//, "");
+  // Prefer dir-prefixed; fall back to flat basename.
+  if (cleaned === basename) return [basename];
+  return [cleaned, basename];
+}
+
 function check3(rows: ListRow[]): Finding[] {
   const knownSlugs = new Set(rows.map((r) => r.slug));
   const out: Finding[] = [];
   let dead = 0;
   for (const row of rows) {
     const body = getPage(row.slug);
-    // match [text](target) where target is a relative .md link
     const re = /\]\(([^)#?]+\.md)(?:#[^)]*)?\)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(body)) !== null) {
       const target = m[1];
       if (target.startsWith("http")) continue;
-      const slug = target.replace(/.*\//, "").replace(/\.md$/, "");
-      if (!knownSlugs.has(slug)) {
+      const candidates = candidateSlugs(target);
+      const resolved = candidates.some((s) => knownSlugs.has(s));
+      if (!resolved) {
         dead++;
         out.push({
           check: 3,
           severity: "ERROR",
           slug: row.slug,
-          message: `dead link → ${target}`,
+          message: `dead link → ${target} (tried: ${candidates.join(", ")})`,
         });
       }
     }
@@ -154,25 +189,23 @@ function check3(rows: ListRow[]): Finding[] {
   return out;
 }
 
-// Check 4: orphans — zero inbound backlinks
+// Check 4: orphans — zero inbound backlinks. Reads the inbound-count map
+// populated by main() from BrainDb.inboundCounts (one query for the whole
+// brain vs per-page `gbrain backlinks` subprocess).
+let _inboundMap: Map<string, number> | null = null;
 function check4(rows: ListRow[]): Finding[] {
+  if (!_inboundMap) throw new Error("inbound map not initialized");
   const out: Finding[] = [];
   let orphans = 0;
   for (const row of rows) {
-    try {
-      const bl = gbrain(["backlinks", row.slug]);
-      // "No incoming links" or empty stdout = orphan
-      if (!bl.trim() || /no (incoming|backlinks)/i.test(bl)) {
-        orphans++;
-        out.push({
-          check: 4,
-          severity: "WARN",
-          slug: row.slug,
-          message: "orphan (zero backlinks)",
-        });
-      }
-    } catch {
-      // backlinks may fail on some pages; treat as non-orphan noise
+    if ((_inboundMap.get(row.slug) ?? 0) === 0) {
+      orphans++;
+      out.push({
+        check: 4,
+        severity: "WARN",
+        slug: row.slug,
+        message: "orphan (zero backlinks)",
+      });
     }
   }
   console.log(`[4] Orphans: ${orphans} found`);
@@ -244,13 +277,23 @@ function check6(rows: ListRow[]): Finding[] {
   return out;
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const jsonMode = args.includes("--json");
   const checkArg = args.indexOf("--check");
   const only = checkArg >= 0 ? Number(args[checkArg + 1]) : undefined;
 
   console.log(`=== kos-lint @ ${new Date().toISOString().slice(0, 10)} ===`);
+
+  const db = new BrainDb();
+  await db.open();
+  try {
+    const allPages = await db.listAllPages();
+    setupBrainCache(allPages);
+    _inboundMap = await db.inboundCounts();
+  } finally {
+    await db.close();
+  }
   const rows = listAll();
 
   // Check 3 (dead internal links) is retired from the default sweep when
@@ -260,10 +303,16 @@ function main() {
   const brainWriterLintOn =
     gbrain(["config", "get", "writer.lint_on_put_page"]).trim() === "true";
 
+  // When `--check N` is explicit, run that check regardless of the
+  // brainWriterLintOn short-circuit for check 3 (the comment above claims
+  // this; the code below now honors it).
+  const forceCheck3 = only === 3;
   const runs: [number, (r: ListRow[]) => Finding[]][] = [
     [1, check1],
     [2, check2],
-    ...(brainWriterLintOn ? [] : [[3, check3] as [number, (r: ListRow[]) => Finding[]]]),
+    ...((brainWriterLintOn && !forceCheck3)
+      ? []
+      : [[3, check3] as [number, (r: ListRow[]) => Finding[]]]),
     [4, check4],
     [5, check5],
     [6, check6],
@@ -292,4 +341,7 @@ function main() {
   process.exit(errors > 0 ? 1 : warns > 0 ? 2 : 0);
 }
 
-main();
+main().catch((e) => {
+  console.error(e instanceof Error ? e.message : String(e));
+  process.exit(3);
+});

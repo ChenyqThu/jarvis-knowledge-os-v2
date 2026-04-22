@@ -135,7 +135,81 @@ v1 archive.
 
 ## P1 — quality improvements
 
-### [ ] kos-lint path resolver for KOS v1 legacy links
+### [ ] Filesystem-canonical migration — KOS v2 → .md-as-source-of-truth — 2026-04-22
+**Why**: Currently `kos-compat-api /ingest` writes **directly** to PGLite
+(no .md landed on disk) because the Notion poller HTTP-POSTs payloads
+and `spawnSync gbrain import` imports them straight into the DB. Brain
+score sits at 56/100 and `gbrain dream` (v0.17's flagship 6-phase
+nightly cycle) can't run because it expects a filesystem brain dir as
+source of truth. We also lose git history of knowledge changes and the
+Karpathy LLM-wiki self-maintenance pattern that upstream optimizes for.
+
+**What**:
+1. **Export DB → `/Users/chenyuanquan/brain/` markdown tree**. 1779 pages
+   laid out per gbrain 20-dir MECE (`people/`, `companies/`, `concepts/`,
+   `projects/`, `decisions/`, `sources/notion/`, `sources/feishu/`, ...).
+   Each .md carries the KOS frontmatter (id, kind, owners, created,
+   updated, confidence, evidence_summary, source_refs, ...) + body.
+2. **Swap write path**. `server/kos-compat-api.ts` `/ingest` handler
+   changes from `spawnSync gbrain import <stdin>` to:
+   - Write `<brain>/sources/<source>/<slug>.md` (with frontmatter)
+   - Invoke `gbrain sync <brain>` (or incremental `gbrain import <file>`)
+   Same for `workers/notion-poller/run.ts`: drop HTTP POST, go
+   file-write → sync directly.
+3. **Configure brain dir** in gbrain config (likely via `gbrain init
+   --pglite --path <brain>` or a dedicated config key; verify at
+   implementation time). Makes `gbrain dream --dir` resolve without
+   `--dir` flag.
+4. **Git-track** `/Users/chenyuanquan/brain/` as its own repo (private).
+   Every ingest = commit. Every dream cycle = commit. Knowledge VCS.
+5. **Enable dream cron**. After lint/backlinks audit on KOS frontmatter
+   (may false-positive on `kind`, `evidence_summary` if upstream lint
+   doesn't know those keys — gate accordingly).
+6. **Retain `kos-compat-api`** for the HTTP boundary (`kos.chenge.ink`
+   still needs Bearer-token auth and the existing `/query /ingest
+   /digest /status` contract for Notion Knowledge Agent + OpenClaw
+   feishu). Just change its implementation.
+
+**Benefits**:
+- `gbrain dream` works natively → lint + backlinks + sync + extract +
+  embed + orphans as one nightly verb.
+- Brain becomes inspectable via plain filesystem tools (grep, find, git
+  log, any text editor).
+- Karpathy LLM-wiki model: markdown files ARE the wiki.
+- Inherits upstream improvements automatically (dream enhancements,
+  lint rules, backlinks algorithms).
+- Compute-cheap: sync is incremental (hash-diff per file).
+
+**Size**: ~1 week of focused work. Not one session. Needs its own
+plan doc + dry-run export first.
+
+**Supersedes**: Path C (kos-compat-api in-process import) — that was
+the Band-Aid for the lock-contention problem. Filesystem-canonical is
+the architectural cure that also fixes dream, orphans, and knowledge
+VCS in the same move.
+
+**Not started**. Tracked here as the anchor for next-next session.
+
+### [ ] orphan reducer — bring brain_score orphans from 2/15 → 10+/15 — 2026-04-22
+**Why**: `gbrain doctor --json` shows orphans 2/15 (many pages have no
+inbound wikilinks). Biggest single pull on brain_score after
+links/timeline.
+
+**What**: new `skills/kos-jarvis/orphan-reducer/run.ts` that:
+1. `gbrain orphans --json --include-pseudo=false` to list candidates
+2. For each orphan, retrieve the page body + compute vector-similar
+   pages (via `gbrain ask <title> --json`)
+3. Haiku classifier: "does page A have a claim that would supplement/
+   contrast/implement/extend page B?" (reuse `dikw-compile` link types)
+4. If yes, add `[[<orphan>]]` wikilinks to the top-K strong matches
+   (bounded: ≤3 inbound edges per sweep per orphan, cap total at 100
+   pages per run). Emit a diff report.
+5. Write diffs to `~/brain/agent/orphan-reducer-<date>.md` for review.
+   `--apply` flag actually executes (via `gbrain link` or page edits).
+
+**Not started**. Roughly ~200 LOC + Haiku calls.
+
+### [x] kos-lint path resolver for KOS v1 legacy links — 2026-04-22
 `kos-lint` currently reports 112 "dead links" after full import, mostly
 because v1 wrote relative markdown links like `../sources/foo.md` and the
 resolver strips path to slug `foo` instead of checking `sources/foo`.
@@ -143,15 +217,23 @@ resolver strips path to slug `foo` instead of checking `sources/foo`.
 **What**: normalize target to try both flat slug AND dir-prefixed slug before
 declaring dead. Should drop noise from ~112 to ~10-20 actual-dead.
 
-### [ ] dikw-compile/run.ts (actually runnable)
+**Done 2026-04-22 session** — see commit log; `run.ts` landed, direct PGLite reader in `skills/kos-jarvis/_lib/brain-db.ts`.
+
+### [x] dikw-compile/run.ts (analysis-only grade+sweep) — 2026-04-22
 SKILL.md is thorough, but no bun helper exists. Without it, dikw-compile
 is agent-driven only. Adding run.ts unlocks cron-based re-compile sweeps.
 
-### [ ] evidence-gate/run.ts
+**Done 2026-04-22 session** — see commit log; `run.ts` landed, direct PGLite reader in `skills/kos-jarvis/_lib/brain-db.ts`.
+
+### [x] evidence-gate/run.ts — 2026-04-22
 Ditto. Single-page evaluator for agent or CLI use.
 
-### [ ] confidence-score/run.ts
+**Done 2026-04-22 session** — see commit log; `run.ts` landed, direct PGLite reader in `skills/kos-jarvis/_lib/brain-db.ts`.
+
+### [x] confidence-score/run.ts — 2026-04-22
 Ditto.
+
+**Done 2026-04-22 session** — see commit log; `run.ts` landed, direct PGLite reader in `skills/kos-jarvis/_lib/brain-db.ts`.
 
 ---
 
