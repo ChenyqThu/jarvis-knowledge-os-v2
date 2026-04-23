@@ -5,26 +5,36 @@
 > Method: `gbrain export` → `/tmp/brain-export-preview/` → structural + frontmatter audit
 > Artifact cleaned after audit; numbers captured here for future sessions.
 
-## Verdict: **GO, with 3 pre-migration blockers**
+## Verdict: **GO, Steps 1.5 + 1.6 landed 2026-04-23. Only Step 2 (/ingest flip) remains.**
 
-The upstream `gbrain export` faithfully materializes our 1786-page KOS brain to a
+The upstream `gbrain export` faithfully materializes our 1829-page KOS brain to a
 markdown tree. KOS-critical frontmatter is preserved end-to-end, the directory
 layout is predictable (slug-prefix → dir), and there's zero DB-only data (no
 `.raw/*.json` sidecars anywhere). This path is viable.
 
-Three blockers must be solved before flipping the `/ingest` write path to
-filesystem-first: slug-hygiene normalization, legacy `id: >-` block-scalar
-rewrite, and a type/kind round-trip verification. Details in §5. None are
-deal-breakers — scope is ~1 week of focused work.
+**Post-audit work completed same session (2026-04-23 UTC)**:
+- **Step 1.5 — slug normalization**: 7 root-level stray pages renamed
+  (`ai-jarvis` → `concepts/ai-jarvis`; 6 × `<domain>-<path>` → `sources/…`),
+  1 intra-brain markdown link rewritten. All via new
+  `skills/kos-jarvis/slug-normalize/` skill under the mandatory
+  launchctl-disable + rolling-backup protocol. 15/15 verify assertions passed.
+- **Step 1.6 — markdown round-trip**: ran `serializeMarkdown → parseMarkdown`
+  on all 1829 pages, compared 10 KOS-critical frontmatter fields. **1829/1829
+  clean, 0 diffs.** Upstream's `parseMarkdown` passes unknown keys (including
+  `kind`) through as plain frontmatter JSONB, so re-ingest is safe.
+- `id: >-` pseudo-blocker withdrawn (see §5.4 — gray-matter line-folding, not
+  data damage).
 
-**Correction log (2026-04-22, same session)**: an earlier draft of this report
-listed `gbrain lint` false-positives on `[E3]` / `[10]+` KOS evidence tags as
-a 4th blocker. That analysis was wrong — the `placeholder-date` rule only
-matches literal `YYYY-MM-DD` / `XX-XX` tokens (see `src/commands/lint.ts:70`)
-and the single finding in the sample was a legitimate `YYYY-MM-DD` string in
-page body that happened to reference a filename template. Full correction in
-§5.2. The proposed "fork-local lint shim" is withdrawn — it was solving a
-problem that does not exist.
+**Still to do**: Step 2 (/ingest write-path flip). Multi-week. Not in the
+Step-1.x audit scope.
+
+**Correction log (2026-04-22)**: an earlier draft listed `gbrain lint`
+false-positives on `[E3]` / `[10]+` KOS evidence tags as a 4th blocker.
+That analysis was wrong — the `placeholder-date` rule only matches literal
+`YYYY-MM-DD` / `XX-XX` tokens (see `src/commands/lint.ts:70`) and the single
+finding in the sample was a legitimate `YYYY-MM-DD` string referencing a
+filename template. Full correction in §5.2. The proposed "fork-local lint
+shim" was withdrawn — it was solving a problem that does not exist.
 
 ---
 
@@ -260,16 +270,26 @@ preview` into a throwaway PGLite, then compare `kind` column vs frontmatter
 `kind` flows through as a pass-through frontmatter field. Likely OK but needs
 one end-to-end verification.
 
-### 5.4 `id: >-` block-scalar frontmatter (262 pages)
+### 5.4 `id: >-` block-scalar frontmatter — **withdrawn**
 
-Ugly legacy from the pre-fix Notion poller. Each affected page has:
-```yaml
-id: >-
-  source-sources/notion/re-unanswered-tickets-update-33c15375830d81dba5d0f51fe9c2b41d
-```
-instead of a quoted one-liner. Parseable YAML, but any re-export → re-import
-round-trip may reformat and diff-churn. Candidate for one-time bulk rewrite
-before filesystem-canonical flip.
+**This was not a real blocker.** DB probe via `BrainDb.listAllPages()`
+confirmed all 1829 pages store `frontmatter.id` as plain strings — zero
+contain literal newlines. The `id: >-` shape seen in 262 export files is
+`matter.stringify` / js-yaml's automatic block-scalar choice for strings
+exceeding ~80 chars. It's deterministic (same input → same output), so
+git-VCS won't churn. Example: `source-sources/notion/re-action-needed-
+new-support-ticket-assigned-974842fa-...` at 115 chars trips the
+threshold.
+
+The only observable downside was aesthetic. No data problem, no
+round-trip risk (Step 1.6 confirmed `id` field survives serialize→parse
+cleanly across all 1829 pages). Not worth a bulk rewrite.
+
+Origin of the misreading: earlier draft of this report counted 262
+`id: >-` appearances in the export tree and assumed they represented
+legacy poller damage. Reading `src/core/markdown.ts:serializeMarkdown`
+shows gray-matter's stringifier is the source of the line-folding —
+pure presentation.
 
 ---
 
@@ -289,44 +309,96 @@ before filesystem-canonical flip.
 
 ## 7. Recommended next steps (order-dependent)
 
-Supersedes an earlier draft that started with a `lint shim` Step 1.5. That
-step has been withdrawn per §5.2 correction.
+### ✅ Step 1.5 — Slug normalization (done 2026-04-23)
 
-1. **Step 1.5 — Slug normalization + `id: >-` cleanup** (DB write, highest
-   care). One-time bulk rewrite, covers:
-   - 7 root stray → prefix with `concepts/` or `sources/` (§5.1)
-   - 262 pages with `id: >-` block-scalar → quoted one-liner (§5.4)
-   - (optional, deferred) v1 wiki 85 pages → move into `sources/wiki/`
-   **Safety protocol** (mandatory — learned from v0.17 sync WASM incident):
-   `launchctl disable user/$UID/com.jarvis.{notion-poller,kos-compat-api,kos-patrol,enrich-sweep,kos-deep-lint}`
-   → fresh rolling backup of `~/.gbrain/brain.pglite` → run script →
-   `gbrain extract links --source db` → `launchctl enable` + `bootstrap`.
-   Never SIGTERM a PGLite writer mid-rewrite.
+Delivered via new `skills/kos-jarvis/slug-normalize/` skill (SKILL.md +
+run.ts). Three-mode:
+- `--plan`: read-only preview, emits JSON with target pages + collision check
+- `--apply`: transactional UPDATE (7 slug renames + 1 body rewrite)
+- `--verify`: 15 post-apply assertions
 
-2. **Step 1.6 — Round-trip sanity check**. `gbrain export --dir /tmp/rt-test`
-   → fresh throwaway PGLite via `gbrain init --path /tmp/rt-pglite` →
-   `gbrain import /tmp/rt-test` → compare `kind` / `status` / `confidence` /
-   `source_of_truth` columns between original and round-tripped rows. Proves
-   `kind:` survives markdown round-trip (upstream's `parseMarkdown` reads
-   only `type:`). Last gate before any write-path flip.
+All 15 assertions passed on 2026-04-23. Report at
+`~/brain/agent/reports/slug-normalize-2026-04-23.md`. Total pages 1829 →
+1829 (no drift). `id: >-` sub-task was withdrawn — see §5.4; it was
+gray-matter line-folding, not data damage.
 
-3. **Step 2 — Flip `/ingest` to filesystem-first**. Only after 1.5 + 1.6
-   land clean. `server/kos-compat-api.ts` /ingest handler changes from
-   `spawnSync gbrain import <stdin>` to file-write → `gbrain sync`; poller
-   similarly. Configure `sync.repo_path` so `gbrain dream` resolves without
-   `--dir`. Git-track the brain dir. Cut over launchd, verify, monitor one
-   live Notion cycle.
+**Safety protocol that was followed** (record for future DB-write ops):
 
-Steps 1.5 and 1.6 each fit in one session (~1-2 h). Step 2 stays multi-week
-per TODO estimate.
+```bash
+# 1. Hard-disable DB-writing launchd services (gui domain for user agents).
+for svc in notion-poller kos-compat-api kos-patrol enrich-sweep kos-deep-lint; do
+  launchctl disable user/$UID/com.jarvis.$svc
+  launchctl bootout gui/$UID/com.jarvis.$svc 2>/dev/null || true
+done
+launchctl bootout gui/$UID/com.jarvis.cloudflared   # block external ingest
+lsof ~/.gbrain/brain.pglite                         # must be empty
 
-**Note on the post-migration lint phase**: once `gbrain dream` is wired, its
-lint phase will surface ~3-5 legitimate `placeholder-date` findings (see
-§5.2). Options at that point: (a) patch the bodies to wrap filename templates
-in code spans, (b) accept the findings as non-fixable noise in the nightly
-JSON report, (c) skip lint phase via `gbrain dream --phase <not-lint>` (needs
-upstream enhancement for blacklist; today `--phase` accepts a single phase
-only). Decide at that time, not now.
+# 2. Fresh rolling backup (delete prior; keep one).
+rm -rf ~/.gbrain/brain.pglite.pre-*
+cp -R ~/.gbrain/brain.pglite ~/.gbrain/brain.pglite.pre-slug-normalize-$(date +%s)
+
+# 3. Apply + verify.
+bun run skills/kos-jarvis/slug-normalize/run.ts --plan    # must show check.clean=true
+bun run skills/kos-jarvis/slug-normalize/run.ts --apply
+bun run skills/kos-jarvis/slug-normalize/run.ts --verify  # must show ok=true
+
+# 4. Re-enable services.
+for svc in notion-poller kos-compat-api cloudflared kos-patrol enrich-sweep kos-deep-lint; do
+  launchctl enable gui/$UID/com.jarvis.$svc
+  launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.jarvis.$svc.plist
+done
+```
+
+Two lessons captured:
+- `launchctl bootout` requires `gui/$UID/…` domain for user-level
+  LaunchAgents (not `user/$UID/…`). The latter reports success but
+  doesn't actually kill the process.
+- `gbrain export --help` has no help dispatch — unknown flags are
+  silently ignored and it writes to default `./export/`. Always pass
+  `--dir <path>` explicitly.
+- Re-running `launchctl bootstrap` on services that `launchctl enable`
+  already auto-loaded returns `Bootstrap failed: 5: Input/output error`.
+  The service is actually in the correct state (loaded, awaiting
+  StartInterval/Calendar). Verify via `launchctl list | grep jarvis`
+  showing the service name, not by relying on bootstrap exit code.
+
+### ✅ Step 1.6 — Markdown round-trip sanity (done 2026-04-23)
+
+Delivered as `skills/kos-jarvis/slug-normalize/roundtrip-check.ts`
+(TypeScript probe, no DB writes). Runs `serializeMarkdown → parseMarkdown`
+on every page and compares 10 KOS-critical frontmatter fields
+(`kind`, `status`, `confidence`, `source_of_truth`, `owners`,
+`evidence_summary`, `source_refs`, `related`, `aliases`, `id`).
+
+**Result**: 1829/1829 clean. 0 diffs across any field. Confirmed
+`kind:` (and other KOS-specific keys) survive the upstream markdown
+round-trip as pass-through frontmatter JSONB. The 27% type/kind drift
+noted in §5.3 is safe to preserve as-is through filesystem-canonical flip.
+
+Rejected the original plan of "throwaway PGLite via `gbrain init --path`
++ `gbrain import`" — `gbrain import` has no `--path` override, so it
+would have required swapping `~/.gbrain/config.json.database_path` and
+disabling all DB-writing services for the full window. Pure-function
+round-trip gives equivalent confidence at zero DB risk.
+
+### Step 2 — Flip `/ingest` to filesystem-first (next major anchor)
+
+Only safe to start now that 1.5 + 1.6 are green. `server/kos-compat-api.ts`
+/ingest handler changes from `spawnSync gbrain import <stdin>` to
+file-write → `gbrain sync`; poller similarly. Configure
+`sync.repo_path` so `gbrain dream` resolves without `--dir`. Git-track
+the brain dir. Cut over launchd, verify, monitor one live Notion cycle.
+
+Scope is multi-week. Not one session. See the new handoff doc for the
+recommended first micro-step.
+
+**Note on the post-migration lint phase**: once `gbrain dream` is wired,
+its lint phase will surface ~3-5 legitimate `placeholder-date` findings
+(see §5.2). Options at that point: (a) patch the bodies to wrap filename
+templates in code spans, (b) accept the findings as non-fixable noise in
+the nightly JSON report, (c) skip lint phase via `gbrain dream --phase
+<not-lint>` (needs upstream enhancement for blacklist; today `--phase`
+accepts a single phase only). Decide at that time, not now.
 
 ---
 

@@ -137,29 +137,34 @@ v1 archive.
 
 ### [ ] Filesystem-canonical migration — KOS v2 → .md-as-source-of-truth — 2026-04-22
 
-**Step 1 complete (2026-04-22)**: export dry-run + audit done. Full report
-in [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](../../docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md).
-Verdict: **GO**, with 3 pre-migration blockers:
-- 7 root-level stray pages without `kind/` prefix → slug normalization
-- 262 pages with legacy `id: >-` YAML block-scalar → bulk rewrite
-- type↔kind round-trip verification (487 pages carry `type: entity` + `kind: person/company`)
+**Steps 1 + 1.5 + 1.6 complete (2026-04-22 / 23)**. Full report in
+[`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](../../docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md).
 
-**Lint shim plan withdrawn (same session)**: earlier draft claimed upstream
-`gbrain lint` systematically false-positives on `[E3]`/`[10]+` KOS evidence
-tags. Wrong — the `placeholder-date` rule only matches literal
-`YYYY-MM-DD` / `XX-XX` tokens (see `src/commands/lint.ts:70`). Real
-footprint is ~3-5 findings across 1786 pages, each a legitimate filename
-template reference; hand-patchable. Moreover, CLI wrappers can't intercept
-`gbrain dream`'s lint phase because dream uses inline dynamic import
-(`src/core/cycle.ts:349-352`), not subprocess spawn. Details in audit §5.2.
+- **Step 1 (2026-04-22)**: export dry-run audit. Verdict GO. KOS frontmatter
+  preserved 100% in export; 0 raw_data sidecars means filesystem IS canonical.
+- **Step 1.5 (2026-04-23)**: slug normalization. 7 root-level stray pages
+  renamed (`ai-jarvis` → `concepts/ai-jarvis`; 6 URL-slug sources →
+  `sources/<slug>`). 1 intra-brain md-link rewired. Total pages 1829 →
+  1829 (0 drift). 15/15 verify assertions pass. Skill at
+  `skills/kos-jarvis/slug-normalize/`. Report at
+  `~/brain/agent/reports/slug-normalize-2026-04-23.md`.
+- **Step 1.6 (2026-04-23)**: markdown round-trip sanity. `serializeMarkdown
+  → parseMarkdown` on all 1829 pages, compared 10 KOS-critical frontmatter
+  fields. **1829/1829 clean, 0 diffs.** `kind:` (and other KOS-specific
+  keys) pass through upstream parse as pass-through JSONB. The 27% type/kind
+  drift is safe to preserve.
+- **`id: >-` pseudo-blocker withdrawn**: DB probe showed all 1829 pages
+  store `frontmatter.id` as plain strings. The 262 `id: >-` appearances in
+  export files come from `matter.stringify` / js-yaml auto-folding long
+  strings. Deterministic, no churn, not data damage. See audit §5.4.
+- **Lint shim plan withdrawn (2026-04-22)**: `placeholder-date` rule only
+  matches literal `YYYY-MM-DD`, not `[E3]`. CLI wrap wouldn't intercept
+  dream's inline lint invocation anyway. See audit §5.2.
 
-KOS frontmatter preserved 100% (kind/status/confidence/owners);
-0 raw_data sidecars means filesystem IS canonical (no DB-exclusive data).
-Path is viable. **Revised step plan** (order-dependent):
-- **Step 1.5** — slug + `id: >-` normalization (DB write, ~1-2 h, needs
-  service-disable + rolling-backup protocol)
-- **Step 1.6** — round-trip sanity via throwaway PGLite (~1 h)
-- **Step 2** — flip `/ingest` to filesystem-first (multi-week, not one session)
+**Remaining work for this track** (no longer one session):
+- **Step 2** — flip `/ingest` to filesystem-first + configure brain dir +
+  git-track + cut over launchd + enable `gbrain dream` cron. Multi-week.
+  See new handoff doc for the first micro-step scope.
 
 **Why**: Currently `kos-compat-api /ingest` writes **directly** to PGLite
 (no .md landed on disk) because the Notion poller HTTP-POSTs payloads

@@ -561,13 +561,91 @@ correction round also tightened the plan by removing an unnecessary step.
 
 ---
 
+## 6.9 Filesystem-canonical Steps 1.5 + 1.6 landed (2026-04-23)
+
+Same-day follow-through on §6.8. Both steps completed cleanly under the
+safety protocol; rolled up into commit `<pending>` along with the audit
+corrections from §5.2/§5.4.
+
+### Step 1.5 — Slug normalization
+
+Delivered as a new skill at `skills/kos-jarvis/slug-normalize/`
+(SKILL.md + run.ts + roundtrip-check.ts). Three modes:
+`--plan` (read-only preview), `--apply` (transactional DB write),
+`--verify` (post-apply assertions). Direct `PGlite.create` path
+(with `vector` + `pg_trgm` extensions loaded, same as
+`src/core/pglite-engine.ts:48`), not via `BrainEngine` — bypasses
+BrainWriter hooks and stays lock-compatible with the disabled launchd
+services.
+
+Executed changes:
+- 7 slug renames (`ai-jarvis` → `concepts/ai-jarvis`; 6 URL-slug
+  sources → `sources/<slug>`). `frontmatter.id` unchanged (kind-topic
+  form preserved; matches 886 other pages in the brain).
+- 1 intra-brain `compiled_truth` rewrite
+  (`projects/notion-agent` had `](www-anthropic-com-news-claude-opus-4-5.md)`
+  → `](sources/www-anthropic-com-news-claude-opus-4-5.md)`).
+- Total pages 1829 → 1829 (no drift). 15/15 verify assertions passed.
+
+Execution protocol (recorded for future DB-write ops):
+1. `launchctl disable user/$UID/com.jarvis.{5 svcs}` then
+   `launchctl bootout gui/$UID/…` — the `gui/` domain is required
+   to actually kill user-level LaunchAgents. `user/` domain's bootout
+   reports success but leaves the PID alive.
+2. `launchctl bootout gui/$UID/com.jarvis.cloudflared` to block
+   external ingest into `kos-compat-api` during the operation window.
+3. Fresh rolling backup under `~/.gbrain/brain.pglite.pre-slug-normalize-<ts>`
+   (prior v0.17-sync backup evicted per "one backup" policy).
+4. `--plan` → `--apply` → `--verify`. Each step human-readable,
+   idempotent, transactional.
+5. `launchctl enable gui/$UID/…` + `launchctl bootstrap gui/$UID …plist`
+   to restart services. Re-running `bootstrap` on already-auto-loaded
+   services returns `Input/output error 5` — benign, the service is
+   already correctly loaded.
+
+Report at `~/brain/agent/reports/slug-normalize-2026-04-23.md`.
+
+### Step 1.6 — Markdown round-trip sanity
+
+Delivered as `skills/kos-jarvis/slug-normalize/roundtrip-check.ts`.
+Runs upstream `serializeMarkdown → parseMarkdown` pair on every page
+and diff-compares 10 KOS-critical frontmatter fields (`kind`,
+`status`, `confidence`, `source_of_truth`, `owners`,
+`evidence_summary`, `source_refs`, `related`, `aliases`, `id`).
+
+**Result: 1829/1829 clean, 0 diffs.** `kind:` (and all other KOS
+extensions) survive the markdown serialize+parse loop as pass-through
+JSONB. The 27% type/kind drift noted in §6.8 is safe to carry through
+the eventual filesystem-canonical flip.
+
+Originally planned path was "throwaway PGLite via `gbrain init --path` +
+`gbrain import`". Rejected: `gbrain import` has no `--path` override,
+so a throwaway DB would have required swapping `~/.gbrain/config.json`
+and disabling all DB-writing services for the full window. Pure-function
+round-trip over the same upstream code gave equivalent confidence at
+zero DB risk and ~30 s wall clock.
+
+### Blockers now resolved
+
+The 3 pre-migration blockers from §6.8 are cleared:
+- Slug hygiene → resolved via slug-normalize skill (7 renames).
+- type/kind round-trip → resolved by roundtrip-check (0 diffs).
+- `id: >-` "blocker" → withdrawn (never a real blocker; gray-matter
+  auto line-folding, not data damage).
+
+The only remaining step on this track is Step 2 (/ingest flip to
+filesystem-first + git-track the brain dir + enable `gbrain dream`
+cron). Multi-week. First micro-step scope in the new handoff doc.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
 - **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`; cosmetic only — manual `gbrain extract links --source db --include-frontmatter` was run post-migration so the link-graph data is correct. Watch upstream.
 - **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
-- **P1 (anchor, next few sessions)**: filesystem-canonical migration. Step 1 audit complete (see §6.8 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)) — verdict GO with 3 blockers (an initial 4th "lint shim" blocker was withdrawn same-session after reading upstream lint source; correction log in audit §5.2). Next: Step 1.5 (slug + `id: >-` normalization with service-disable + rolling-backup protocol), Step 1.6 (export/re-import round-trip sanity on throwaway PGLite), then Step 2 (`/ingest` flip, multi-week). Enables `gbrain dream` + git-VCS of knowledge.
+- **P1 (anchor, active)**: filesystem-canonical migration. Steps 1 + 1.5 + 1.6 done (see §6.8 + §6.9 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All 3 pre-migration blockers cleared: slug hygiene normalized (7 renames), markdown round-trip clean (1829/1829 for 10 KOS fields), `id: >-` "blocker" withdrawn. Only Step 2 (`/ingest` flip + configure brain dir + git-track + enable `gbrain dream` cron) remains — multi-week scope, first micro-step in the next handoff doc. Enables `gbrain dream` + git-VCS of knowledge.
 - ~~**P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable helpers~~ — **resolved 2026-04-22**: all three landed with `run.ts`, backed by the shared `skills/kos-jarvis/_lib/brain-db.ts` direct-PGLite reader that bypasses the MCP 100-row cap. See TODO.md P1 done markers.
 - **P2**: v1 Python `kos-api.py` + `kos` CLI still live in `/Users/chenyuanquan/Projects/jarvis-knowledge-os/`. Unloaded from launchd (`com.jarvis.kos-api.plist.bak`) but not archived. After a 7-day v2 soak, move the plist bak into `~/Library/LaunchAgents/_archive/` and archive the v1 repo.
 - **P2**: Evaluate Gemini 3072-dim embeddings vs current 1536-dim truncation; requires full reindex if adopted.
