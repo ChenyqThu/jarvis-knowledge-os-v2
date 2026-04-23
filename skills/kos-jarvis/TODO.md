@@ -137,10 +137,11 @@ v1 archive.
 
 ### [ ] Filesystem-canonical migration — KOS v2 → .md-as-source-of-truth — 2026-04-22
 
-**Steps 1 → 2.2 complete (2026-04-22 / 23). Only Step 2.3 (dream cron) remains for the core track.** Full report in
+**Steps 1 → 2.3 complete (2026-04-22 / 23). Core filesystem-canonical track done; only Step 2.4 (commit-batching + optional remote, +14d) remains.** Full report in
 [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](../../docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md);
 Step 2 design at [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR-DESIGN.md);
-Step 2.2 execution story at `docs/JARVIS-ARCHITECTURE.md §6.11`.
+Step 2.2 execution story at `docs/JARVIS-ARCHITECTURE.md §6.11`;
+Step 2.3 execution story at `docs/JARVIS-ARCHITECTURE.md §6.13`.
 
 - **Step 1 (2026-04-22)**: export dry-run audit. Verdict GO. KOS frontmatter
   preserved 100% in export; 0 raw_data sidecars means filesystem IS canonical.
@@ -192,14 +193,38 @@ Step 2.2 execution story at `docs/JARVIS-ARCHITECTURE.md §6.11`.
 
 **Remaining work for this track** (post-Step-2.2 micro-steps):
 
-- **Step 2.3** — `gbrain dream` cron wiring + first overnight cycle.
-  Preconditions now met (Step 2.2): `sync.repo_path=~/brain` set,
-  `~/brain` is a git repo with first commit, filesystem-canonical
-  flow live. Add `com.jarvis.dream-cycle.plist` daily 03:00 via
-  `skills/kos-jarvis/dream-wrap/run.ts` that calls `gbrain dream --json`
-  and archives cycle reports to `~/brain/.agent/dream-cycles/<date>.json`.
-  Observe first overnight lint + backlinks phases for KOS-frontmatter
-  compatibility. 1-2 h scope. Safety protocol same as Step 2.2.
+- **Step 2.3 (2026-04-23 late-night, branch master, untracked at this checkpoint)** — `gbrain dream` cron wired and first cycle observed.
+  Wrapper at `skills/kos-jarvis/dream-wrap/run.ts` (resolves brain dir
+  from `sync.repo_path`, defensive JSON extraction for stdout-noise
+  resilience, atomic `latest.json` symlink swap, exit code translation:
+  clean/ok/partial/skipped→0, failed→1, wrapper errors→2). Plist at
+  `scripts/launchd/com.jarvis.dream-cycle.plist.template` schedules
+  daily 03:11 local (off the :00 mark; `RunAtLoad=false`). 6 smoke
+  cycles ran clean (lint-only ×2, dry-run ×2, real ×2) — idempotent
+  (pages 1930→1930, chunks 3626→3626 unchanged across re-runs).
+  Status `partial` is normal here: lint warns (144 issues, all from
+  notion-poller frontmatter omitting `title:` / `type:` — KOS uses
+  `kind:`) and orphans warns (1803/1930, v1-wiki migration legacy).
+  Both filed below as P1 follow-ups. Rolling backup
+  `~/.gbrain/brain.pglite.pre-step2.3-1776987292` (304 MB).
+  Service shows `-  0  com.jarvis.dream-cycle` healthy in launchctl
+  list. Story in `docs/JARVIS-ARCHITECTURE.md §6.13`.
+- **Step 2.3 follow-ups** (P1, surfaced by first dream cycle 2026-04-23):
+  1. **notion-poller frontmatter — `title:` + `type:` omission**:
+     `gbrain dream`'s lint phase warns on 144 issues across 72 disk
+     pages, all from `~/brain/sources/notion/*.md`. KOS uses `kind:`;
+     upstream lint expects `title:` + `type:`. Fix at the writer:
+     `workers/notion-poller/run.ts` `frontmatter` builder. ~10 LOC.
+     Backfill via `gbrain sync --force` after.
+  2. **v1-wiki orphan backlog**: 1803/1930 pages have zero inbound
+     wikilinks. Pre-existing — v1 wiki imported flat without graph
+     edges. enrich-sweep + idea-ingest gradually fix this; track as
+     a multi-week soak metric, not a 1-shot fix.
+  3. **Upstream `gbrain dream --dry-run --json` stdout pollution**:
+     embed phase prints `[dry-run] Would embed N chunks across M pages`
+     to stdout BEFORE the JSON CycleReport. Our wrapper is defensive
+     (slices first `{` to last `}`), but worth filing upstream so
+     `--json` mode keeps stdout JSON-clean.
 - **Step 2.4** — (+14-day checkpoint) commit-batching wrapper + optional
   remote. Git is already initialized (landed with Step 2.2; Decision 5's
   "+14d defer" was revised mid-session — sync requires git). After 14

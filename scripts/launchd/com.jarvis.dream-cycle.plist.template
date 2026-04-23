@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.dream-cycle</string>
+    <!--
+      Step 2.3 — gbrain dream nightly cycle.
+
+      Runs lint + backlinks + sync + extract + embed + orphans on
+      ~/brain, archives the JSON CycleReport to
+      ~/brain/.agent/dream-cycles/<ISO>.json (and updates latest.json).
+
+      Wrapper script gates exit codes so launchd only retries on
+      genuine failures (status=failed). status=partial (lint warns,
+      orphans warn) exits 0 — those are observable via the archived
+      JSON, not page-worthy.
+
+      Manual invocation:
+        bun run skills/kos-jarvis/dream-wrap/run.ts
+        bun run skills/kos-jarvis/dream-wrap/run.ts --dry-run
+        bun run skills/kos-jarvis/dream-wrap/run.ts --phase lint
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/chenyuanquan/.bun/bin/bun</string>
+        <string>run</string>
+        <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/dream-wrap/run.ts</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/chenyuanquan/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>GBRAIN_HOME</key>
+        <string>/Users/chenyuanquan/brain</string>
+    </dict>
+    <!-- Daily 03:11 local. Off the :00 mark to avoid thundering herd
+         with other personal cron jobs. Comfortably outside Notion
+         poller's 5-min cadence and any morning activity. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>11</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/dream-wrap/dream.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/dream-wrap/dream.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2</string>
+</dict>
+</plist>

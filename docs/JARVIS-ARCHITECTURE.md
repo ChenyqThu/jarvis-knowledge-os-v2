@@ -909,13 +909,173 @@ comment block pointing to [`docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`](U
 
 ---
 
+## 6.13 Filesystem-canonical Step 2.3 — `gbrain dream` cron wired (2026-04-23 late-night)
+
+The core filesystem-canonical track is done. With Step 2.2 having flipped
+`/ingest` to the `~/brain/<kind>/<slug>.md` → git → `gbrain sync` path
+and Step 2.3 today wiring the nightly maintenance cycle, the brain now
+has both a write side (live, every Notion poll) and a read-side
+maintenance pass (overnight, deterministic). Everything between Step
+2.4's commit-batching and an external git remote is parked for the
++14-day soak.
+
+### What landed (untracked at this checkpoint, single commit pending)
+
+- `skills/kos-jarvis/dream-wrap/run.ts` — wrapper around `gbrain dream
+  --json`. Resolves brain dir from `gbrain config get sync.repo_path`
+  (set during Step 2.2 via `gbrain init --pglite --repo ~/brain`),
+  archives the CycleReport JSON to
+  `~/brain/.agent/dream-cycles/<ISO>.json`, atomically swaps a
+  `latest.json` symlink, translates exit codes:
+  `clean | ok | partial | skipped → 0`, `failed → 1`,
+  wrapper-level errors → 2. Defensive JSON extraction (slice from
+  first `{` to last `}`) handles upstream phases that leak human
+  text to stdout in `--json` mode (notably `embed --dry-run`).
+- `skills/kos-jarvis/dream-wrap/SKILL.md` — operator doc: purpose,
+  exit-code semantics, manual invocation, archive reading, launchd
+  install / refresh / rollback.
+- `scripts/launchd/com.jarvis.dream-cycle.plist.template` — daily
+  03:11 local (`StartCalendarInterval`, `RunAtLoad=false`, off the
+  `:00` mark to avoid thundering-herd with other personal cron).
+  Identical-content `.plist` is gitignored (consistent with the rest
+  of `scripts/launchd/`).
+- Deployed: `~/Library/LaunchAgents/com.jarvis.dream-cycle.plist`
+  bootstrapped into `gui/$UID`. `launchctl list | grep dream-cycle`
+  shows `-  0  com.jarvis.dream-cycle` (PID `-` is normal between
+  fires, EXIT 0 healthy).
+
+### Smoke test summary (6 cycles, 2 hours of iteration)
+
+| # | Mode | Result | Notes |
+|---|---|---|---|
+| 1 | `--phase lint` | exit 0 (cycle status `partial`) | First wrapper run; surfaced exit-code bug — see fixes below |
+| 2 | `--phase lint` re-run | exit 0 (`partial`) | Confirmed deterministic |
+| 3 | `--dry-run` | exit 0 (`partial`) | Surfaced JSON parse bug — see fixes below |
+| 4 | `--dry-run` re-run | exit 0 (`partial`) | Confirmed defensive parser works |
+| 5 | Real cycle | exit 0 (`partial`) | All 6 phases ran |
+| 6 | Real cycle re-run | exit 0 (`partial`) | Idempotency verified |
+
+Cycle #6 phase breakdown (representative of the steady state):
+
+```
+lint         warn         14ms  0 fix(es) applied, 144 remaining
+backlinks    ok           18ms  0 back-link(s) added, 0 remaining
+sync         ok           42ms  +0 added, ~0 modified, -0 deleted
+extract      ok           14ms  0 link(s), 0 timeline entries
+embed        ok         1670ms  0 chunk(s) newly embedded (3626 already had embeddings)
+orphans      warn         19ms  1803 orphan page(s) out of 1930 total
+```
+
+`partial` is the steady-state cycle status (lint warns + orphans
+warns). Both warnings are pre-existing data shape issues, not Step
+2.3 regressions, and are filed in TODO.md as P1 follow-ups (see
+"Known follow-ups" below). Critical: pages 1930 → 1930 and chunks
+3626 → 3626 across re-runs; the cycle is read-mostly when there's
+no fresh work, exactly what we want from a maintenance pass.
+
+### Two bugs hit and fixed during smoke (both in our wrapper, not upstream)
+
+1. **`exitForStatus` missing `partial` case** — initial wrapper switch
+   handled `clean | ok | warn | failed | skipped` (modeled on
+   phase-level statuses). But `CycleStatus` (cycle-level, defined at
+   `src/core/cycle.ts:97` upstream) is `'ok' | 'clean' | 'partial' |
+   'skipped' | 'failed'` — `warn` is phase-level only, never cycle-level.
+   Fix: `case "clean" | "ok" | "partial" | "skipped" → 0`,
+   `case "failed" → 1`, with a comment citing the upstream type.
+2. **`gbrain dream --dry-run --json` stdout pollution** — embed phase
+   in dry-run mode prints `[dry-run] Would embed 0 chunks across 1930
+   pages` to stdout BEFORE the JSON CycleReport, breaking
+   `JSON.parse`. Fix in our wrapper: extract JSON by slicing from
+   first `{` to last `}` (CycleReport is a single top-level object,
+   so this is unambiguous), surface stripped noise to stderr as a
+   warning. Filed upstream tracking item: `gbrain dream --json`
+   should keep stdout JSON-clean across all phases.
+
+### Validation (all green)
+
+| Check | Result |
+|---|---|
+| `gbrain doctor schema_version` | OK Version 24 |
+| `gbrain stats` page count pre/post 6 cycles | 1930 / 1930 — zero drift |
+| `gbrain stats` chunk count pre/post | 3626 / 3626 — zero re-embed |
+| `~/brain/.agent/dream-cycles/` | 5 cycle JSONs + `latest.json` symlink |
+| `~/brain/.agent/dream-cycles/` in gitignore | yes (`.agent/` covered by Step 2.2 rename) |
+| launchctl service state | `-  0  com.jarvis.dream-cycle` (loaded, idle, last exit 0) |
+| All 7 jarvis services | green (kos-patrol still `1` — separate P1, see §6.11) |
+| notion-poller's 5-min cycle, post dream-cycle install | clean cycles, no lock contention |
+
+### Known follow-ups (filed as P1 in `skills/kos-jarvis/TODO.md`)
+
+1. **notion-poller frontmatter — `title:` + `type:` omission**: lint
+   warns on 144 issues across 72 disk pages, all `~/brain/sources/notion/*.md`.
+   KOS uses `kind:` (we preserve this); upstream lint also expects
+   `title:` + `type:`. Fix at the writer (`workers/notion-poller/run.ts`
+   frontmatter builder, ~10 LOC) + `gbrain sync --force` backfill.
+2. **v1-wiki orphan backlog**: 1803/1930 pages have zero inbound
+   wikilinks (93% orphan rate). Pre-existing from v1 wiki migration —
+   imported flat with no graph edges. enrich-sweep + idea-ingest
+   gradually reduce this; track as a multi-week soak metric.
+3. **Upstream `gbrain dream --dry-run --json` stdout pollution**:
+   the embed phase leak (see "bugs hit" above) is worth reporting
+   upstream. Our wrapper is already defensive.
+
+### Brain-dir layout post-Step-2.3
+
+```
+~/brain/
+├── .git/                       (Step 2.2)
+├── .gitignore                  (excludes .agent/, .DS_Store)
+├── .agent/                     (Step 2.2 rename from agent/)
+│   ├── dashboards/             (kos-patrol output)
+│   ├── digests/                (kos-patrol + dream digests)
+│   ├── reports/                (slug-normalize, ingest reports)
+│   ├── dream-cycles/           ← NEW (Step 2.3)
+│   │   ├── 2026-04-23T23-37-24Z.json
+│   │   ├── 2026-04-23T23-38-20Z.json
+│   │   ├── 2026-04-23T23-39-21Z.json
+│   │   ├── 2026-04-23T23-39-32Z.json
+│   │   ├── 2026-04-23T23-39-42Z.json
+│   │   └── latest.json → 2026-04-23T23-39-42Z.json
+│   ├── notion-poller-state.json
+│   └── pending-enrich.jsonl
+└── sources/
+    └── notion/                 (Step 2.2 + post-hotfix `051ae74`)
+        └── …                   (72 .md files, growing every 5 min)
+```
+
+### Next: Step 2.4 (parked +14d)
+
+After 14 days of clean nightly cycles, decide:
+- (a) `gh repo create jarvis-brain --private` + extend `dream-wrap` to
+  `git push` at cycle end (off-machine knowledge backup)
+- (b) Commit-batching wrapper to coalesce per-ingest commits (~5-9
+  per Notion poll) into one end-of-cycle commit, reducing
+  `git -C ~/brain log` noise
+
+If observability needs change before then, `/status` can grow a
+`dream_cycle_health` field by reading `latest.json` (one fs read,
+no DB hit). Not in scope today.
+
+### Rollback
+
+```bash
+launchctl bootout gui/$UID ~/Library/LaunchAgents/com.jarvis.dream-cycle.plist
+rm ~/Library/LaunchAgents/com.jarvis.dream-cycle.plist
+# DB rollback (if a bad cycle corrupts something):
+cp -R ~/.gbrain/brain.pglite.pre-step2.3-1776987292 ~/.gbrain/brain.pglite
+# Archive dir kept for audit; safe to remove if desired:
+# rm -rf ~/brain/.agent/dream-cycles/
+```
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
 - **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`; cosmetic only — manual `gbrain extract links --source db --include-frontmatter` was run post-migration so the link-graph data is correct. Watch upstream.
 - **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
-- **P1 (anchor, Step 2.3 pending)**: filesystem-canonical migration. Steps 1 → 2.2 done + v0.18 upstream synced (see §6.8 → §6.12 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All pre-migration blockers cleared + Step 2.2 landed (`b7212db`) + v0.18.2 merged (`aceb838`): `/ingest` writes canonical to `~/brain/<kind>/<slug>.md` + git commit + `gbrain sync`, `/status` direct-DB (1860+ not 100), `.agent/` hidden from sync, `~/brain/` is a git repo, schema at v24 with sources.default seeded. Only Step 2.3 (`gbrain dream` cron) + Step 2.4 (commit-batching + optional explicit `jarvis` source add / remote push) remain.
+- **P1 (anchor, Step 2.3 done, Step 2.4 parked +14d)**: filesystem-canonical migration. Steps 1 → 2.3 done + v0.18 upstream synced (see §6.8 → §6.13 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All pre-migration blockers cleared + Step 2.2 landed (`b7212db`) + v0.18.2 merged (`aceb838`) + Step 2.3 dream cron wired (`com.jarvis.dream-cycle` daily 03:11 local, archives to `~/brain/.agent/dream-cycles/`, see §6.13). `/ingest` writes canonical to `~/brain/<kind>/<slug>.md` + git commit + `gbrain sync`, `/status` direct-DB (1930 not 100), `.agent/` hidden from sync, `~/brain/` is a git repo with nightly maintenance pass, schema at v24 with sources.default seeded. Only Step 2.4 (commit-batching + optional explicit `jarvis` source add / remote push) remains, parked +14d.
 - **P1 (open, awaiting upstream)**: [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370) — PGLite v16→v24 upgrade blocker (single-line bug in `pglite-schema.ts`). Fork carries a 1-line local patch (`docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`); remove when upstream merges the fix. See §6.12.
 - **P1 (new, Step 2.2 follow-up)**: kos-patrol launchd cron `LastExitStatus=1` since 2026-04-19 due to macOS 26.3 WASM bug (`#223` class) hitting the minion-wrapped subprocess. Direct bun-run works. Plus kos-patrol uses `gbrain list --limit 10000` (100-row-capped) — migrating to `BrainDb` direct-read is the natural fix.
 - ~~**P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable helpers~~ — **resolved 2026-04-22**: all three landed with `run.ts`, backed by the shared `skills/kos-jarvis/_lib/brain-db.ts` direct-PGLite reader that bypasses the MCP 100-row cap. See TODO.md P1 done markers.
