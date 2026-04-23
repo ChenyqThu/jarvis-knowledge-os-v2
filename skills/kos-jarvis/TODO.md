@@ -264,8 +264,14 @@ VCS in the same move.
 
 **Not started**. Tracked here as the anchor for next-next session.
 
-### [ ] v0.18 upstream sync blocker — PGLite v16→v24 upgrade fails on `source_id` — 2026-04-23
-Filed as [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370).
+### [x] v0.18 upstream sync — synced 2026-04-23 with fork-local patch (commit `aceb838`)
+Filed upstream as [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370).
+1-line local patch on `src/core/pglite-schema.ts` (idx_pages_source_id
+moved into v21 migration only — see `docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`).
+Production DB migrated 16→24, 1860 pages → sources.default, zero data
+loss. Remove the fork patch when upstream merges #370.
+
+### ~~[ ] v0.18 upstream sync blocker — PGLite v16→v24 upgrade fails on `source_id` — 2026-04-23~~
 Preflight smoke (this evening) built `upstream/feat/migration-hardening`
 (= v0.18.2, PR #356 open) and ran `apply-migrations --yes` against a
 copy of `~/.gbrain/brain.pglite.pre-slug-normalize-1776921434` in an

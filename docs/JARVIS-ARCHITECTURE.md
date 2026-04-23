@@ -802,14 +802,121 @@ Not expected — idempotent sync flow, data integrity preserved throughout.
 
 ---
 
+## 6.12 Upstream v0.18.2 synced with fork patch (2026-04-23 evening, commit `aceb838`)
+
+The v0.18 sync deferral from §6.11 is resolved. `feat/migration-hardening`
+merged to upstream master as v0.18.2 (`08b3698`) mid-session, and
+targeted investigation isolated the v16→v24 upgrade blocker to a
+**single line** in `src/core/pglite-schema.ts`. Fork policy was relaxed
+specifically for this unblock ("modify `src/`, record the patch, handle
+conflicts at next merge"); the patch is 1 line removed + 10 lines of
+comment block marking it.
+
+### The one-line bug
+
+`PGLITE_SCHEMA_SQL` line 63 declared:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
+```
+
+**outside** the `CREATE TABLE IF NOT EXISTS pages(...)` block above
+it. On fresh installs: fine — the CREATE TABLE creates pages with
+source_id, the CREATE INDEX succeeds. On a v16 brain upgrade: fatal
+— CREATE TABLE IF NOT EXISTS skips the existing pages table (no
+source_id column), the next CREATE INDEX fires `column "source_id"
+does not exist`, which aborts `engine.initSchema()` before
+`runMigrations()` can execute v21 (the migration that would have
+added the column). schema_version stays stuck at 16, every orchestrator
+reports `status=failed`, no data is lost — just no upgrade either.
+
+### The patch
+
+Delete line 63. The v21 migration already re-creates the index
+idempotently via `CREATE INDEX IF NOT EXISTS idx_pages_source_id ON
+pages(source_id)`, so fresh installs still end up with the index. Only
+behavior change: index is now declared in one place (v21 migration)
+instead of two. Patched in `src/core/pglite-schema.ts` with a 10-line
+comment block pointing to [`docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`](UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md)
++ upstream [#370](https://github.com/garrytan/gbrain/issues/370).
+
+### Sync sequence this session (timeline)
+
+1. Preflight (§6.11) — identified v0.18 sync blocker on fresh smoke
+2. Diagnosed bug via a second smoke with PATH-shimmed `gbrain` (first
+   smoke was self-deceived — orchestrator's `execSync('gbrain ...')`
+   was resolving to our v0.17 binary, not upstream peek)
+3. Isolated the bug to pglite-schema.ts:63 — 10 min of source reading
+4. Wrote 1-line patch in /tmp peek → smoke re-runs GREEN (v16→v24
+   advances, sources.default seeds, 1857 pages source_id='default',
+   zero data loss)
+5. Safety protocol: 6 services bootout'd, lsof clean, fresh
+   `~/.gbrain/brain.pglite.pre-v018-1776967072` backup (292 MB),
+   `git tag pre-sync-v0.18`
+6. `git merge upstream/master` — one conflict (package.json version),
+   resolved: take upstream 0.18.2, keep our pglite 0.4.4 pin
+7. Applied the same patch to `src/core/pglite-schema.ts` in our fork
+8. `bun install` triggered postinstall `gbrain apply-migrations --yes`
+   which migrated the **live** brain through the patched code path
+   (the pglite module resolution happened to pick up our patch
+   immediately; we got away with this because bun install evaluates
+   TypeScript directly via our `~/.bun/bin/gbrain → src/cli.ts`
+   symlink, no compile step needed)
+9. Services restarted, end-to-end re-validated on v0.18.2 baseline
+
+### Validation (all green)
+
+| Check | Result |
+|---|---|
+| `config.version` | 16 → **24** ✓ |
+| `sources list` | `default federated 1860 pages never synced` ✓ |
+| All 1860 pages `source_id='default'` | ✓ (schema DEFAULT auto-scope) |
+| Page count / chunks / links / timeline | 1860 / 3451 / 385 / 5443 — zero drift ✓ |
+| `gbrain doctor schema_version` | `OK Version 24 (latest: 24)` ✓ |
+| `/status` endpoint | 1860 pages, KOS 9-kind breakdown + `source` scope ✓ |
+| `/ingest` POST smoke | imported:true, embedded:true (no retry-fallback), git commit + sync +1 added ✓ |
+| notion-poller real cycle | **2 Notion pages auto-ingested through filesystem-canonical path** ✓ (production flow, not just smoke) |
+| `brain_score` | 56/100 unchanged (cosmetic, pre-existing) |
+
+### What changed in the fork artifact
+
+- `package.json`: 0.17.0 → 0.18.2, kept `@electric-sql/pglite: 0.4.4` pin
+- `src/core/pglite-schema.ts`: 1-line patch + provenance comment
+- `docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`: new, documents
+  root cause + fix + validation + removal trigger (upstream merges #370)
+- 79+ upstream files pulled in (sources CLI, multi-source docs,
+  v0_18_0/v0_18_1 orchestrators, engine enhancements, RLS hardening)
+
+### Not yet wired
+
+- **`gbrain sources add jarvis --path ~/brain`** — we currently run
+  on the seeded `default` source. Renaming to an explicit "jarvis"
+  source id is cosmetic; the current wiring works fine on `default`.
+  Parked for Step 2.4 if we ever split sources (e.g., jarvis-wiki +
+  jarvis-notes).
+- **Fork patch removal trigger**: when upstream merges #370, our
+  pglite-schema.ts comment block comes out. Diff is trivial — just
+  restore the single deleted line if upstream's fix preserves it,
+  or delete our provenance block if upstream removed the line too.
+
+### Rollback matrix (updated)
+
+| To restore | Command |
+|---|---|
+| **DB state pre-v0.18** | `cp -R ~/.gbrain/brain.pglite.pre-v018-1776967072 ~/.gbrain/brain.pglite` |
+| **Git state pre-v0.18 merge** | `git reset --hard pre-sync-v0.18` |
+| **Services state** | Same bootout → restore → bootstrap protocol as §6.11 |
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
 - **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`; cosmetic only — manual `gbrain extract links --source db --include-frontmatter` was run post-migration so the link-graph data is correct. Watch upstream.
 - **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
-- **P1 (anchor, Step 2.3 pending)**: filesystem-canonical migration. Steps 1 → 2.2 done (see §6.8 + §6.9 + §6.10 + §6.11 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All pre-migration blockers cleared + Step 2.2 landed (`b7212db`): `/ingest` writes canonical to `~/brain/<kind>/<slug>.md` + git commit + `gbrain sync`, `/status` direct-DB (1858 not 100), `.agent/` hidden from sync, `~/brain/` is a git repo. Only Step 2.3 (`gbrain dream` cron) + Step 2.4 (commit-batching + optional remote) remain.
-- **P1 (new, Step 2.2 follow-up)**: v0.18 upstream sync blocked on PGLite v16→v24 migration path — `column "source_id" does not exist` thrown by engine SELECTs before v21 adds the column. Preflight smoke reproduced on v0.18.0 / v0.18.1 / v0.18.2 (PR #356 open). Fork policy forbids patching `src/*`. Filed as [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370). Deferred until upstream fixes. See §6.11 + `79331b7`.
+- **P1 (anchor, Step 2.3 pending)**: filesystem-canonical migration. Steps 1 → 2.2 done + v0.18 upstream synced (see §6.8 → §6.12 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All pre-migration blockers cleared + Step 2.2 landed (`b7212db`) + v0.18.2 merged (`aceb838`): `/ingest` writes canonical to `~/brain/<kind>/<slug>.md` + git commit + `gbrain sync`, `/status` direct-DB (1860+ not 100), `.agent/` hidden from sync, `~/brain/` is a git repo, schema at v24 with sources.default seeded. Only Step 2.3 (`gbrain dream` cron) + Step 2.4 (commit-batching + optional explicit `jarvis` source add / remote push) remain.
+- **P1 (open, awaiting upstream)**: [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370) — PGLite v16→v24 upgrade blocker (single-line bug in `pglite-schema.ts`). Fork carries a 1-line local patch (`docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`); remove when upstream merges the fix. See §6.12.
 - **P1 (new, Step 2.2 follow-up)**: kos-patrol launchd cron `LastExitStatus=1` since 2026-04-19 due to macOS 26.3 WASM bug (`#223` class) hitting the minion-wrapped subprocess. Direct bun-run works. Plus kos-patrol uses `gbrain list --limit 10000` (100-row-capped) — migrating to `BrainDb` direct-read is the natural fix.
 - ~~**P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable helpers~~ — **resolved 2026-04-22**: all three landed with `run.ts`, backed by the shared `skills/kos-jarvis/_lib/brain-db.ts` direct-PGLite reader that bypasses the MCP 100-row cap. See TODO.md P1 done markers.
 - **P2**: v1 Python `kos-api.py` + `kos` CLI still live in `/Users/chenyuanquan/Projects/jarvis-knowledge-os/`. Unloaded from launchd (`com.jarvis.kos-api.plist.bak`) but not archived. After a 7-day v2 soak, move the plist bak into `~/Library/LaunchAgents/_archive/` and archive the v1 repo.
