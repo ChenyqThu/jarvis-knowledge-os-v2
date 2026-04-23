@@ -265,6 +265,7 @@ VCS in the same move.
 **Not started**. Tracked here as the anchor for next-next session.
 
 ### [ ] v0.18 upstream sync blocker — PGLite v16→v24 upgrade fails on `source_id` — 2026-04-23
+Filed as [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370).
 Preflight smoke (this evening) built `upstream/feat/migration-hardening`
 (= v0.18.2, PR #356 open) and ran `apply-migrations --yes` against a
 copy of `~/.gbrain/brain.pglite.pre-slug-normalize-1776921434` in an
