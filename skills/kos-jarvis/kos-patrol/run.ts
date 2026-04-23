@@ -7,14 +7,14 @@
  *   2. Lint (delegate to kos-lint/run.ts)
  *   3. Staleness (decision/protocol/project updated >180d, status=active)
  *   4. Gap detection (entity mentions ≥3 across pages, no page exists)
- *   5. Dashboard → ~/brain/agent/dashboards/knowledge-health-<date>.md
- *   6. Digest → ~/brain/agent/digests/patrol-<date>.md
+ *   5. Dashboard → ~/brain/.agent/dashboards/knowledge-health-<date>.md
+ *   6. Digest → ~/brain/.agent/digests/patrol-<date>.md
  *
  * Exit: 0 clean | 1 ERROR from lint | 2 WARN-only
  *
  * This is the P0 TODO from skills/kos-jarvis/TODO.md. It's a read-only
  * patrol — it does NOT write to the brain. Only report files under
- * ~/brain/agent/ are created.
+ * ~/brain/.agent/ are created.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -22,8 +22,8 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
-const DASH_DIR = join(BRAIN, "agent", "dashboards");
-const DIGEST_DIR = join(BRAIN, "agent", "digests");
+const DASH_DIR = join(BRAIN, ".agent", "dashboards");
+const DIGEST_DIR = join(BRAIN, ".agent", "digests");
 const REPO_ROOT = join(import.meta.dirname ?? ".", "..", "..", "..");
 const KOS_LINT = join(REPO_ROOT, "skills/kos-jarvis/kos-lint/run.ts");
 

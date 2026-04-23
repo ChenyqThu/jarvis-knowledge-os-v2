@@ -19,7 +19,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const DEFAULT_DB_PATH = `${homedir()}/.gbrain/brain.pglite`;
-const REPORT_DIR = `${homedir()}/brain/agent/reports`;
+const REPORT_DIR = `${homedir()}/brain/.agent/reports`;
 
 // ── Truth table ───────────────────────────────────────────────────
 

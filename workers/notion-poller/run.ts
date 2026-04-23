@@ -26,7 +26,7 @@ const KOS_API_BASE = process.env.KOS_API_BASE ?? "http://127.0.0.1:7220";
 const KOS_API_TOKEN = process.env.KOS_API_TOKEN ?? "";
 const STATE_PATH =
   process.env.POLLER_STATE_PATH ??
-  join(homedir(), "brain", "agent", "notion-poller-state.json");
+  join(homedir(), "brain", ".agent", "notion-poller-state.json");
 const NOTION_VERSION = "2022-06-28";
 
 const args = process.argv.slice(2);

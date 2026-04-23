@@ -25,7 +25,7 @@ import { chooseSlug, renderStub, writeStub, type StubInput, type Tier } from "./
 // ─────────────────────────── config ───────────────────────────
 
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
-const REPORT_DIR = join(BRAIN, "agent", "reports");
+const REPORT_DIR = join(BRAIN, ".agent", "reports");
 const LOCK_PATH = join(homedir(), ".cache", "kos-jarvis", "enrich-sweep.lock");
 const SHIM_HEALTH = process.env.KOS_EMBED_SHIM ?? "http://127.0.0.1:7222/health";
 

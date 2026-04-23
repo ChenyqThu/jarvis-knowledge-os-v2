@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
-const DIGEST_DIR = join(BRAIN, "agent", "digests");
+const DIGEST_DIR = join(BRAIN, ".agent", "digests");
 const LOG = join(BRAIN, "log.md");
 const MEMORY = join(homedir(), ".openclaw", "workspace", "MEMORY.md");
 
@@ -70,7 +70,7 @@ function main() {
   if (!existsSync(MEMORY)) {
     console.error(`MEMORY.md not found at ${MEMORY}`);
     console.error("appending to local marker instead");
-    const marker = join(BRAIN, "agent", "memory-marker.md");
+    const marker = join(BRAIN, ".agent", "memory-marker.md");
     if (!dry) appendFileSync(marker, `\n${block}\n`);
     console.log(`wrote marker to ${marker} (dry=${dry})`);
     process.exit(0);

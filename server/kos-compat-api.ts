@@ -4,9 +4,14 @@
  *
  * Exposes the same HTTP contract that kos-worker (Notion Worker) calls:
  *   POST /query    { question }      → gbrain ask <question>
- *   POST /ingest   { url, slug? }    → URL → staging .md → gbrain import
- *   GET  /digest   ?since=N          → latest kos-patrol digest or live synth
- *   GET  /status                     → inventory snapshot (pages, kinds, conf.)
+ *   POST /ingest   { url, slug? }    → filesystem-canonical: write to
+ *                                       ~/brain/<kind-dir>/<slug>.md, git
+ *                                       commit, `gbrain sync --repo ~/brain`
+ *                                       (Step 2.2, 2026-04-23).
+ *   GET  /digest   ?since=N          → latest kos-patrol digest or DB summary
+ *   GET  /status                     → direct PGLite inventory (Step 2.2
+ *                                       fixes the 100-cap bug of shelling
+ *                                       `gbrain list`)
  *   GET  /health                     → { status, brain }
  *
  * Auth: Authorization: Bearer <token> (KOS_API_TOKEN env, optional).
@@ -19,13 +24,53 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { BrainDb } from "../skills/kos-jarvis/_lib/brain-db.ts";
 
 const PORT = Number(process.env.KOS_API_PORT ?? readFlag("--port") ?? 7220);
 const TOKEN = process.env.KOS_API_TOKEN ?? "";
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
-const DIGEST_DIR = join(BRAIN, "agent", "digests");
+const DIGEST_DIR = join(BRAIN, ".agent", "digests");
+
+// kind → filesystem directory mapping for filesystem-canonical /ingest.
+// Matches gbrain's 20-dir MECE + KOS 9-kind structure. Unknown kinds land
+// in sources/ as a safe default (still gets parsed as a source page).
+const KIND_TO_DIR: Record<string, string> = {
+  source: "sources",
+  concept: "concepts",
+  entity: "entities",
+  project: "projects",
+  decision: "decisions",
+  synthesis: "syntheses",
+  comparison: "comparisons",
+  protocol: "protocols",
+  timeline: "timelines",
+  person: "people",
+  company: "companies",
+};
+
+function kindToDir(kind: string): string {
+  return KIND_TO_DIR[kind] ?? "sources";
+}
+
+/** Commit a single ingest to the ~/brain git repo. Idempotent on unchanged content. */
+function gitCommitIngest(slug: string): { ok: boolean; msg: string } {
+  const add = spawnSync("git", ["-C", BRAIN, "add", "-A"], { encoding: "utf-8", timeout: 10_000 });
+  if (add.status !== 0) return { ok: false, msg: `git add failed: ${(add.stderr ?? "").slice(0, 200)}` };
+  const cmt = spawnSync(
+    "git",
+    ["-C", BRAIN, "commit", "-m", `ingest: ${slug}`],
+    { encoding: "utf-8", timeout: 10_000 }
+  );
+  if (cmt.status !== 0) {
+    const err = (cmt.stderr ?? "") + (cmt.stdout ?? "");
+    // "nothing to commit" = idempotent re-ingest of unchanged payload; fine.
+    if (err.includes("nothing to commit")) return { ok: true, msg: "no-op (content unchanged)" };
+    return { ok: false, msg: `git commit failed: ${err.slice(0, 200)}` };
+  }
+  return { ok: true, msg: "committed" };
+}
 
 function readFlag(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -73,25 +118,41 @@ function handleHealth(res: ServerResponse) {
   send(res, 200, { status: "ok", brain: BRAIN, engine: "gbrain" });
 }
 
-function handleStatus(res: ServerResponse) {
-  const list = gbrain(["list", "--limit", "10000"], 30_000);
-  if (list.code !== 0) return send(res, 500, list.stdout);
-  const rows = list.stdout.trim().split("\n").filter(Boolean);
-  const byType: Record<string, number> = {};
-  for (const line of rows) {
-    const type = line.split("\t")[1] ?? "unknown";
-    byType[type] = (byType[type] ?? 0) + 1;
+async function handleStatus(res: ServerResponse) {
+  // Direct PGLite read — bypasses the upstream `gbrain list` 100-row cap
+  // that caused total_pages to silently under-report for 1800+ page brains.
+  // Open briefly, read, close per kos-jarvis/_lib/brain-db.ts convention.
+  const db = new BrainDb();
+  try {
+    await db.open();
+    const pages = await db.listAllPages();
+    const byType: Record<string, number> = {};
+    const byKind: Record<string, number> = {};
+    const byConfidence: Record<string, number> = {};
+    for (const p of pages) {
+      byType[p.type] = (byType[p.type] ?? 0) + 1;
+      const kind = (p.frontmatter?.kind as string) ?? p.type;
+      byKind[kind] = (byKind[kind] ?? 0) + 1;
+      const conf = (p.frontmatter?.confidence as string) ?? "unknown";
+      byConfidence[conf] = (byConfidence[conf] ?? 0) + 1;
+    }
+    send(res, 200, {
+      total_pages: pages.length,
+      by_type: byType,
+      by_kind: byKind,
+      by_confidence: byConfidence,
+      engine: "gbrain (pglite)",
+      brain: BRAIN,
+      note: "direct PGLite read (Step 2.2); DIKW rollup via kos-patrol",
+    });
+  } catch (e) {
+    send(res, 500, { error: `status query failed: ${String(e).slice(0, 200)}` });
+  } finally {
+    await db.close();
   }
-  send(res, 200, {
-    total_pages: rows.length,
-    by_type: byType,
-    engine: "gbrain (pglite)",
-    brain: BRAIN,
-    note: "v2 inventory snapshot; DIKW/confidence rollup via kos-patrol",
-  });
 }
 
-function handleDigest(res: ServerResponse, sinceDays: number) {
+async function handleDigest(res: ServerResponse, sinceDays: number) {
   // Prefer latest kos-patrol digest file if present.
   try {
     const files = readdirSync(DIGEST_DIR)
@@ -105,12 +166,19 @@ function handleDigest(res: ServerResponse, sinceDays: number) {
   } catch {
     // digest dir doesn't exist yet
   }
-  // Fallback: live inventory summary
-  const list = gbrain(["list", "--limit", "10000"], 30_000);
-  const rows = list.stdout.trim().split("\n").filter(Boolean);
-  const text = `[knowledge-os] (live, since ${sinceDays}d): ${rows.length} pages in gbrain.
+  // Fallback: direct-DB inventory summary (Step 2.2 — no more shell-out cap).
+  const db = new BrainDb();
+  try {
+    await db.open();
+    const pages = await db.listAllPages();
+    const text = `[knowledge-os] (live, since ${sinceDays}d): ${pages.length} pages in gbrain.
 Patrol digest file not found at ${DIGEST_DIR}. Run kos-patrol first.`;
-  send(res, 200, text);
+    send(res, 200, text);
+  } catch (e) {
+    send(res, 500, { error: `digest fallback failed: ${String(e).slice(0, 200)}` });
+  } finally {
+    await db.close();
+  }
 }
 
 async function handleQuery(req: IncomingMessage, res: ServerResponse) {
@@ -242,10 +310,6 @@ async function handleIngest(req: IncomingMessage, res: ServerResponse) {
     (url ? deriveSlug(url) : undefined) ||
     `ingest-${Date.now()}`;
 
-  // Stage dir
-  const stage = join(tmpdir(), `gbrain-ingest-${Date.now()}`);
-  mkdirSync(stage, { recursive: true });
-
   const today = new Date().toISOString().slice(0, 10);
   const kind = body.kind?.trim() || "source";
   const sourceRef =
@@ -333,36 +397,60 @@ tags: [${tagList.join(", ")}]
 ${plain}
 `;
   }
-  const path = join(stage, `${slug}.md`);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, md, "utf-8");
+  // Filesystem-canonical write (Step 2.2): ~/brain/<kind-dir>/<slug>.md is
+  // the source of truth. gbrain sync derives DB state from git HEAD.
+  const dir = kindToDir(kind);
+  const relPath = join(dir, `${slug}.md`);
+  const absPath = join(BRAIN, relPath);
+  mkdirSync(dirname(absPath), { recursive: true });
+  writeFileSync(absPath, md, "utf-8");
 
-  const importRes = gbrain(["import", stage, "--no-embed"], 180_000);
-  if (importRes.code !== 0) {
+  // Commit to ~/brain git repo so `gbrain sync` has a HEAD to diff from.
+  // Per-ingest commits are noisy but functional; Step 2.3/2.4 layers
+  // commit-batching on top.
+  const commit = gitCommitIngest(slug);
+  if (!commit.ok) {
     return send(res, 500, {
       imported: false,
       slug,
-      staged_at: path,
-      output: importRes.stdout,
+      wrote_to: absPath,
+      output: commit.msg,
     });
   }
 
-  // Auto-embed the new page so vector/semantic search works immediately.
-  // Requires OPENAI_BASE_URL (gemini shim) and OPENAI_API_KEY in env —
-  // provided by launchd plist. Non-fatal on failure: ingest still succeeds,
-  // page just lacks vectors until next `gbrain embed --stale`.
-  const embedRes = gbrain(["embed", slug], 120_000);
+  // Incremental sync from HEAD. --no-pull avoids attempting git pull on
+  // our local-only repo (no remote configured for ~/brain).
+  const syncRes = gbrain(["sync", "--repo", BRAIN, "--no-pull"], 180_000);
+  if (syncRes.code !== 0) {
+    return send(res, 500, {
+      imported: false,
+      slug,
+      wrote_to: absPath,
+      commit: commit.msg,
+      output: syncRes.stdout,
+    });
+  }
+
+  // gbrain sync already embeds new pages as part of the import pipeline
+  // (see "N pages embedded" line in syncRes.stdout). This call acts as an
+  // idempotent retry in case the sync embed hit a transient gemini-shim
+  // error; it short-circuits with "all N chunks already embedded" when the
+  // page is already vectored. Slug is <dir>/<slug> — gbrain pages are
+  // stored under their full path slug.
+  const fullSlug = `${dir}/${slug}`;
+  const embedRes = gbrain(["embed", fullSlug], 120_000);
   const embedded = embedRes.code === 0;
 
   send(res, 200, {
     imported: true,
     embedded,
-    slug,
-    staged_at: path,
-    output: importRes.stdout + (embedded ? "" : `\n[embed failed] ${embedRes.stdout}`),
+    slug: fullSlug,
+    wrote_to: absPath,
+    commit: commit.msg,
+    output: syncRes.stdout + (embedded ? "" : `\n[embed retry failed] ${embedRes.stdout}`),
     next: embedded
       ? "page is searchable via keyword + vector; dikw-compile recommended for strong-link network"
-      : "page imported but not embedded — retry `gbrain embed " + slug + "` manually",
+      : "page synced (may already be embedded by sync) — retry `gbrain embed " + fullSlug + "` manually if vector search misses",
   });
 }
 
@@ -384,10 +472,10 @@ const server = createServer(async (req, res) => {
 
   try {
     if (req.method === "GET" && path === "/health") return handleHealth(res);
-    if (req.method === "GET" && path === "/status") return handleStatus(res);
+    if (req.method === "GET" && path === "/status") return await handleStatus(res);
     if (req.method === "GET" && path === "/digest") {
       const since = Number(url.searchParams.get("since") ?? "7");
-      return handleDigest(res, since);
+      return await handleDigest(res, since);
     }
     if (req.method === "POST" && path === "/query") return await handleQuery(req, res);
     if (req.method === "POST" && path === "/ingest") return await handleIngest(req, res);
