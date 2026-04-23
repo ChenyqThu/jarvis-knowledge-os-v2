@@ -28,6 +28,21 @@ export interface LinkBatchInput {
   origin_slug?: string;
   /** Frontmatter field name (e.g. 'key_people', 'investors'). */
   origin_field?: string;
+  /**
+   * v0.18.0: source id for each endpoint. When omitted, the engine JOINs
+   * against `source_id='default'`. Pass explicit values when the edge
+   * lives in a non-default source OR crosses sources.
+   *
+   * Without these fields, the batch JOIN `pages.slug = v.from_slug` fans
+   * out across every source containing that slug, silently creating wrong
+   * edges in a multi-source brain. The source_id filter eliminates the
+   * fan-out. Origin pages (frontmatter provenance) get their own
+   * source_id so reconciliation can't delete edges from another source's
+   * frontmatter.
+   */
+  from_source_id?: string;
+  to_source_id?: string;
+  origin_source_id?: string;
 }
 
 /** Input row for addTimelineEntriesBatch. Optional fields default to '' (matches NOT NULL DDL). */
@@ -37,6 +52,37 @@ export interface TimelineBatchInput {
   source?: string;
   summary: string;
   detail?: string;
+  /**
+   * v0.18.0: source id for the owning page. When omitted, the engine JOINs
+   * against `source_id='default'`. Without this, two pages sharing the
+   * same slug across sources would fan out timeline rows to both.
+   */
+  source_id?: string;
+}
+
+/**
+ * A single dedicated database connection, isolated from the engine's pool.
+ *
+ * Used by migration paths that need session-level GUCs (e.g.
+ * `SET statement_timeout = '600000'` before a `CREATE INDEX CONCURRENTLY`)
+ * without leaking into the shared pool, and by write-quiesce designs
+ * that need a session-lifetime Postgres advisory lock that survives
+ * across transaction boundaries.
+ *
+ * On Postgres: backed by postgres-js `sql.reserve()`; the same backend
+ * process serves every `executeRaw` call within the callback. Released
+ * automatically when the callback returns or throws.
+ *
+ * On PGLite: a thin pass-through. PGLite has no pool, so every call is
+ * already on the single backing connection. The interface is still
+ * exposed so cross-engine callers don't need to branch.
+ *
+ * Not safe to call from inside `transaction()`. The transaction holds a
+ * different backend; reserving a second one can deadlock on a row the
+ * transaction itself is waiting to write.
+ */
+export interface ReservedConnection {
+  executeRaw<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
 }
 
 /** Maximum results returned by search operations. Internal bulk operations (listPages) are not clamped. */
@@ -58,6 +104,12 @@ export interface BrainEngine {
   disconnect(): Promise<void>;
   initSchema(): Promise<void>;
   transaction<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T>;
+  /**
+   * Run `fn` with a dedicated connection (Postgres: reserved backend;
+   * PGLite: pass-through). See `ReservedConnection` for semantics and
+   * usage constraints. Release is automatic.
+   */
+  withReservedConnection<T>(fn: (conn: ReservedConnection) => Promise<T>): Promise<T>;
 
   // Pages CRUD
   getPage(slug: string): Promise<Page | null>;
