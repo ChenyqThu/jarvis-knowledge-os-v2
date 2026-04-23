@@ -137,8 +137,9 @@ v1 archive.
 
 ### [ ] Filesystem-canonical migration — KOS v2 → .md-as-source-of-truth — 2026-04-22
 
-**Steps 1 + 1.5 + 1.6 complete (2026-04-22 / 23)**. Full report in
-[`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](../../docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md).
+**Steps 1 + 1.5 + 1.6 + 2.1 complete (2026-04-22 / 23)**. Full report in
+[`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](../../docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md);
+Step 2 design at [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR-DESIGN.md).
 
 - **Step 1 (2026-04-22)**: export dry-run audit. Verdict GO. KOS frontmatter
   preserved 100% in export; 0 raw_data sidecars means filesystem IS canonical.
@@ -153,6 +154,16 @@ v1 archive.
   fields. **1829/1829 clean, 0 diffs.** `kind:` (and other KOS-specific
   keys) pass through upstream parse as pass-through JSONB. The 27% type/kind
   drift is safe to preserve.
+- **Step 2.1 (2026-04-23)**: brain-dir design locked. 5 decisions pinned in
+  [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR-DESIGN.md):
+  (1) `~/brain/` + `agent/`→`.agent/` rename, (2) sync fidelity covered by
+  Step 1.6 + 30-min throwaway-dir smoke for Step 2.2 preflight, (3)
+  notion-poller keeps HTTP-POST to `/ingest`; `/ingest` internal rewrite
+  to file + `gbrain sync` handles the lock problem, (4) kos-patrol outputs
+  migrate via path-constant rewrite, (5) git deferred to +14-day checkpoint.
+  "100-pages mystery" resolved: `/status` shells `gbrain list --limit 10000`
+  which silently caps at 100 upstream — not a filesystem mirror. DB truly
+  has 1829 pages. `JARVIS-ARCHITECTURE.md §6` note at line 164 corrected.
 - **`id: >-` pseudo-blocker withdrawn**: DB probe showed all 1829 pages
   store `frontmatter.id` as plain strings. The 262 `id: >-` appearances in
   export files come from `matter.stringify` / js-yaml auto-folding long
@@ -161,10 +172,25 @@ v1 archive.
   matches literal `YYYY-MM-DD`, not `[E3]`. CLI wrap wouldn't intercept
   dream's inline lint invocation anyway. See audit §5.2.
 
-**Remaining work for this track** (no longer one session):
-- **Step 2** — flip `/ingest` to filesystem-first + configure brain dir +
-  git-track + cut over launchd + enable `gbrain dream` cron. Multi-week.
-  See new handoff doc for the first micro-step scope.
+**Remaining work for this track** (Step 2 micro-steps):
+
+- **Step 2.2** — `/ingest` flip + `.agent/` rename + `/status` direct-DB.
+  1-2 h scope. Preflight: run Decision-2 throwaway-dir smoke first.
+  Safety protocol per slug-normalize (launchctl disable + fresh rolling
+  backup). Edits `server/kos-compat-api.ts` + 3 skills' path constants
+  + `workers/notion-poller/run.ts:30`. One-shot `mv ~/brain/agent ~/brain/.agent`.
+  Sanity: `/status` returns 1829 not 100; `/ingest` lands file at
+  `~/brain/sources/…`. See design doc §4 for full runbook.
+- **Step 2.3** — dream cron wiring + first overnight cycle observation.
+  After Step 2.2 has ingested 1+ poll cycles cleanly. `gbrain init --repo
+  ~/brain` to set `sync.repo_path`; add `com.jarvis.dream-cycle` plist;
+  wrap via `skills/kos-jarvis/dream-wrap/run.ts` archiving cycle JSON to
+  `~/brain/.agent/dream-cycles/`. Observe lint + backlinks phases for
+  KOS-frontmatter compatibility.
+- **Step 2.4** — (+14-day checkpoint) git init + commit-batching wrapper.
+  Only after Step 2.3 has accumulated 14 days of error-free dream cycles.
+  `gh repo create jarvis-brain --private`, extend dream-wrap to
+  `git add -A && git commit && git push` at cycle end.
 
 **Why**: Currently `kos-compat-api /ingest` writes **directly** to PGLite
 (no .md landed on disk) because the Notion poller HTTP-POSTs payloads

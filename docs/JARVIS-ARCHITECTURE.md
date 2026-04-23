@@ -159,9 +159,12 @@ when request omits or chooses base64 encoding (commit 1b02162).
 TOKEN=$(grep -o '[a-f0-9]\{64\}' ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist | head -1)
 
 curl -s -H "Authorization: Bearer $TOKEN" https://kos.chenge.ink/status | jq .
-# expect: total_pages grows over time (1779+ as of 2026-04-22 v0.17 sync), engine = "gbrain (pglite)"
-# NOTE: /status scans /Users/chenyuanquan/brain/*.md filesystem mirror (~100 files).
-# The real DB page count lives in `gbrain stats` (1779 post-sync), not /status.
+# expect: engine = "gbrain (pglite)", brain = "/Users/chenyuanquan/brain"
+# CAVEAT: /status shells out `gbrain list --limit 10000`, but upstream caps
+# the list output at 100 rows (the --limit flag is silently ignored). As of
+# Step 2.1 design (§6.10), total_pages in /status shows 100 while the real
+# DB has 1829 pages. Step 2.2 rewrites /status to direct-DB query. Use
+# `gbrain stats` or the evidence-gate sweep for the real count until then.
 
 curl -s http://127.0.0.1:7222/health | jq .
 # expect: upstream=gemini, model=gemini-embedding-2-preview
@@ -636,6 +639,71 @@ The 3 pre-migration blockers from §6.8 are cleared:
 The only remaining step on this track is Step 2 (/ingest flip to
 filesystem-first + git-track the brain dir + enable `gbrain dream`
 cron). Multi-week. First micro-step scope in the new handoff doc.
+
+---
+
+## 6.10 Filesystem-canonical Step 2.1 — brain-dir design locked (2026-04-23)
+
+Same-day follow-through on §6.9. Pure design pass, zero code / DB /
+launchd touches. Full doc at
+[`docs/STEP-2-BRAIN-DIR-DESIGN.md`](STEP-2-BRAIN-DIR-DESIGN.md).
+
+### The 5 decisions, pinned
+
+1. **Brain-dir location** → `~/brain/` (canonical), `agent/` one-shot
+   rename to `.agent/`. Upstream `src/core/sync.ts:82` skips any path
+   segment starting with a dot, so the rename is all it takes to keep
+   kos-patrol / enrich-sweep / slug-normalize outputs out of sync's
+   scope without moving files out of `~/brain/`.
+2. **Sync frontmatter fidelity** → Step 1.6's pure-function round-trip
+   already covers `sync.ts` (same `parseMarkdown` call site at
+   `src/core/import-file.ts:71, 187`). A 30-minute throwaway-dir smoke
+   stays in the design doc as Step 2.2 preflight, not executed this
+   session.
+3. **notion-poller refactor** → keep HTTP-POST to `/ingest`; rewrite
+   `/ingest` handler internally from `gbrain import` to `file write +
+   gbrain sync`. External contract (Notion Worker, feishu, ad-hoc curl)
+   stays frozen. Path C (kos-compat-api in-process import, §7 P1)
+   dissolves as a side effect of `gbrain sync`'s incremental
+   idempotency. `workers/notion-poller/run.ts` doesn't change a line.
+4. **kos-patrol output migration** → path-constant rewrite in 4 fork-
+   local files + 1 one-shot `mv`. No data loss; existing 8 report /
+   digest / dashboard files move along with the rename.
+5. **git strategy** → defer. Step 2 lands without git; `~/.gbrain/
+   brain.pglite.pre-*` rolling backup covers rollback. `gbrain dream`
+   doesn't require git (only `--pull` does). +14-day checkpoint after
+   Step 2.3 revisits with a private `jarvis-brain` repo + post-dream-
+   cycle commit-batching wrapper.
+
+### "100-pages mystery" resolved
+
+Handoff §3 asked where `/status` got `total_pages: 100` from; earlier
+the §6 "Verify health at any time" note claimed it was a filesystem
+mirror scan. Wrong. `server/kos-compat-api.ts:77` shells out
+`gbrain list --limit 10000`, and the upstream CLI silently caps list
+output at 100 rows regardless of `--limit`. Verified:
+
+```
+$ gbrain list --limit 10000 | wc -l
+100
+$ gbrain stats | head -3
+Pages:     1829
+```
+
+`~/brain/` is a 9-file agent-output dir, never a content mirror. §6's
+caveat block updated; Step 2.2 rewrites `/status` to direct-DB query
+via `skills/kos-jarvis/_lib/brain-db.ts`.
+
+### Next: Step 2.2
+
+Opens as a separate session. Reads `docs/STEP-2-BRAIN-DIR-DESIGN.md`
+§4 for the roadmap. Scope: `/ingest` flip + `.agent/` rename +
+`/status` direct-DB in one 1-2 h session under the slug-normalize
+launchctl-disable + rolling-backup protocol.
+
+### Rollback
+
+No rollback needed for a pure-design commit. Undo = `git revert`.
 
 ---
 
