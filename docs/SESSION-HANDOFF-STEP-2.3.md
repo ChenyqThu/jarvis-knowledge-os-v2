@@ -7,6 +7,38 @@
 
 ---
 
+## 0. 中文速读（2 分钟扫完）
+
+**这次干完的事**：
+- ✅ Step 2.2 落地：`/ingest` 改成 filesystem-canonical（写 `~/brain/<kind>/<slug>.md` → git commit → `gbrain sync`），`/status` 直读 PGLite（修了 100-cap bug），`agent/` → `.agent/` 隐藏避免污染 sync
+- ✅ Upstream 同步到 **v0.18.2**（schema 16→24, sources table 注册, 1862 页全保留）
+- ✅ v0.18 升级阻塞用 1 行 fork patch 解除（`pglite-schema.ts:63` 一个 `CREATE INDEX` 引用了 `CREATE TABLE IF NOT EXISTS` 跳过的列）
+- ✅ 已 file 上游 [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370)；patch 全档案在 `docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`
+
+**下次干什么**：**Step 2.3 = `gbrain dream` 夜跑**。
+1-2h focused session，前置全就绪（schema v24 / sources 已注册 / `~/brain` 是 git repo / filesystem-canonical 生产化）。runbook 在 `docs/STEP-2-BRAIN-DIR-DESIGN.md §4 Step 2.3 block`。
+
+**冷启动 5 行命令**（粘到终端）：
+```bash
+git log --oneline -5                       # 期望 7b30b5b 在 HEAD
+gbrain --version                           # 期望 0.18.2
+gbrain stats | head -3                     # 期望 1860+ 页, schema v24
+gbrain sources list                        # 期望 default federated <N> pages
+launchctl list | grep jarvis | head        # 期望 7 服务正常 (kos-patrol 仍 -/1，已知)
+```
+
+**rollback 锚点**（不出意外用不到）：
+- DB：`~/.gbrain/brain.pglite.pre-v018-1776967072` (292MB, schema v16)
+- Code：`git tag pre-sync-v0.18`
+- 服务：`launchctl bootout` → `cp -R backup` → `launchctl bootstrap` 协议同 §6.11
+
+**还在追的事**（次要）：
+- gbrain#370 等上游 review；merge 后删 fork patch（5 行 diff）
+- kos-patrol launchd cron 4 天 exit-1（subprocess WASM bug + `gbrain list` 100-cap）—— 独立 1-2h fix（migrate 到 `BrainDb`）
+- gbrain#332 cosmetic（v0.13.0 orchestrator partial 永久）
+
+---
+
 ## 1. What last session shipped (5 commits)
 
 ```
