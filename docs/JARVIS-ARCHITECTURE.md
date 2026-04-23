@@ -707,13 +707,110 @@ No rollback needed for a pure-design commit. Undo = `git revert`.
 
 ---
 
+## 6.11 Filesystem-canonical Step 2.2 landed + v0.18 sync deferred (2026-04-23 evening)
+
+Two commits on master: `79331b7` (v0.18 sync preflight verdict =
+blocked) + `b7212db` (Step 2.2 executed on v0.17 baseline).
+
+### v0.18 sync preflight (79331b7, pre-flight evening)
+
+Upstream `master` advanced to `2751581` (v0.18.0 multi-source brains +
+v0.18.1 RLS hardening) on 2026-04-22; `feat/migration-hardening` branch
+carries v0.18.2 (PR #356 open, not yet merged). Preflight smoke built
+v0.18.2 from source against a copy of
+`~/.gbrain/brain.pglite.pre-slug-normalize-*` in an isolated `$HOME`:
+
+- **v16→v24 migration chain FAILS on PGLite 0.4.4 with 1829 pages.**
+  `gbrain init --migrate-only` directly throws
+  `column "source_id" does not exist`; `gbrain apply-migrations --yes`
+  reports v0.18.0 orchestrator `status=failed` and leaves
+  `schema_version=16` unchanged. Data integrity preserved. Root cause:
+  `src/core/pglite-engine.ts` in v0.18.2 SELECTs `pages.source_id` in
+  engine methods called during the v0.13.0 orchestrator's
+  `extract links --source db` phase, before v21 has added the column.
+  Fresh installs don't trip it; v16→v24 upgrades do.
+- Fork policy (CLAUDE.md) forbids patching `src/*`. **v0.18 sync
+  deferred** until upstream fixes the PGLite upgrade path.
+- Smoke artifacts preserved under `/tmp/gbrain-upstream-peek/` +
+  `/tmp/gbrain-smoke-v018-*/` for future upstream issue repro.
+
+### Step 2.2 executed (b7212db, same evening)
+
+Filesystem-canonical `/ingest` flip + `.agent/` rename + `/status`
+direct-DB all landed in a single 1-2 h focused session on the v0.17
+baseline per `docs/STEP-2-BRAIN-DIR-DESIGN.md §4 Step 2.2`. One design
+surprise adjusted mid-session: Step 2.1 Decision 5 claimed
+"`gbrain sync` works on a plain dir, git deferrable to +14d." False.
+`src/commands/sync.ts:119` explicitly requires `.git/`; the sync
+implementation walks `git diff LAST..HEAD` for file discovery. **`git
+init ~/brain` + first commit became a Step 2.2 prerequisite**, not a
+Step 2.4 deferrable.
+
+Validation this session:
+
+| Check | Result |
+|---|---|
+| Preflight smoke: 10 pages × 10 KOS frontmatter fields | 10/10 round-trip clean, 0 diffs |
+| `mv ~/brain/agent ~/brain/.agent` | 9 files relocated; sync skips dot-prefix per `isSyncable()` |
+| `~/brain/raw/web/*.md` upgrade | Became `sources/2026-04-21-ai-economy-disruption-dual-jarvis.md` with full KOS frontmatter |
+| `git init ~/brain` + seed commit | branch=main, commit=6ed6653, 10 files |
+| `gbrain sync --repo ~/brain --no-pull` (first call) | +1 added, sync.repo_path registered in config, 1858 pages |
+| `/status` endpoint via prod port 7220 | total_pages=1858 (was 100-capped), full KOS 9-kind + confidence breakdown |
+| `/ingest` POST smoke | file at `~/brain/sources/*.md`, git commit 116a5d1, sync +1, DB 1859, frontmatter preserved |
+| `/digest` endpoint | Returns patrol-2026-04-19.md from new `.agent/digests/` path |
+| `notion-poller` manual kickstart | Normal DELTA cycle against new `.agent/notion-poller-state.json` path |
+| `gbrain doctor --fast` | 70/100 (cosmetic resolver + v0.13.0 partial; no new warnings) |
+| `~/.gbrain/sync-failures.jsonl` | Does not exist (0 parse failures, clean) |
+
+Rolling backup: `~/.gbrain/brain.pglite.pre-step2.2-1776965283` (292 MB).
+
+### Opportunistic findings (pre-existing, not regressions)
+
+- **kos-patrol launchd cron has been `LastExitStatus=1` since
+  2026-04-19.** Root cause: the minion-wrapped `gbrain list` call
+  runs in a subprocess that hits the macOS 26.3 WASM bug
+  (`Aborted(). Build with -sASSERTIONS for more info.`) — same
+  `#223` class we carry the `@electric-sql/pglite@0.4.4` override for,
+  but the subprocess doesn't inherit our override reliably. Direct
+  `bun run skills/kos-jarvis/kos-patrol/run.ts` succeeds (writes
+  `patrol-2026-04-23.md` to `.agent/digests/` correctly). Tracked as
+  P1 in TODO.md.
+- **kos-patrol uses `gbrain list --limit 10000`** — same upstream
+  100-row cap we fixed in `/status`. Inventory says "100 pages" on a
+  1858-page brain, feeding wrong numbers into dashboards + digests.
+  Migrating kos-patrol to `BrainDb` direct-read is a natural
+  follow-up (1-2 h). Tracked as P1 in TODO.md.
+
+### Next: Step 2.3 — `gbrain dream` cron wiring
+
+Preconditions met: `sync.repo_path=~/brain` set, `~/brain` is a git
+repo with first commit, filesystem-canonical flow live. Step 2.3
+remains as designed — add `com.jarvis.dream-cycle.plist` daily 03:00
+via `skills/kos-jarvis/dream-wrap/run.ts` archiving cycle JSON to
+`~/brain/.agent/dream-cycles/`. Observe the first overnight lint +
+backlinks phases for KOS-frontmatter compatibility.
+
+### Rollback (if ever needed)
+
+1. `launchctl bootout` all jarvis services
+2. `cp -R ~/.gbrain/brain.pglite.pre-step2.2-1776965283 ~/.gbrain/brain.pglite`
+3. `mv ~/brain/.agent ~/brain/agent; rm -rf ~/brain/.git ~/brain/sources`
+4. `git revert b7212db` in fork
+5. Services bootstrap
+
+Not expected — idempotent sync flow, data integrity preserved throughout.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
 - **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`; cosmetic only — manual `gbrain extract links --source db --include-frontmatter` was run post-migration so the link-graph data is correct. Watch upstream.
 - **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
-- **P1 (anchor, active)**: filesystem-canonical migration. Steps 1 + 1.5 + 1.6 done (see §6.8 + §6.9 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All 3 pre-migration blockers cleared: slug hygiene normalized (7 renames), markdown round-trip clean (1829/1829 for 10 KOS fields), `id: >-` "blocker" withdrawn. Only Step 2 (`/ingest` flip + configure brain dir + git-track + enable `gbrain dream` cron) remains — multi-week scope, first micro-step in the next handoff doc. Enables `gbrain dream` + git-VCS of knowledge.
+- **P1 (anchor, Step 2.3 pending)**: filesystem-canonical migration. Steps 1 → 2.2 done (see §6.8 + §6.9 + §6.10 + §6.11 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All pre-migration blockers cleared + Step 2.2 landed (`b7212db`): `/ingest` writes canonical to `~/brain/<kind>/<slug>.md` + git commit + `gbrain sync`, `/status` direct-DB (1858 not 100), `.agent/` hidden from sync, `~/brain/` is a git repo. Only Step 2.3 (`gbrain dream` cron) + Step 2.4 (commit-batching + optional remote) remain.
+- **P1 (new, Step 2.2 follow-up)**: v0.18 upstream sync blocked on PGLite v16→v24 migration path — `column "source_id" does not exist` thrown by engine SELECTs before v21 adds the column. Preflight smoke reproduced on v0.18.0 / v0.18.1 / v0.18.2 (PR #356 open). Fork policy forbids patching `src/*`. Deferred until upstream fixes. See §6.11 + `79331b7`.
+- **P1 (new, Step 2.2 follow-up)**: kos-patrol launchd cron `LastExitStatus=1` since 2026-04-19 due to macOS 26.3 WASM bug (`#223` class) hitting the minion-wrapped subprocess. Direct bun-run works. Plus kos-patrol uses `gbrain list --limit 10000` (100-row-capped) — migrating to `BrainDb` direct-read is the natural fix.
 - ~~**P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable helpers~~ — **resolved 2026-04-22**: all three landed with `run.ts`, backed by the shared `skills/kos-jarvis/_lib/brain-db.ts` direct-PGLite reader that bypasses the MCP 100-row cap. See TODO.md P1 done markers.
 - **P2**: v1 Python `kos-api.py` + `kos` CLI still live in `/Users/chenyuanquan/Projects/jarvis-knowledge-os/`. Unloaded from launchd (`com.jarvis.kos-api.plist.bak`) but not archived. After a 7-day v2 soak, move the plist bak into `~/Library/LaunchAgents/_archive/` and archive the v1 repo.
 - **P2**: Evaluate Gemini 3072-dim embeddings vs current 1536-dim truncation; requires full reindex if adopted.

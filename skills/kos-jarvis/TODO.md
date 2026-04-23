@@ -137,9 +137,10 @@ v1 archive.
 
 ### [ ] Filesystem-canonical migration — KOS v2 → .md-as-source-of-truth — 2026-04-22
 
-**Steps 1 + 1.5 + 1.6 + 2.1 complete (2026-04-22 / 23)**. Full report in
+**Steps 1 → 2.2 complete (2026-04-22 / 23). Only Step 2.3 (dream cron) remains for the core track.** Full report in
 [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](../../docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md);
-Step 2 design at [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR-DESIGN.md).
+Step 2 design at [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR-DESIGN.md);
+Step 2.2 execution story at `docs/JARVIS-ARCHITECTURE.md §6.11`.
 
 - **Step 1 (2026-04-22)**: export dry-run audit. Verdict GO. KOS frontmatter
   preserved 100% in export; 0 raw_data sidecars means filesystem IS canonical.
@@ -164,6 +165,23 @@ Step 2 design at [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR
   "100-pages mystery" resolved: `/status` shells `gbrain list --limit 10000`
   which silently caps at 100 upstream — not a filesystem mirror. DB truly
   has 1829 pages. `JARVIS-ARCHITECTURE.md §6` note at line 164 corrected.
+- **Step 2.2 (2026-04-23 evening, commit `b7212db`)**: `/ingest`
+  filesystem-canonical flip + `.agent/` rename + `/status` direct-DB
+  executed. 6 files touched, +146/-58 lines. End-to-end verified:
+  preflight smoke 10/10 fidelity clean, `mv agent .agent`, raw/web
+  upgraded to KOS-source, `git init ~/brain` + seed commit (Decision 5
+  revised — sync requires git, not deferrable), `gbrain sync --repo`
+  registered, `/status` returns 1858 with full 9-kind breakdown,
+  `/ingest` POST writes `~/brain/sources/*.md` + git commit + sync +1
+  DB row + frontmatter 100% preserved, `/digest` serves from new
+  `.agent/digests/` path, notion-poller clean on new path. Rolling
+  backup: `~/.gbrain/brain.pglite.pre-step2.2-1776965283` (292MB).
+- **v0.18 sync preflight (2026-04-23, commit `79331b7`)**: upstream
+  v0.18.0/v0.18.1/v0.18.2 (PR #356) all fail the PGLite v16→v24
+  migration path on our brain — `column "source_id" does not exist`
+  thrown by engine methods before v21 adds the column. Fork policy
+  forbids `src/*` patches. Sync deferred; Step 2.2 ran on v0.17
+  baseline instead (clean upgrade path when upstream fixes).
 - **`id: >-` pseudo-blocker withdrawn**: DB probe showed all 1829 pages
   store `frontmatter.id` as plain strings. The 262 `id: >-` appearances in
   export files come from `matter.stringify` / js-yaml auto-folding long
@@ -172,25 +190,25 @@ Step 2 design at [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR
   matches literal `YYYY-MM-DD`, not `[E3]`. CLI wrap wouldn't intercept
   dream's inline lint invocation anyway. See audit §5.2.
 
-**Remaining work for this track** (Step 2 micro-steps):
+**Remaining work for this track** (post-Step-2.2 micro-steps):
 
-- **Step 2.2** — `/ingest` flip + `.agent/` rename + `/status` direct-DB.
-  1-2 h scope. Preflight: run Decision-2 throwaway-dir smoke first.
-  Safety protocol per slug-normalize (launchctl disable + fresh rolling
-  backup). Edits `server/kos-compat-api.ts` + 3 skills' path constants
-  + `workers/notion-poller/run.ts:30`. One-shot `mv ~/brain/agent ~/brain/.agent`.
-  Sanity: `/status` returns 1829 not 100; `/ingest` lands file at
-  `~/brain/sources/…`. See design doc §4 for full runbook.
-- **Step 2.3** — dream cron wiring + first overnight cycle observation.
-  After Step 2.2 has ingested 1+ poll cycles cleanly. `gbrain init --repo
-  ~/brain` to set `sync.repo_path`; add `com.jarvis.dream-cycle` plist;
-  wrap via `skills/kos-jarvis/dream-wrap/run.ts` archiving cycle JSON to
-  `~/brain/.agent/dream-cycles/`. Observe lint + backlinks phases for
-  KOS-frontmatter compatibility.
-- **Step 2.4** — (+14-day checkpoint) git init + commit-batching wrapper.
-  Only after Step 2.3 has accumulated 14 days of error-free dream cycles.
-  `gh repo create jarvis-brain --private`, extend dream-wrap to
-  `git add -A && git commit && git push` at cycle end.
+- **Step 2.3** — `gbrain dream` cron wiring + first overnight cycle.
+  Preconditions now met (Step 2.2): `sync.repo_path=~/brain` set,
+  `~/brain` is a git repo with first commit, filesystem-canonical
+  flow live. Add `com.jarvis.dream-cycle.plist` daily 03:00 via
+  `skills/kos-jarvis/dream-wrap/run.ts` that calls `gbrain dream --json`
+  and archives cycle reports to `~/brain/.agent/dream-cycles/<date>.json`.
+  Observe first overnight lint + backlinks phases for KOS-frontmatter
+  compatibility. 1-2 h scope. Safety protocol same as Step 2.2.
+- **Step 2.4** — (+14-day checkpoint) commit-batching wrapper + optional
+  remote. Git is already initialized (landed with Step 2.2; Decision 5's
+  "+14d defer" was revised mid-session — sync requires git). After 14
+  days of error-free dream cycles, decide:
+  (a) Optional: `gh repo create jarvis-brain --private` + extend
+  dream-wrap to `git push` at cycle end, and
+  (b) Commit-batching: replace per-ingest commits (currently ~5-9/poll)
+  with end-of-dream-cycle amalgamation to reduce git-log noise.
+  Scope: ~1-2 h depending on (a) (b) choice.
 
 **Why**: Currently `kos-compat-api /ingest` writes **directly** to PGLite
 (no .md landed on disk) because the Notion poller HTTP-POSTs payloads
@@ -289,6 +307,46 @@ timeouts, v21→v23 FK integrity window, `doctor --locks`). The
 **Cost of delay**: zero. v0.17's `gbrain dream` is all we need for
 Step 2.3; multi-source is a future nice-to-have, not a Step 2
 dependency.
+
+### [ ] kos-patrol cron exit-1 under minion shell-wrap — 2026-04-23 (Step 2.2 follow-up)
+
+Discovered during Step 2.2 opportunistic probe. Two distinct issues
+stacking:
+
+**1. macOS 26.3 WASM bug in subprocess context**
+
+`com.jarvis.kos-patrol.plist` invokes `scripts/minions-wrap/kos-patrol.sh`
+→ `gbrain jobs submit shell --follow`. The shell-job subprocess spawns
+a fresh bun invocation of `kos-patrol/run.ts`, which then shells
+`gbrain list --limit 10000`. Inside that nested subprocess, PGLite
+0.4.4 still hits `Aborted(). Build with -sASSERTIONS for more info.`
+— the same `#223` class that motivated our 0.4.4 pin. Our override
+doesn't survive the subprocess depth.
+
+Evidence: `patrol.stderr.log` shows the WASM Aborted + "Job #113 dead:
+exit 1" stack since 2026-04-19. `kos-patrol.stdout.log` last clean
+run: 2026-04-18 / 1668-page inventory.
+
+**2. 100-row `gbrain list` cap (same bug we fixed in /status)**
+
+Even when kos-patrol runs manually via `bun run ...run.ts` (bypasses
+issue #1 and succeeds), phase 1 (Inventory) shells
+`gbrain list --limit 10000` which silently caps at 100. Patrol reports
+"100 pages; kinds: source=97, concept=2, project=1" on a 1858-page
+brain — wrong numbers feed into dashboards + digests.
+
+**Fix**: migrate kos-patrol phase 1 from `gbrain list` shell-out to
+direct-DB via `skills/kos-jarvis/_lib/brain-db.ts` (same pattern as
+`/status` + existing `dikw-compile/run.ts`, `evidence-gate/run.ts`).
+This also removes the subprocess-WASM exposure since BrainDb opens
+PGLite 0.4.4 in the kos-patrol process itself, not a grandchild.
+
+**Scope**: ~30 LOC in `run.ts:listAll()`. 1-2 h with tests.
+
+**Workaround until fix**: Direct `bun run skills/kos-jarvis/kos-patrol/run.ts`
+still writes a digest (though with wrong inventory count). Cron is
+silent; patrol-2026-04-23.md landed at `.agent/digests/` via manual
+invocation this session.
 
 ### [ ] orphan reducer — bring brain_score orphans from 2/15 → 10+/15 — 2026-04-22
 **Why**: `gbrain doctor --json` shows orphans 2/15 (many pages have no
