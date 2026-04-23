@@ -246,6 +246,50 @@ VCS in the same move.
 
 **Not started**. Tracked here as the anchor for next-next session.
 
+### [ ] v0.18 upstream sync blocker — PGLite v16→v24 upgrade fails on `source_id` — 2026-04-23
+Preflight smoke (this evening) built `upstream/feat/migration-hardening`
+(= v0.18.2, PR #356 open) and ran `apply-migrations --yes` against a
+copy of `~/.gbrain/brain.pglite.pre-slug-normalize-1776921434` in an
+isolated `$HOME`. **Production DB was not touched.**
+
+**Smoke result**:
+- `gbrain stats` reads fine (1829 pages)
+- `gbrain apply-migrations --yes` → orchestrator reports v0.18.0 `status=failed`
+- `gbrain init --migrate-only` (direct) → throws `column "source_id" does not exist`
+- `gbrain sources list` post-smoke → `relation "sources" does not exist`
+- `doctor.schema_version` → **stays at v16, target v24, zero advance**
+- Data integrity intact (no DDL partial-state on disk)
+
+**Root cause**: `src/core/pglite-engine.ts` (v0.18.2) references
+`pages.source_id` at lines 132/140/226/256/395/759 across
+`addLink[sBatch]` + `addTimelineEntr[ies]Batch` + page-fetch paths.
+The v0.13.0 orchestrator calls `gbrain extract links --source db`
+which hits one of those engine methods before v21 has added the
+column. Fresh installs don't trip it (schema starts at v24);
+v16→v24 upgrades do. Upstream tested PGLite against fresh installs
+only — our upgrade path is the untested lane.
+
+**v0.18.2 fixes a different set of v0.18.0 issues** (Supabase 57014
+timeouts, v21→v23 FK integrity window, `doctor --locks`). The
+`source_id does not exist` upgrade blocker is **not** addressed.
+
+**Preserved smoke artifacts** (keep until upstream exchange closes):
+- `/tmp/gbrain-upstream-peek/` — v0.18.2 build + `@electric-sql/pglite@0.4.4`
+- `/tmp/gbrain-smoke-v018-1776964434/` — 285 MB throwaway copy + isolated `.gbrain/`
+- `/tmp/smoke-env` — path reminder
+
+**Action**:
+1. File upstream issue after Step 2.2 ships (repro is 5 commands).
+   Link to `docs/SESSION-HANDOFF-STEP-2.2.md §0` for full trace.
+2. Wait for upstream fix OR fork-local cherry-pick opportunity.
+3. When unblocked, retry sync → Step 2.2 rewrite uses
+   `gbrain sources add jarvis --path ~/brain` instead of
+   `sync.repo_path` config key (cosmetic upgrade, non-breaking).
+
+**Cost of delay**: zero. v0.17's `gbrain dream` is all we need for
+Step 2.3; multi-source is a future nice-to-have, not a Step 2
+dependency.
+
 ### [ ] orphan reducer — bring brain_score orphans from 2/15 → 10+/15 — 2026-04-22
 **Why**: `gbrain doctor --json` shows orphans 2/15 (many pages have no
 inbound wikilinks). Biggest single pull on brain_score after

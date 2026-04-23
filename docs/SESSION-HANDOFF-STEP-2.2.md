@@ -1,9 +1,105 @@
-# Next-session handoff — Step 2.1 design locked, Step 2.2 queued
+# Next-session handoff — v0.18 sync DEFERRED, Step 2.2 back on v0.17 baseline
 
-> 2026-04-23 | written after Step 2.1 brain-dir design pinned + committed
-> (`98c9bd2`). **Read this first.** Then
-> `docs/STEP-2-BRAIN-DIR-DESIGN.md` §4 Step 2.2 block, then
-> `skills/kos-jarvis/TODO.md`, then `CLAUDE.md`.
+> 2026-04-23 evening | **pre-flight prep session verdict: Path B restored.**
+> Upstream v0.18.0 / v0.18.1 / v0.18.2 (PR #356 open) all fail the PGLite
+> v16→v24 migration path on our 1829-page brain. `column "source_id" does
+> not exist` blocks schema advance. Data unharmed in smoke. **Original Step
+> 2.2 runbook (v0.17 baseline) is the correct next move.**
+>
+> Read order: this §0 → §3 runbook → `docs/STEP-2-BRAIN-DIR-DESIGN.md §4
+> Step 2.2 block` → `skills/kos-jarvis/TODO.md` → `CLAUDE.md`.
+
+---
+
+## 0. Preflight prep (2026-04-23 pm → evening, no code changes this turn)
+
+### What I did (prep-only session; zero DB / plist / source writes)
+
+1. Audited upstream drift — `upstream/master` moved from `55ca498` to
+   `2751581` since last sync, landing **v0.18.0** (multi-source brains)
+   + **v0.18.1** (RLS hardening). `upstream/feat/migration-hardening`
+   (PR #356 OPEN) carries **v0.18.2** which specifically targets a field
+   report of 8 v0.18.0 upgrade issues.
+2. Diffed `package.json` — fork vs upstream master is 2 lines:
+   `version: 0.17.0 → 0.18.1`, `@electric-sql/pglite: 0.4.4 → 0.4.3`.
+   Trivial to preserve our `0.4.4` override in a future merge (no
+   `resolutions` / `overrides` block needed).
+3. Built upstream v0.18.2 from source (`/tmp/gbrain-upstream-peek`), ran
+   migration smoke against a copy of `~/.gbrain/brain.pglite.pre-slug-
+   normalize-1776921434` in an isolated `$HOME`. **Production DB was
+   not touched.**
+
+### Smoke verdict: v0.18 sync is BLOCKED on our PGLite brain
+
+| Check | Result |
+|---|---|
+| `bun upstream/src/cli.ts stats` (read-only) | 1829 pages, 3392 chunks, 385 links — reads fine |
+| `bun upstream/src/cli.ts apply-migrations --yes` | orchestrator reports v0.18.0 `status=failed` |
+| `bun upstream/src/cli.ts init --migrate-only` direct | throws `column "source_id" does not exist` |
+| `bun upstream/src/cli.ts sources list` post-smoke | `relation "sources" does not exist` |
+| `doctor` schema_version post-smoke | **still v16, target v24** — zero advance |
+| Smoke data integrity | intact; 1829 pages, no DDL partial-state on disk |
+
+### Root cause (enough to file upstream — not enough to patch locally)
+
+`src/core/pglite-engine.ts` in v0.18.2 references `pages.source_id` at
+**lines 132/140/226/256/395/406-416/759-765** across `addLink`,
+`addLinksBatch`, `addTimelineEntry`, `addTimelineEntriesBatch`, and
+page-fetch paths. The `apply-migrations --yes` orchestrator for
+v0.13.0 runs `gbrain extract links --source db` (engine method path),
+which hits one of those queries before v21 has added the column.
+On fresh installs this isn't tripped (schema starts at v24).
+On v16→v24 upgrades, the engine's JOINs on `source_id` run before
+the migration that creates it. Upstream tested PGLite against fresh
+installs; upgrades from v16 is the untested path we just found.
+
+v0.18.2 hardening (migration-21 integrity window, reserved connection,
+`doctor --locks`) fixes **a different** set of issues (Supabase
+57014 timeouts, crash-between-v21-v23 FK integrity). The `source_id
+does not exist` blocker is **not** addressed.
+
+### Decision: pivot back to Path B
+
+The Path A → Path B flip is triggered by hard evidence, not a
+preference change. Running the v0.18 sync on production today would
+(1) take a backup, (2) merge upstream, (3) run apply-migrations,
+(4) watch it fail the same way, (5) restore from backup. The smoke
+saved us ~2 h of wasted ops.
+
+- **Step 2.2** now executes on the **v0.17.0 baseline** per the
+  original `docs/STEP-2-BRAIN-DIR-DESIGN.md §4 Step 2.2` runbook.
+  No revisions needed; that document is authoritative.
+- **v0.18 sync** becomes a new P1 item with a clear gating condition:
+  upstream fixes the PGLite v16→v24 upgrade path (either ships the
+  engine-first-read guard, or orders `gbrain init --migrate-only`
+  before engine method calls in the orchestrators, or splits v20 +
+  v21 so pre-extract migrations finish first). We file the issue
+  with the smoke repro once Step 2.2 ships.
+
+### Preserved artifacts for the upstream issue
+
+- `/tmp/gbrain-upstream-peek/` — full clone with `migration-hardening`
+  checked out + `@electric-sql/pglite@0.4.4` installed + compiled
+  binary. **DO NOT `rm -rf`** until upstream issue is filed or the
+  reporter exchange closes.
+- `/tmp/gbrain-smoke-v018-1776964434/` — the 285 MB throwaway copy
+  of the pre-slug-normalize backup + `.gbrain/config.json` pointing
+  at it. Same preservation rule.
+- `/tmp/smoke-env` — remembers the smoke-dir path for follow-up
+  probes.
+- `~/.gbrain/brain.pglite.pre-slug-normalize-1776921434` — the
+  rolling backup stays untouched; the smoke copy came from it.
+
+When we file upstream, the repro is 5 commands (copy backup → init
+throwaway HOME → build v0.18.2 from migration-hardening → run
+apply-migrations → observe status=failed + schema_version stays v16).
+
+### What changed in TODO.md this session
+
+- Step 2.2 runbook unchanged (Path B restored)
+- New P1: "v0.18 upstream sync blocker — PGLite v16→v24 upgrade
+  fails on source_id column check"
+- Step 2.3 + 2.4 timeline unchanged
 
 ---
 
