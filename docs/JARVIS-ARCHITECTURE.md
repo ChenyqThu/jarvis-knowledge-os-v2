@@ -500,7 +500,7 @@ migration that would make `.md` files the source of truth and let
 - Compatibility audit: `gbrain lint` against the exported tree.
 - Full report at [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md).
 
-### Verdict: GO, with 4 blockers
+### Verdict: GO, with 3 blockers (corrected from 4)
 
 | Signal | Result |
 |---|---|
@@ -509,10 +509,11 @@ migration that would make `.md` files the source of truth and let
 | DB-exclusive data (`.raw/` sidecars) | ✅ 0 across 1786 pages → filesystem IS canonical |
 | Body integrity | ✅ 0 empty-body pages; UTF-8 clean |
 | Timeline compatibility | ✅ 749 pages use standard `<!-- timeline -->` sentinel |
-| Upstream `gbrain lint` tolerance | ⚠️ `placeholder-date` false-positives on `[E3]` / `[10]+` KOS tags |
+| Upstream `gbrain lint` footprint | ℹ️ ~3-5 legitimate `YYYY-MM-DD` filename-template findings across 1786 pages (hand-patchable; NOT a `[E3]`/`[10]+` false-positive as initial draft claimed) |
 | Slug hygiene | ⚠️ 7 root-level strays + 262 `id: >-` block-scalar legacy pages |
 | `type:` / `kind:` drift | ⚠️ 27% (487 pages) — upstream PageType enum doesn't cover person/company/etc, `kind:` carries the real taxonomy |
 | `evidence_summary` coverage | ⚠️ 0% — DB reality, not an export bug (candidate C on the TODO queue) |
+| `gbrain dream` hard dep | ℹ️ requires configured brain dir for ANY phase — even `--phase orphans --dry-run` exits with "No brain directory found". Unblocking dream IS the migration, not a separable blocker. |
 
 ### Directory shape (slug-prefix routing, not type/kind routing)
 
@@ -527,25 +528,28 @@ root strays 7 | —— 1786 total
 signal-detector hasn't produced content yet, and v1 wiki's 85 pages
 import landed at `sources/` flat instead of `sources/wiki/`.
 
-### Blockers → next-session scope
+### Blockers → next-session scope (revised after same-session correction)
 
-1. **Step 1.5 — Fork-local lint shim** (~40 LOC in
-   `skills/kos-jarvis/`). Wraps `gbrain lint`; filters
-   `placeholder-date` false-positives on KOS evidence tags. No `src/*`
-   edit. Unblocks dream.
-2. **Step 1.6 — Bulk slug normalization**. 7 root strays + 262 legacy
-   `id: >-` pages → clean one-liner shape. DB rewrite + re-extract
-   links. One-time.
-3. **Step 1.7 — Round-trip sanity**. Export → dry-run re-import into a
+Earlier draft of this section listed a "Step 1.5 lint shim" as the first
+blocker. Withdrawn after reading `src/commands/lint.ts:70` — the
+`placeholder-date` rule only matches literal `YYYY-MM-DD` / `XX-XX`, not
+KOS bracketed tags. See audit report §5.2 for the full correction log.
+
+1. **Step 1.5 — Bulk slug + `id: >-` normalization** (DB write, high
+   care). 7 root strays + 262 legacy `id: >-` pages → clean one-liner
+   shape. Before running: `launchctl disable` every DB-writing service,
+   take a fresh rolling PGLite backup, run the rewrite script, re-extract
+   links, re-enable services. One-time. ~1-2 h scope.
+2. **Step 1.6 — Round-trip sanity**. Export → dry-run re-import into a
    throwaway PGLite → diff `kind` / `status` / `confidence` columns.
    Verifies `kind:` survives markdown round-trip since upstream only
-   reads `type:`.
-4. **Step 2 — Flip `/ingest` to filesystem-first**. Only after
-   1.5/1.6/1.7 clear.
+   reads `type:`. ~1 h.
+3. **Step 2 — Flip `/ingest` to filesystem-first**. Only after
+   1.5 + 1.6 clear. Multi-week scope (not one session).
 
-Each of 1.5/1.6/1.7 is one-session scope. Full migration stays
-multi-week. The read-only audit in this session consumed no risk and
-locked in the go/no-go decision.
+Steps 1.5 and 1.6 are each one-session scope. The read-only audit in
+this session consumed no risk and locked in the go/no-go decision; the
+correction round also tightened the plan by removing an unnecessary step.
 
 ### Artifact cleanup
 
@@ -563,7 +567,7 @@ locked in the go/no-go decision.
 - **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`; cosmetic only — manual `gbrain extract links --source db --include-frontmatter` was run post-migration so the link-graph data is correct. Watch upstream.
 - **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
-- **P1 (anchor, next few sessions)**: filesystem-canonical migration. Step 1 audit complete (see §6.8 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)) — verdict GO with 4 blockers. Next: Step 1.5 (fork-local lint shim for KOS evidence tags), Step 1.6 (slug + `id: >-` normalization), Step 1.7 (export/re-import round-trip sanity), then Step 2 (`/ingest` flip). Enables `gbrain dream` + git-VCS of knowledge.
+- **P1 (anchor, next few sessions)**: filesystem-canonical migration. Step 1 audit complete (see §6.8 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)) — verdict GO with 3 blockers (an initial 4th "lint shim" blocker was withdrawn same-session after reading upstream lint source; correction log in audit §5.2). Next: Step 1.5 (slug + `id: >-` normalization with service-disable + rolling-backup protocol), Step 1.6 (export/re-import round-trip sanity on throwaway PGLite), then Step 2 (`/ingest` flip, multi-week). Enables `gbrain dream` + git-VCS of knowledge.
 - ~~**P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable helpers~~ — **resolved 2026-04-22**: all three landed with `run.ts`, backed by the shared `skills/kos-jarvis/_lib/brain-db.ts` direct-PGLite reader that bypasses the MCP 100-row cap. See TODO.md P1 done markers.
 - **P2**: v1 Python `kos-api.py` + `kos` CLI still live in `/Users/chenyuanquan/Projects/jarvis-knowledge-os/`. Unloaded from launchd (`com.jarvis.kos-api.plist.bak`) but not archived. After a 7-day v2 soak, move the plist bak into `~/Library/LaunchAgents/_archive/` and archive the v1 repo.
 - **P2**: Evaluate Gemini 3072-dim embeddings vs current 1536-dim truncation; requires full reindex if adopted.

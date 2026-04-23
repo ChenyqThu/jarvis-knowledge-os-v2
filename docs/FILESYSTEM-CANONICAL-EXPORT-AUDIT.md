@@ -5,16 +5,26 @@
 > Method: `gbrain export` → `/tmp/brain-export-preview/` → structural + frontmatter audit
 > Artifact cleaned after audit; numbers captured here for future sessions.
 
-## Verdict: **GO, with 4 pre-migration blockers**
+## Verdict: **GO, with 3 pre-migration blockers**
 
 The upstream `gbrain export` faithfully materializes our 1786-page KOS brain to a
 markdown tree. KOS-critical frontmatter is preserved end-to-end, the directory
 layout is predictable (slug-prefix → dir), and there's zero DB-only data (no
 `.raw/*.json` sidecars anywhere). This path is viable.
 
-Four blockers that must be solved before flipping the `/ingest` write path to
-filesystem-first are detailed in §5. None of them are deal-breakers — they're
-known scope, ~1 week of focused work total.
+Three blockers must be solved before flipping the `/ingest` write path to
+filesystem-first: slug-hygiene normalization, legacy `id: >-` block-scalar
+rewrite, and a type/kind round-trip verification. Details in §5. None are
+deal-breakers — scope is ~1 week of focused work.
+
+**Correction log (2026-04-22, same session)**: an earlier draft of this report
+listed `gbrain lint` false-positives on `[E3]` / `[10]+` KOS evidence tags as
+a 4th blocker. That analysis was wrong — the `placeholder-date` rule only
+matches literal `YYYY-MM-DD` / `XX-XX` tokens (see `src/commands/lint.ts:70`)
+and the single finding in the sample was a legitimate `YYYY-MM-DD` string in
+page body that happened to reference a filename template. Full correction in
+§5.2. The proposed "fork-local lint shim" is withdrawn — it was solving a
+problem that does not exist.
 
 ---
 
@@ -164,29 +174,65 @@ These are from early-day `/ingest` calls before the `slug: sources/<...>`
 convention settled. Fix: one-time script to rename slug to
 `concepts/ai-jarvis` / `sources/<url-slug>` and update backlinks.
 
-### 5.2 Upstream `gbrain lint` flags KOS evidence tags as `placeholder-date`
+### 5.2 Upstream `gbrain lint` — false-positive footprint (corrected)
 
-Running `gbrain lint /tmp/brain-export-preview` fires `placeholder-date` on
-pages using KOS evidence-tag syntax like `[E3]` or `[10]+`. Example from the
-first 26% of the lint run (cut short by timeout):
+**This section supersedes an earlier incorrect analysis in the same
+session.** Reading `src/commands/lint.ts:43-147` changed the picture:
 
-> `concepts/user-modeling-spec.md:L42 placeholder-date: Placeholder date found: 1. **日记层**：`memory/YYYY-MM-DD.md` 中的 [10]+ 条目`
+**Actual rule set** (7 rules total, all in `lintContent`):
+- `llm-preamble` — matches "Of course! Here is..." and similar LLM artifacts
+- `code-fence-wrap` — page wrapped in ` ```markdown ` fences
+- `placeholder-date` — matches **literal** `YYYY-MM-DD` / `XX-XX` / `\d{4}-XX-XX`
+  ONLY. The regex is `lines[i].match(/\bYYYY-MM-DD\b/) || ...`. It does NOT
+  match `[E3]`, `[10]+`, or any bracketed token.
+- `missing-title` / `missing-type` / `missing-created` — YAML frontmatter gates
+- `no-frontmatter` — page has no `---` block at all
+- `broken-citation` — unclosed `[Source: ...` with no next-line `]`
+- `empty-section` — `## Heading` followed by empty content
 
-The detector interprets bracketed tokens as unfilled date placeholders. This
-would produce thousands of false positives when `gbrain dream` runs its lint
-phase nightly.
+**Earlier-draft claim was wrong.** The first lint run hit one `placeholder-date`
+finding at 26% of the 1786-page corpus:
 
-Options:
-1. **Fork-local lint plugin** — skip `placeholder-date` when the tag matches
-   `[E\d]`, `[\d+]+`, `[E\d]:`. Lives in `skills/kos-jarvis/*`, wraps
-   `gbrain lint` via a CLI shim. No src/* edit. ~40 LOC.
-2. **Upstream lint carve-out** — file issue, add config key
-   `lint.placeholder_date.exclude_patterns: ["\\[E\\d\\]", ...]`.
-   Merge-conflict tax on every sync.
-3. **Pre-process** — run a `.md` normalizer before lint that escapes KOS tags
-   to `\[E3\]`. Dirty and reversible.
+> `concepts/user-modeling-spec.md:L42 Placeholder date found: 1. **日记层**：memory/YYYY-MM-DD.md 中的 [10]+ 条目`
 
-Option 1 is the right one per fork policy. Tracked below as the real P1 blocker.
+I mis-attributed the trigger to `[10]+`. The real trigger is the literal
+string `YYYY-MM-DD` in `memory/YYYY-MM-DD.md` (a legitimate filename-template
+reference explaining the journal-layer file convention). The `[10]+` token
+was context, not cause. Fix: wrap the path in a code span (`` `memory/YYYY-MM-DD.md` ``).
+
+**Real footprint** (extrapolating from 1-in-26% sample): ~3-5 `placeholder-date`
+findings total across 1786 pages, each a legitimate template-string reference
+that can be hand-patched in under a minute per page. This is orders of
+magnitude smaller than the "system-wide false positive" I claimed before and
+does not warrant a lint shim.
+
+**Bonus finding that matters more:** a CLI-level lint shim would not help
+`gbrain dream` anyway. `src/core/cycle.ts:349-352` invokes lint via
+`const { runLintCore } = await import('../commands/lint.ts')` — an inline
+dynamic import, not a `spawn`. Wrapping the `gbrain lint` CLI intercepts
+only human invocations and our `kos-lint/run.ts` cron; dream's lint phase
+bypasses any CLI wrapper by design.
+
+**Practical implication**: withdraw the "Step 1.5 = lint shim" plan. If we
+later want dream's lint phase to skip specific findings, the options are:
+1. Pre-clean the handful of legitimate `YYYY-MM-DD` template references in
+   page bodies before filesystem-canonical flip (one-time fix).
+2. Run `gbrain dream` without lint phase (no CLI flag today — dream's
+   `--phase` accepts exactly ONE phase, not a blacklist; see `src/commands/dream.ts:45-50`).
+3. Accept the ~3-5 findings as daily noise in `gbrain dream`'s JSON report;
+   they're `fixable: false` so they don't mutate content.
+
+None of these are pre-migration blockers. This is a post-migration polish
+decision.
+
+**The actual hard dependency for `gbrain dream`** (any phase, including
+read-only `--phase orphans`) is a configured brain directory. Verified with
+`gbrain dream --phase orphans --dry-run` on our DB-native setup:
+
+> `No brain directory found. Pass --dir <path> or configure one via ``gbrain init``.`
+
+See `src/commands/dream.ts:98-101`. Unblocking dream IS the filesystem-canonical
+migration — not a separable blocker.
 
 ### 5.3 `type:` / `kind:` 27% drift
 
@@ -243,26 +289,44 @@ before filesystem-canonical flip.
 
 ## 7. Recommended next steps (order-dependent)
 
-1. **Step 1.5 — KOS lint shim** (the real P1 before any migration).
-   Write `skills/kos-jarvis/kos-lint-shim/run.ts` that wraps `gbrain lint` and
-   filters false-positive `placeholder-date` for `[E\d]` / `[\d+]+` tokens.
-   ~40 LOC. No src/* touch. Unblocks dream.
+Supersedes an earlier draft that started with a `lint shim` Step 1.5. That
+step has been withdrawn per §5.2 correction.
 
-2. **Step 1.6 — Slug normalization pass**. One-time bulk rewrite:
-   - 7 root stray → prefix with `concepts/` or `sources/`
-   - 262 `id: >-` → quoted one-liner
-   - (optional) v1 wiki 85 pages → move into `sources/wiki/`
-   Needs DB-side slug rewrite + new `gbrain extract links` pass.
+1. **Step 1.5 — Slug normalization + `id: >-` cleanup** (DB write, highest
+   care). One-time bulk rewrite, covers:
+   - 7 root stray → prefix with `concepts/` or `sources/` (§5.1)
+   - 262 pages with `id: >-` block-scalar → quoted one-liner (§5.4)
+   - (optional, deferred) v1 wiki 85 pages → move into `sources/wiki/`
+   **Safety protocol** (mandatory — learned from v0.17 sync WASM incident):
+   `launchctl disable user/$UID/com.jarvis.{notion-poller,kos-compat-api,kos-patrol,enrich-sweep,kos-deep-lint}`
+   → fresh rolling backup of `~/.gbrain/brain.pglite` → run script →
+   `gbrain extract links --source db` → `launchctl enable` + `bootstrap`.
+   Never SIGTERM a PGLite writer mid-rewrite.
 
-3. **Step 1.7 — Round-trip sanity check**. `gbrain export` →
-   `gbrain import --dry-run` into throwaway PGLite → diff `kind` / `status` /
-   `confidence` columns to prove nothing is lost on re-ingest. This is the
-   last gate before Step 2.
+2. **Step 1.6 — Round-trip sanity check**. `gbrain export --dir /tmp/rt-test`
+   → fresh throwaway PGLite via `gbrain init --path /tmp/rt-pglite` →
+   `gbrain import /tmp/rt-test` → compare `kind` / `status` / `confidence` /
+   `source_of_truth` columns between original and round-tripped rows. Proves
+   `kind:` survives markdown round-trip (upstream's `parseMarkdown` reads
+   only `type:`). Last gate before any write-path flip.
 
-4. **Step 2 — Flip `/ingest` to filesystem-first**. Only after 1.5/1.6/1.7.
+3. **Step 2 — Flip `/ingest` to filesystem-first**. Only after 1.5 + 1.6
+   land clean. `server/kos-compat-api.ts` /ingest handler changes from
+   `spawnSync gbrain import <stdin>` to file-write → `gbrain sync`; poller
+   similarly. Configure `sync.repo_path` so `gbrain dream` resolves without
+   `--dir`. Git-track the brain dir. Cut over launchd, verify, monitor one
+   live Notion cycle.
 
-Steps 1.5 + 1.6 + 1.7 fit in **one session each**. Full migration stays
-multi-week per TODO estimate.
+Steps 1.5 and 1.6 each fit in one session (~1-2 h). Step 2 stays multi-week
+per TODO estimate.
+
+**Note on the post-migration lint phase**: once `gbrain dream` is wired, its
+lint phase will surface ~3-5 legitimate `placeholder-date` findings (see
+§5.2). Options at that point: (a) patch the bodies to wrap filename templates
+in code spans, (b) accept the findings as non-fixable noise in the nightly
+JSON report, (c) skip lint phase via `gbrain dream --phase <not-lint>` (needs
+upstream enhancement for blacklist; today `--phase` accepts a single phase
+only). Decide at that time, not now.
 
 ---
 
