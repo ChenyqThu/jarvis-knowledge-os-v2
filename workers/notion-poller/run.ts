@@ -357,7 +357,7 @@ async function ingest(payload: {
   markdown: string;
   notion_id: string;
   source: string;
-  slug: string;            // already prefixed with sources/notion/
+  slug: string;            // sub-kind path, e.g. "notion/foo-<id>" (server prepends kind dir)
 }): Promise<string> {
   const url = `${KOS_API_BASE}/ingest`;
   const r = await fetch(url, {
@@ -429,7 +429,9 @@ async function main() {
       const notionRef = page.id.replace(/-/g, ""); // 32 hex chars, globally unique
       // Use the full 32-char id as suffix. 8 chars collided (UUID v1-ish prefixes
       // are shared within a DB); 12 chars still too risky. Full id is bulletproof.
-      const slug = `sources/notion/${slugify(title)}-${notionRef}`;
+      // Leave the `sources/` prefix to kos-compat-api (kindToDir('source') == 'sources').
+      // Supplying it here double-nested files under sources/sources/notion/ pre-fix.
+      const slug = `notion/${slugify(title)}-${notionRef}`;
       console.log(`    • ${page.id.slice(0, 8)} ${title.slice(0, 60)}`);
       let pageOk = false;
       if (DRY) {
