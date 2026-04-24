@@ -77,6 +77,68 @@ Seen on `password-hashing-on-omada`. Error body truncated in shell-job
 stderr_tail. Reproduce with `curl ... /ingest` using the offending payload
 and read `gbrain import` error path.
 
+### [ ] PGLite writes not persisting on handle close — discovered 2026-04-23 (orphan-reducer blocker)
+**Symptom**: inserts land in-process (`SELECT MAX(id)` reflects them
+immediately) but a fresh `PGlite.create({dataDir})` on the same path
+returns the pre-insert max_id. All `gbrain link` / `gbrain tag` / any CLI
+write returns `{"status":"ok"}` exit 0 and silently no-ops on disk.
+
+**Repro** (minimal):
+```ts
+import { PGlite } from "@electric-sql/pglite";
+const db = await PGlite.create({ dataDir: "~/.gbrain/brain.pglite" });
+const before = (await db.query("SELECT MAX(id)::int AS n FROM links")).rows[0].n;
+await db.query(`INSERT INTO links (from_page_id, to_page_id, link_type, context, link_source)
+  VALUES (2942, 3045, 'probe', 'probe', 'manual')`);
+const after = (await db.query("SELECT MAX(id)::int AS n FROM links")).rows[0].n;
+await db.close();
+const db2 = await PGlite.create({ dataDir: "~/.gbrain/brain.pglite" });
+const fresh = (await db2.query("SELECT MAX(id)::int AS n FROM links")).rows[0].n;
+// before=395, after=396, fresh=395   ← FRESH should be 396.
+```
+
+**What's NOT the cause**:
+- kos-compat-api concurrency (also repros with it stopped via `launchctl bootout`)
+- `file://` URL prefix vs bare `dataDir` (both fail)
+- My BrainDb wrapper (bypassed with raw PGlite import, still fails)
+- pgvector / pg_trgm extension load (same with or without)
+
+**What IS likely** (not verified): macOS 26.3 PGLite WASM persistence bug,
+related to [garrytan/gbrain#223](https://github.com/garrytan/gbrain/issues/223)
+which covers init-time failure on the same OS. The brain.pglite directory
+mtime advances on write (WAL is being written), so PGLite hits fsync ok
+but the checkpoint on close isn't landing the WAL into base/ — on reopen
+the WAL replay starts from the last checkpoint which is pre-write.
+
+**Data point**: the FIRST orphan-reducer `--apply` run (10 rows, ids
+386–395) DID persist across reopens. Everything since (5+ `gbrain link`
+probes + 2 more orphan-reducer runs) has silently lost the writes. So
+persistence works *sometimes* — possibly on process-forked bun invocations
+with different PGLite snapshot boundaries.
+
+**Impact**:
+- `orphan-reducer --apply` can't reliably land edges → stuck at dry-run
+- Any CLI write path (`gbrain link`, `gbrain tag`, `gbrain put_page` via
+  shell-out) is at risk
+- kos-compat-api `/ingest` has been observed to successfully persist
+  notion pages (pages count 1930 → 1952 over a day), so SOMETHING about
+  its code path works. Worth comparing its PGlite usage with direct CLI.
+
+**Next moves**:
+1. File upstream with the minimal repro above (check against fresh gbrain
+   install on non-macOS-26.3 first to rule out OS-specific)
+2. Compare kos-compat-api's successful write path vs `gbrain link` —
+   both use upstream engine, so the difference might be handle lifecycle
+   (kos-compat-api process is long-lived and accumulates writes; CLI
+   subprocess short-lived)
+3. Try pglite bump (current 0.4.4 via fork pin) — see if a newer version
+   closes properly
+4. Fallback: migrate to Postgres engine (`gbrain migrate --to supabase`)
+
+**Not start-from-scratch**: orphan-reducer's dry-run path is fully usable
+today for manual classification-quality review + Haiku-prompt tuning,
+even while apply is blocked.
+
 ### [x] notion-poller minion wrapper deadlocks on PGLite lock — 2026-04-22 (v0.17 sync)
 Resolved via **Path B**: retired the Minions layer for notion-poller
 only. `scripts/minions-wrap/notion-poller.sh` deleted;
@@ -380,24 +442,46 @@ still writes a digest (though with wrong inventory count). Cron is
 silent; patrol-2026-04-23.md landed at `.agent/digests/` via manual
 invocation this session.
 
-### [ ] orphan reducer — bring brain_score orphans from 2/15 → 10+/15 — 2026-04-22
-**Why**: `gbrain doctor --json` shows orphans 2/15 (many pages have no
-inbound wikilinks). Biggest single pull on brain_score after
-links/timeline.
+### [~] orphan reducer — dry-run landed, --apply blocked on PGLite persistence — 2026-04-23
+**Status as of 2026-04-23**:
+- ✓ Skill `skills/kos-jarvis/orphan-reducer/` delivered (SKILL.md + run.ts
+  + lib/{candidates, haiku-classifier, writer, report}.ts)
+- ✓ BrainDb extended with `listOrphans` / `findSimilar` (pgvector `<=>` +
+  vector + pg_trgm extensions) / `addLink` / `countLinks`
+- ✓ Dry-run path works end-to-end: `--limit 2 --dry-run` in 8s,
+  Haiku 4.5 classification quality eyeballs-pass on 2× samples
+  (anthropic → barry-zhang/claude-code/building-effective-agents =
+  "implements", anker → gdpr = "supplements" 0.85 conf), ~$0.006/run
+- ✓ 10 real edges landed from the first `--apply` smoke (ids 386–395)
+  deorphaning 5 pages (anker/anthropic/aruba/atlassian/ats-technology)
+- ✗ **Blocked on PGLite write persistence bug (see P0 above)**. All
+  subsequent `--apply` runs silently no-op on disk despite CLI returning
+  `{"status":"ok"}`.
 
-**What**: new `skills/kos-jarvis/orphan-reducer/run.ts` that:
-1. `gbrain orphans --json --include-pseudo=false` to list candidates
-2. For each orphan, retrieve the page body + compute vector-similar
-   pages (via `gbrain ask <title> --json`)
-3. Haiku classifier: "does page A have a claim that would supplement/
-   contrast/implement/extend page B?" (reuse `dikw-compile` link types)
-4. If yes, add `[[<orphan>]]` wikilinks to the top-K strong matches
-   (bounded: ≤3 inbound edges per sweep per orphan, cap total at 100
-   pages per run). Emit a diff report.
-5. Write diffs to `~/brain/agent/orphan-reducer-<date>.md` for review.
-   `--apply` flag actually executes (via `gbrain link` or page edits).
+**Plan**: keep dry-run usable for Haiku-quality review + prompt tuning.
+Run `--apply` at scale only after the P0 PGLite persistence blocker is
+resolved. Cost envelope confirmed: 100 orphans ≈ $0.08/run (matches
+original estimate).
 
-**Not started**. Roughly ~200 LOC + Haiku calls.
+**Design decisions made during build** (documented in plan
+`~/.claude/plans/toasty-dancing-quasar.md`):
+- `link_type='related'`, relation carried in `context` field
+- DB + markdown双写, but candidate-page markdown only gets updated if
+  `~/brain/<slug>.md` exists (today: ~95/1952 candidates; sidecar
+  records `markdown_reason: "no_file"` for future filesystem-mirror
+  backfill)
+- Phase separation: BrainDb open during Phase A (classify), closed
+  during Phase B (write) — to avoid contention with concurrent
+  PGLite handles
+
+**Runbook** (usable today):
+```bash
+bun run skills/kos-jarvis/orphan-reducer/run.ts --limit N --dry-run
+# report + JSON sidecar land at ~/brain/.agent/reports/orphan-reducer-<ISO>.md
+```
+
+Kept as `[~]` (partial) rather than `[ ]` because infrastructure landed;
+only the apply path is gated on the upstream bug.
 
 ### [x] kos-lint path resolver for KOS v1 legacy links — 2026-04-22
 `kos-lint` currently reports 112 "dead links" after full import, mostly
