@@ -72,10 +72,34 @@ Upstream #332 still open as of this sync.
 is correct (frontmatter-link graph is wired). Don't patch `src/*` locally
 per fork policy (CLAUDE.md) unless upstream stalls.
 
-### [ ] kos-compat-api `/ingest` HTTP 500 on some Notion pages
-Seen on `password-hashing-on-omada`. Error body truncated in shell-job
-stderr_tail. Reproduce with `curl ... /ingest` using the offending payload
-and read `gbrain import` error path.
+### [x] kos-compat-api `/ingest` HTTP 500 on some Notion pages — fixed transitively 2026-04-24
+
+**Root cause (post-mortem)**: all 500 errors in
+`workers/notion-poller/poller.stdout.log` came from
+`"output": "GBrain: Timed out waiting for PGLite lock..."` stderr_tails,
+clustered on 2026-04-19 / 2026-04-20 when notion-poller was wrapped
+in a Minions shell job. The outer `gbrain jobs submit shell --follow`
+held the PGLite write lock while the inner `gbrain import` subprocess
+also tried to acquire it → 30-second timeout → 500 bubbled to notion-poller.
+
+**Already fixed by** (in order):
+1. **Path B migration (2026-04-22)**: dropped the Minions wrap for
+   notion-poller — plist now calls `bun run workers/notion-poller/run.ts`
+   directly. See `[x] notion-poller minion wrapper deadlocks on PGLite
+   lock` above.
+2. **WAL-durability fix (2026-04-23)**: the `password-hashing-on-omada`
+   payload that previously failed is now reliably persisted because
+   `pg_switch_wal()` advances the durable LSN before `db.close()`.
+
+**Validation 2026-04-24**: replayed the exact notion-id
+`34815375830d81bca79fd5b5474832b3` payload via
+`POST /ingest` → `status=200 time=1.4s, imported=true`. Page 1953
+of the brain lands cleanly. Also tested: Chinese titles, single-quote
+injection in title, notion-shaped payload with tags/notion_id. All
+200 OK.
+
+Cleanup commit in ~/brain drops the 5 `sources/probe-*` probe files
+used for diagnosis.
 
 ### [x] PGLite writes not persisting on handle close — fixed 2026-04-23
 **Resolution** (commit follows this TODO): fork-local patch to
@@ -306,11 +330,13 @@ Step 2.3 execution story at `docs/JARVIS-ARCHITECTURE.md §6.13`.
      wikilinks. Pre-existing — v1 wiki imported flat without graph
      edges. enrich-sweep + idea-ingest gradually fix this; track as
      a multi-week soak metric, not a 1-shot fix.
-  3. **Upstream `gbrain dream --dry-run --json` stdout pollution**:
-     embed phase prints `[dry-run] Would embed N chunks across M pages`
-     to stdout BEFORE the JSON CycleReport. Our wrapper is defensive
-     (slices first `{` to last `}`), but worth filing upstream so
-     `--json` mode keeps stdout JSON-clean.
+  3. **[~] Upstream `gbrain dream --dry-run --json` stdout pollution** —
+     draft filed 2026-04-24 at
+     `docs/UPSTREAM-ISSUES/gbrain-dream-json-stdout-pollution.md`.
+     Embed phase prints `[dry-run] Would embed N chunks across M pages`
+     to stdout BEFORE the JSON CycleReport (first `{` at byte 49).
+     Our `dream-wrap/run.ts` is defensively slicing, so no production
+     impact; posting upstream when bandwidth allows. Low priority.
 - **Step 2.4** — (+14-day checkpoint) commit-batching wrapper + optional
   remote. Git is already initialized (landed with Step 2.2; Decision 5's
   "+14d defer" was revised mid-session — sync requires git). After 14
