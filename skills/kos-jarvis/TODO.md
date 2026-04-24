@@ -287,12 +287,21 @@ Step 2.3 execution story at `docs/JARVIS-ARCHITECTURE.md §6.13`.
   Service shows `-  0  com.jarvis.dream-cycle` healthy in launchctl
   list. Story in `docs/JARVIS-ARCHITECTURE.md §6.13`.
 - **Step 2.3 follow-ups** (P1, surfaced by first dream cycle 2026-04-23):
-  1. **notion-poller frontmatter — `title:` + `type:` omission**:
-     `gbrain dream`'s lint phase warns on 144 issues across 72 disk
-     pages, all from `~/brain/sources/notion/*.md`. KOS uses `kind:`;
-     upstream lint expects `title:` + `type:`. Fix at the writer:
-     `workers/notion-poller/run.ts` `frontmatter` builder. ~10 LOC.
-     Backfill via `gbrain sync --force` after.
+  1. **[x] notion-poller frontmatter — `title:` + `type:` omission** — fixed 2026-04-23
+     Fix landed at the frontmatter builder — `server/kos-compat-api.ts`,
+     not `workers/notion-poller/run.ts` (the poller posts markdown to
+     `/ingest`; kos-compat-api wraps in frontmatter before writing to
+     disk). Added `KIND_TO_TYPE` map (KOS kind → gbrain PageType per
+     `skills/kos-jarvis/type-mapping.md`), `yamlQuoteSingle` helper
+     (safely quotes titles with Chinese punctuation / colons / `'`),
+     `deriveTitle` (first `# heading`, else slug). Both frontmatter
+     builders (markdown-payload path + URL-fetch path) now emit
+     `type: ${kindToType(kind)}` and `title: ${yamlQuoteSingle(title)}`.
+     One-shot backfill of 95 existing `~/brain/sources/notion/*.md`
+     files (95/95 changed, 0 skipped) + `gbrain sync --force` to
+     reconcile DB. Verified: `gbrain lint ~/brain/sources/notion`
+     went 190 → 0 warns; `gbrain dream --dry-run --phase lint`
+     reports "Brain is healthy."
   2. **v1-wiki orphan backlog**: 1803/1930 pages have zero inbound
      wikilinks. Pre-existing — v1 wiki imported flat without graph
      edges. enrich-sweep + idea-ingest gradually fix this; track as

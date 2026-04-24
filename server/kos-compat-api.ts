@@ -54,6 +54,45 @@ function kindToDir(kind: string): string {
   return KIND_TO_DIR[kind] ?? "sources";
 }
 
+// KOS `kind` → gbrain `type` mapping. Upstream gbrain's lint requires
+// `type:` in frontmatter from its fixed enum (see src/core/types.ts
+// PageType). KOS keeps `kind:` as the quality-gate profile tag.
+// Mapping rules are documented in skills/kos-jarvis/type-mapping.md.
+const KIND_TO_TYPE: Record<string, string> = {
+  source: "source",
+  concept: "concept",
+  project: "project",
+  entity: "note",        // entity is too coarse; `note` is upstream's catch-all
+  decision: "concept",   // decisions live in concepts/ with kind preserved
+  synthesis: "writing",
+  comparison: "writing",
+  protocol: "concept",
+  timeline: "note",
+  person: "person",
+  company: "company",
+};
+
+function kindToType(kind: string): string {
+  return KIND_TO_TYPE[kind] ?? "note";
+}
+
+// YAML-safe single-quoted scalar: ' → '' and wrap in single quotes. Handles
+// titles that contain colons, hyphens, quotes, Chinese punctuation, etc.
+function yamlQuoteSingle(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
+// Pull a title out of markdown body — first `# heading`, otherwise fall
+// back to the slug. Strips leading/trailing whitespace, caps at 240 chars
+// (upstream pages table title is TEXT but long titles hurt rendering).
+function deriveTitle(body: string | undefined, slug: string): string {
+  if (body) {
+    const m = body.match(/^#\s+(.+?)\s*$/m);
+    if (m) return m[1].trim().slice(0, 240);
+  }
+  return slug;
+}
+
 /** Commit a single ingest to the ~/brain git repo. Idempotent on unchanged content. */
 function gitCommitIngest(slug: string): { ok: boolean; msg: string } {
   const add = spawnSync("git", ["-C", BRAIN, "add", "-A"], { encoding: "utf-8", timeout: 10_000 });
@@ -326,10 +365,12 @@ async function handleIngest(req: IncomingMessage, res: ServerResponse) {
       // Trust caller's frontmatter as-is; assume they know what they're doing
       md = markdown.endsWith("\n") ? markdown : markdown + "\n";
     } else {
-      const title = body.title?.trim() || slug;
+      const title = body.title?.trim() || deriveTitle(markdown, slug);
       md = `---
 id: '${kind}-${slug}'
+type: ${kindToType(kind)}
 kind: ${kind}
+title: ${yamlQuoteSingle(title)}
 status: draft
 created: '${today}'
 updated: '${today}'
@@ -374,9 +415,12 @@ ${markdown}
       .trim()
       .slice(0, 50_000);
 
+    const title = body.title?.trim() || slug;
     md = `---
 id: 'source-${slug}'
+type: source
 kind: source
+title: ${yamlQuoteSingle(title)}
 status: draft
 created: '${today}'
 updated: '${today}'
@@ -389,7 +433,7 @@ source_refs:
 tags: [${tagList.join(", ")}]
 ---
 
-# ${slug}
+# ${title}
 
 > Fetched via kos-compat-api /ingest on ${today}.
 > Source: ${url}
