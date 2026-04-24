@@ -330,13 +330,15 @@ Step 2.3 execution story at `docs/JARVIS-ARCHITECTURE.md §6.13`.
      wikilinks. Pre-existing — v1 wiki imported flat without graph
      edges. enrich-sweep + idea-ingest gradually fix this; track as
      a multi-week soak metric, not a 1-shot fix.
-  3. **[~] Upstream `gbrain dream --dry-run --json` stdout pollution** —
-     draft filed 2026-04-24 at
-     `docs/UPSTREAM-ISSUES/gbrain-dream-json-stdout-pollution.md`.
+  3. **[x] Upstream `gbrain dream --dry-run --json` stdout pollution** —
+     filed 2026-04-24 as
+     [garrytan/gbrain#394](https://github.com/garrytan/gbrain/issues/394).
      Embed phase prints `[dry-run] Would embed N chunks across M pages`
      to stdout BEFORE the JSON CycleReport (first `{` at byte 49).
      Our `dream-wrap/run.ts` is defensively slicing, so no production
-     impact; posting upstream when bandwidth allows. Low priority.
+     impact. Draft + record at
+     `docs/UPSTREAM-ISSUES/gbrain-dream-json-stdout-pollution.md`.
+     Remove the defensive slice when upstream merges.
 - **Step 2.4** — (+14-day checkpoint) commit-batching wrapper + optional
   remote. Git is already initialized (landed with Step 2.2; Decision 5's
   "+14d defer" was revised mid-session — sync requires git). After 14
@@ -546,16 +548,17 @@ invocation this session.
   persisted (Links 398 → 409). Upstream `gbrain link` subprocess also
   persists (Links 409 → 410). Orphans count dropped 1815 → 1814 in
   real time.
-- ✓ **First real sweep 2026-04-24**: `--apply --limit 20`: 41 edges
-  / $0.065 Haiku / 1815 → 1797 orphans. Second sweep `--limit 100`:
-  244 edges / $0.337 Haiku / 1797 → 1705 orphans. Links 410 → 695.
-  brain_score 56 → 61 (links 5/25 → 9/25, orphans 2/15 → 3/15). Cost
-  ~3× original envelope estimate because candidate compiled_truth is
-  longer than projected — still well within budget. 3 markdown files
-  under `~/brain/sources/notion/` got sentinel blocks (candidates
-  that live on disk); the other 282 candidates are v1-wiki DB-only
-  and landed as DB-only writes. Reports + rollback sidecars committed
-  to `~/brain/.agent/reports/`.
+- ✓ **First real sweeps 2026-04-24** (three runs across the session):
+  - `--apply --limit 20`: 41 edges / $0.065 / 1815 → 1797 orphans.
+  - `--apply --limit 100` #1: 244 edges / $0.337 / 1797 → 1705 orphans.
+  - `--apply --limit 100` #2: 243 edges / $0.331 / 1705 → 1630 orphans.
+  Running total: **528 edges** / **$0.73** / **-185 orphans (1815 → 1630)**.
+  Links 410 → 938 (+528). brain_score 56 → 65 (links 5→12/25,
+  orphans 2→4/15). Markdown writes stay near-zero until P1-A bulk
+  export lands — 95% of candidates are DB-only v1-wiki imports with
+  no .md on disk to append sentinel blocks to. Cost ~3× original
+  envelope estimate (candidate compiled_truth longer than projected),
+  still comfortably within budget.
 
 **Plan**: iterate `--apply --limit 100` runs roughly weekly (or opportunistically
 when orphan count drifts). Rough projection: 1705 orphans remaining /

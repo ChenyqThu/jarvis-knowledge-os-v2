@@ -1,8 +1,10 @@
-# Upstream issue draft: `gbrain dream --json` emits non-JSON preamble on stdout
+# Upstream issue: `gbrain dream --json` emits non-JSON preamble on stdout
 
-> 2026-04-24 | jarvis-knowledge-os-v2 fork | **not yet filed**.
-> File when bandwidth allows; low-priority (agents can defensively
-> slice first `{` to last `}`).
+> 2026-04-24 | jarvis-knowledge-os-v2 fork |
+> **filed as [garrytan/gbrain#394](https://github.com/garrytan/gbrain/issues/394)**
+> on 2026-04-24. Low priority (agents can defensively slice first `{`
+> to last `}`). Remove the fork-local defensive slice in
+> `skills/kos-jarvis/dream-wrap/run.ts` once upstream merges.
 
 ## Target repo
 
