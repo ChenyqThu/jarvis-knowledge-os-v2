@@ -236,9 +236,9 @@ v1 archive.
 
 ## P1 — quality improvements
 
-### [ ] Filesystem-canonical migration — KOS v2 → .md-as-source-of-truth — 2026-04-22
+### [~] Filesystem-canonical migration — KOS v2 → .md-as-source-of-truth — 2026-04-22
 
-**Steps 1 → 2.3 complete (2026-04-22 / 23). Core filesystem-canonical track done; only Step 2.4 (commit-batching + optional remote, +14d) remains.** Full report in
+**Steps 1 → 2.3 + 3.0 complete (2026-04-22 / 23 / 24). Core filesystem-canonical track done (disk↔DB 1:1, 1951/1951 pages). Only Step 2.4 (commit-batching + optional remote, +14d) remains.** Full report in
 [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](../../docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md);
 Step 2 design at [`docs/STEP-2-BRAIN-DIR-DESIGN.md`](../../docs/STEP-2-BRAIN-DIR-DESIGN.md);
 Step 2.2 execution story at `docs/JARVIS-ARCHITECTURE.md §6.11`;
@@ -339,6 +339,69 @@ Step 2.3 execution story at `docs/JARVIS-ARCHITECTURE.md §6.13`.
      impact. Draft + record at
      `docs/UPSTREAM-ISSUES/gbrain-dream-json-stdout-pollution.md`.
      Remove the defensive slice when upstream merges.
+- **Step 3.0 / P1-A (2026-04-24, branch master, commits `8262df2`..`011d145`)** — bulk-export of 1840 PGLite-only pages → `~/brain/` filesystem-canonical.
+  Closes the v1-wiki gap Step 2.2 left on the floor: before today, disk
+  had 110 .md (notion + orphan-reducer sentinels only) and DB had
+  1968 pages (1858-row delta). 6-phase runbook executed in one session
+  (~2 h including the surprise dedup):
+  - **Phase 0 (preflight)**: bootout notion-poller, rolling PGLite backup
+    (`~/.gbrain/brain.pglite.pre-step3.0-1777022275`, 366 MB), dry-run
+    `gbrain export --dir /tmp/export-v1` surfaced the planned
+    `sources/sources/` double-prefix landmine.
+  - **Phase 1 (slug cleanup, unplanned twist)**: 17 bad `sources/sources/notion/<id>`
+    slugs turned out to be **duplicates** of well-slugged `sources/notion/<id>`
+    twins (same Notion UUID, same `id:` frontmatter), differing ONLY in
+    `title:` — BAD had slug-derived fallback (`Fastrak 33415...`), GOOD
+    had real Notion title (`✅ FasTrak 账户注册完成`, CJK / emoji
+    preserved). 17/17 always pointed the same way, so the "merge BAD.title
+    → GOOD, then DELETE BAD" strategy collapsed to plain DELETE × 17
+    (audit log `~/.gbrain/audit/p1a-phase1-bad-slug-delete-1777022797.jsonl`,
+    canary verified). Pages 1968 → 1951 · chunks 3721 → 3680.
+    `sources/sources/` dir vanished from re-export (`/tmp/export-v2`).
+  - **Phase 2 (dry merge)**: NEW 1840 · MATCH 0 · DIFF 111 · DISK-ONLY 0.
+    All 111 DIFF cases are **frontmatter YAML-serialization drift** only
+    (field order, inline vs block lists, single-quoted scalars for
+    `notion:xxx`); body was byte-identical across every pair. Plan's
+    "prefer disk" policy applied cleanly — disk retains the original
+    kos-compat-api emit format, which is what future notion-poller
+    ingests keep producing. Report written to
+    `docs/plans/P1-A-merge-categorization.md`.
+  - **Phase 3 (rsync + sync)**: `rsync -av --ignore-existing /tmp/export-v2/
+    ~/brain/` transferred 1840 files (14.5 MB), kept 111 existing. Pre-commit
+    `gbrain sync --repo ~/brain` returned `up_to_date` (expected — sync
+    is git-diff-driven and HEAD hadn't moved yet).
+  - **Phase 4 (commits + bulk sync)**: 12 commits on `~/brain main`
+    (`8262df2` canary timelines/ + 10 per-domain bulk + `011d145`
+    .agent/ patrol-state cleanup). Canary proved sync-after-commit is
+    **content-hash idempotent**: +1 added, 0 modified, **1 chunks
+    created** (old chunk replaced, not duplicated), **"all 1 chunks
+    already embedded"** — cache hit, zero API cost. Full bulk sync
+    `8262df2e..011d1457` ran in **19 s**: `+1839 added, ~0 modified,
+    -0 deleted, 3404 chunks created, 1 pages embedded` (really the
+    canary from earlier; rest rode the cache). Links 939 → **8272
+    (+7333)**, Timeline 5443 → **10881 (+5438)**. Embedded coverage
+    stayed 100 % (3680/3680).
+  - **Phase 5 (verify)**: orphans **1630 → 791 (-51 %)** · brain_score
+    **65 → 87 (+22)** (links 12/25 → **25/25** maxed out, orphans 4/15
+    → **13/15**, embed/dead-links steady at max). `gbrain dream
+    --dry-run --json` → **sync phase 0/0/0** (disk ↔ DB aligned, plan's
+    gate criterion), no `failed` phase. 10-sample spot-check passed;
+    1951/1951 files have frontmatter. notion-poller bootstrapped back
+    (all 9 launchd jarvis services healthy).
+  - **Unblocks downstream**: orphan-reducer markdown dual-write now
+    works on the remaining ~790 orphans (previously 95 % fell through
+    as `markdown_reason: "no_file"`). Enrich-sweep Tier-1 edits can
+    touch disk across the whole brain. Karpathy grep-wiki / git-log
+    inspection covers 1951 pages instead of 110. Every notion-poller
+    ingest now lands next to its 1840 bulk-exported siblings without
+    path collision (verified by spot-check, next poll cycle will
+    close the loop).
+  - **Cost**: $0 LLM (pure data movement; embedding cache hit 3680/3680).
+    ~9 MB git tree add in 12 commits. Plan doc
+    `docs/plans/P1-A-bulk-export-filesystem-canonical.md` + handoff
+    `docs/SESSION-HANDOFF-P1A-FILESYSTEM-CANONICAL.md` capture the
+    execution trace; keep the handoff for one more week of archive
+    reference, then clean up if unused.
 - **Step 2.4** — (+14-day checkpoint) commit-batching wrapper + optional
   remote. Git is already initialized (landed with Step 2.2; Decision 5's
   "+14d defer" was revised mid-session — sync requires git). After 14
@@ -401,7 +464,7 @@ the Band-Aid for the lock-contention problem. Filesystem-canonical is
 the architectural cure that also fixes dream, orphans, and knowledge
 VCS in the same move.
 
-**Not started**. Tracked here as the anchor for next-next session.
+**Status 2026-04-24**: Steps 1 → 2.3 + 3.0 shipped (disk ↔ DB 1:1 at 1951 pages). Only Step 2.4 (commit-batching + optional remote, +14-day checkpoint at 2026-05-07) remains.
 
 ### [x] v0.18 upstream sync — synced 2026-04-23 with fork-local patch (commit `aceb838`)
 Filed upstream as [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370).

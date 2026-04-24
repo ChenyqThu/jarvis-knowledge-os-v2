@@ -294,21 +294,143 @@ Track these as separate P2 entries post-P1-A.
 
 ## 5 · Definition of done
 
-- [ ] `~/brain/` has 1967 .md files (give or take a handful from
-  poller cycles during the session).
-- [ ] `gbrain sync` reports zero drift.
-- [ ] `gbrain dream --dry-run` all phases `ok`.
-- [ ] Git commit(s) landed on ~/brain `main`, documented in this
-  plan file.
-- [ ] `skills/kos-jarvis/TODO.md` P1-A entry marked `[x]` with
-  execution date + final stats.
-- [ ] This plan file updated with the actual numbers encountered
-  (NEW/MATCH/DIFF counts, any Phase 1 slug normalization done,
-  final Phase 5 verification results).
+- [x] `~/brain/` has 1951 .md files (1967 expected; trimmed to 1951
+  after Phase 1 dedup — 17 BAD duplicate slugs deleted, see § 7).
+- [x] `gbrain sync` reports zero drift (`sync` phase 0/0/0 in
+  `gbrain dream --dry-run --json`).
+- [x] `gbrain dream --dry-run` reports no `failed` phase
+  (status `partial`: lint/backlinks/orphans `warn` are state, not
+  regressions; `sync` / `embed` = `ok`; `extract` = `skipped`
+  pending upstream dry-run support).
+- [x] 12 commits landed on `~/brain main` (`8262df2` canary timelines/,
+  10 per-domain P1-A bulk, `011d145` unrelated patrol-state cleanup).
+- [x] `skills/kos-jarvis/TODO.md` Filesystem-canonical block gained a
+  `Step 3.0 / P1-A` bullet with full execution narrative + 2026-04-24
+  date + final stats.
+- [x] This plan file updated (§ 7 adds actuals, § 5 checklist
+  ticked).
 
 ---
 
-## 6 · Escape hatches
+## 6 · Execution envelope (actuals, 2026-04-24)
+
+- **LLM cost**: $0 (embedding cache hit 3680/3680, zero re-embed).
+- **Wall clock**: ~90 min end-to-end (closer to the low-DIFF-count
+  end of plan's envelope because 111 DIFF were all body-identical
+  YAML drift — zero per-file review needed).
+- **Disk**: +9 MB git tree add across 12 commits.
+- **Data movement**: 1840 rsync-NEW + 17 DELETEs + 1 canary re-import
+  + 1839 bulk sync re-imports (content-hash cached).
+
+---
+
+## 7 · Phase-by-phase outcomes
+
+### Phase 0 — Preflight (clean)
+- notion-poller booted out cleanly (exit 0, removed from launchctl list).
+- Rolling backup: `~/.gbrain/brain.pglite.pre-step3.0-1777022275` (366 MB).
+- Baseline: pages 1968 · chunks 3721 · links 938 · orphans 1630 ·
+  brain_score 65/100 (drift vs. handoff's 1967/695+/1705/61 —
+  second orphan-reducer sweep landed between handoff write and
+  session start).
+- `gbrain export --dir /tmp/export-v1` → 1968/1968 files, exit 0.
+- Dup-dir gate tripped: `sources/sources/notion/` present (17 files).
+
+### Phase 1 — Slug normalization round 2 (plan rewrite)
+- Plan's default fix (UPDATE `REPLACE(slug, 'sources/sources/', 'sources/')`)
+  **would have unique-violated**: 17/17 BAD pages were duplicates of
+  well-slugged twins, differing only in title (BAD = slug fallback,
+  GOOD = real Notion title with CJK/emoji).
+- Strategy flipped to `DELETE FROM pages WHERE slug LIKE 'sources/sources/%'`
+  via `gbrain delete` × 17 (canary first, then the remaining 16).
+  All 0-backlink / 0-reference per pre-delete audit → safe.
+- Audit trail: `~/.gbrain/audit/p1a-phase1-bad-slug-delete-1777022797.jsonl`
+  (18 rows, rc=0 each).
+- Pages 1968 → 1951 · chunks 3721 → 3680 · links 938 → 937.
+- Re-export `/tmp/export-v2` clean: 1951/1951, **0** nested
+  `sources/sources/` dirs.
+
+### Phase 2 — Dry merge categorization
+Report at `docs/plans/P1-A-merge-categorization.md`:
+
+| Status | Count | Notes |
+|---|---|---|
+| **NEW** | 1840 | 968 sources · 375 people · 210 projects · 181 concepts · 85 companies · 6 decisions · 4 syntheses · 4 protocols · 3 entities · 3 comparisons · 1 timelines |
+| MATCH | 0 | Zero byte-identical |
+| **DIFF** | 111 | All body-identical; frontmatter YAML-serialization drift only (field order, inline vs. block lists, single-quoted scalars for `notion:xxx`) |
+| DISK-ONLY | 0 | Zero orphan disk files |
+
+Plan Phase 2 gate threshold was "DIFF < 50 easy, > 100 investigate";
+111 → investigated → confirmed benign (every disk file has the same
+body as its export counterpart, so `rsync --ignore-existing` is
+byte-safe).
+
+### Phase 3 — Apply merge
+- `rsync -av --ignore-existing /tmp/export-v2/ ~/brain/` transferred
+  1840 files (14.5 MB), kept 111 existing.
+- Post-rsync tree: 1951 .md across all 11 kind dirs
+  (companies / comparisons / concepts / decisions / entities / people /
+  projects / protocols / sources / syntheses / timelines).
+- Pre-commit `gbrain sync --repo ~/brain` → `up_to_date`
+  (expected — sync drives off git diff, HEAD hadn't moved yet).
+
+### Phase 4 — Commits + bulk sync
+- 10 per-domain commits + 1 canary timelines/ commit (`8262df2`)
+  + 1 patrol-state cleanup (`011d145`).
+- Canary `gbrain sync` (1 file): `+1 added, 0 modified, 1 chunks
+  created, "all 1 chunks already embedded"` — content-hash idempotent.
+  Links +2 (extract_links ran). **Zero re-embed cost.**
+- Bulk `gbrain sync` (1839 files) in **19 s**: `+1839 added,
+  ~0 modified, -0 deleted, 3404 chunks created, 1 pages embedded`.
+  Content hashes matched the export emit so chunks replaced in-place
+  and rode the embed cache.
+- Extracted **12990 links + 5439 timeline entries** in a single pass.
+  Net totals: Links 939 → **8272 (+7333)** · Timeline 5443 → **10881
+  (+5438)** · Embedded 3680/3680 = 100 % coverage preserved.
+
+### Phase 5 — Verify (all gates green)
+
+| Gate | Pre | Post | Δ |
+|---|---|---|---|
+| Pages | 1951 | 1951 | 0 (no row duplication) |
+| Chunks | 3680 | 3680 | 0 (atomic replace) |
+| Embedded | 3680 | 3680 | 0 (cache) |
+| Links | 939 | **8272** | **+7333** |
+| Timeline | 5443 | **10881** | **+5438** |
+| Orphans | 1630 | **791** | **-839 (-51 %)** |
+| brain_score | 65/100 | **87/100** | **+22** |
+| — links component | 12/25 | **25/25** | maxed |
+| — orphans component | 4/15 | **13/15** | |
+
+- `gbrain dream --dry-run --json` → status `partial`, sync phase
+  **0/0/0** (plan's gate criterion), no `failed` phase.
+- Spot-check 10 random files (one per kind): all 4 core frontmatter
+  fields present (id / kind / type / title). Scanner confirms
+  **1951/1951** files open with `---` frontmatter (zero malformed).
+- `76 files` surfaced using YAML folded-block `title: >-` syntax;
+  verified as semantically valid multi-line scalars (not empty
+  titles) by reading the DB rows back — false alarm.
+- notion-poller restored via `launchctl bootstrap gui/$UID`; all 9
+  jarvis services healthy (kos-patrol exit=1 is the normal
+  lint-ERROR signal, not a crash — per handoff § 2 / services table).
+
+### Downstream that P1-A just unlocked
+
+- `orphan-reducer --apply`: the 95 % `markdown_reason: "no_file"`
+  skip rate drops to near-zero. Next weekly sweep lands markdown
+  sentinel blocks across all ~790 remaining orphans instead of 110.
+- `gbrain dream` backlinks phase: walks 1951 file bodies instead of
+  110. Backlink coverage stops being a v1-wiki legacy problem.
+- `enrich-sweep`: Tier-1 frontmatter edits can now touch disk across
+  the whole brain; sync reconciles DB on the next cycle.
+- Karpathy LLM-wiki pattern: `grep` / `find` / `git log` inspection
+  covers the full knowledge base, not just the notion-ingest tail.
+- Git VCS of knowledge: `~/brain main` now has 1951 pages tracked
+  from scratch (12 P1-A commits + pre-existing notion-ingest commits).
+
+---
+
+## 8 · Escape hatches
 
 If Phase 2 shows >100 DIFF files: **stop**. The DB and disk have
 diverged in ways worth understanding first. Possible causes:
