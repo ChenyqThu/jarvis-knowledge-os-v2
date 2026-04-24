@@ -426,7 +426,44 @@ timeouts, v21→v23 FK integrity window, `doctor --locks`). The
 Step 2.3; multi-source is a future nice-to-have, not a Step 2
 dependency.
 
-### [ ] kos-patrol cron exit-1 under minion shell-wrap — 2026-04-23 (Step 2.2 follow-up)
+### [x] kos-patrol cron exit-1 under minion shell-wrap — fixed 2026-04-23
+
+**Resolution**:
+1. Migrated `kos-patrol/run.ts` phase 1 from `gbrain list` shell-out
+   (+ per-slug `gbrain get`) to in-process `BrainDb.listAllPages()` —
+   single SQL query returns all 1953 pages with frontmatter, N+1
+   collapses to 1. Legacy `listAll`/`loadPage`/`gbrain(args)` helpers
+   and the unused `ListRow` type removed.
+2. Redeployed `scripts/launchd/com.jarvis.kos-patrol.plist` to
+   `~/Library/LaunchAgents/` — the deployed copy still pointed at
+   `scripts/minions-wrap/kos-patrol.sh`. Now launchd runs
+   `/Users/chenyuanquan/.bun/bin/bun run skills/kos-jarvis/kos-patrol/run.ts`
+   directly, eliminating the nested shell-job subprocess entirely.
+   Backup of old plist kept at
+   `~/Library/LaunchAgents/com.jarvis.kos-patrol.plist.pre-p1c-<ts>`.
+3. `com.jarvis.kos-patrol.plist.template` updated in lockstep (same
+   shape as deployed).
+
+Post-fix cron run: `state=not running, last exit code=1` — exit=1 is
+the SKILL.md-documented "ERROR from lint" path (21 kos-lint errors +
+1845 warns across the 1953 pages), no WASM crash in stderr. Dashboard
+at `~/brain/.agent/dashboards/knowledge-health-2026-04-24.md` has the
+full 1953-page inventory (breakdown: source=1081, concept=181,
+project=210, person=375, company=85, decision=6, ...).
+
+The leaf-only `scripts/minions-wrap/kos-patrol.sh` file is retained
+as a rollback option but no longer referenced by any plist. Safe to
+delete in a future cleanup pass.
+
+**New follow-up discovered** (tracked separately as P2 below): phase 4
+gap detection is noisy — it flags email-template headings like "From
+Name", "Has Attachments", "Action Required" as entity gaps because
+684 notion-ingested pages all contain those column headers. Needs a
+stoplist or better entity heuristic.
+
+---
+
+**Original context** (retained for archaeology):
 
 Discovered during Step 2.2 opportunistic probe. Two distinct issues
 stacking:
@@ -601,6 +638,23 @@ Tier 1 structured-people enrichment is blocked on a paid API key. Lucien
 can trigger this later by exporting `CRUSTDATA_API_KEY` and adding a
 `lib/crustdata.ts` alongside `lib/tavily.ts`. Until then, enrich-sweep
 flags high-mention candidates as `wants-tier1` in the report.
+
+### [ ] kos-patrol phase 4 gap detection: stoplist for email-template headers — 2026-04-23
+Surfaced post P1-C migration. Phase 4 currently flags "Has Attachments",
+"Action Required", "From Name", "Processing Status", "Sender Priority",
+"Daily Digests", "Mail Actions", etc. as entity gaps because ~684 notion
+source pages all embed these as column headers in Notion database views.
+The heuristic (mention count ≥ 3) is too coarse against auto-ingested
+email corpora.
+
+**Fix options**:
+- Add an explicit stoplist of known UI/table-header phrases
+- Or require candidate to appear in ≥2 distinct `kind` categories (not
+  just N copies of the same notion-source shape)
+- Or weight by frontmatter density / heading depth
+
+Cosmetic — current dashboard just shows noisy gaps alongside legit
+ones. Not blocking anything downstream.
 
 ### [ ] Stage 4 finalize: archive v1 repo
 After 7 days of stable v2:

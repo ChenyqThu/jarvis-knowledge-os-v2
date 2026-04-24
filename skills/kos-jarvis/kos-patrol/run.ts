@@ -20,6 +20,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { BrainDb } from "../_lib/brain-db.ts";
 
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
 const DASH_DIR = join(BRAIN, ".agent", "dashboards");
@@ -29,8 +30,6 @@ const KOS_LINT = join(REPO_ROOT, "skills/kos-jarvis/kos-lint/run.ts");
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const STALE_DAYS = 180;
-
-type ListRow = { slug: string; type: string; updated: string; title: string };
 
 type Page = {
   slug: string;
@@ -50,56 +49,41 @@ type LintSummary = { rows: number; findings: Finding[]; errors: number; warns: n
 
 // ─────────────────────────── helpers ───────────────────────────
 
-function gbrain(args: string[], opts: { allowFail?: boolean } = {}): string {
-  const r = spawnSync("gbrain", args, { encoding: "utf-8" });
-  if (r.status !== 0 && !opts.allowFail) {
-    throw new Error(`gbrain ${args.join(" ")} failed: ${r.stderr}`);
-  }
-  return r.stdout;
-}
-
-function listAll(): ListRow[] {
-  const out = gbrain(["list", "--limit", "10000"]);
-  return out
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split("\t");
-      return {
-        slug: parts[0],
-        type: parts[1] ?? "",
-        updated: parts[2] ?? "",
-        title: parts.slice(3).join("\t") ?? "",
-      };
-    });
-}
-
-function parseFrontmatter(raw: string): Record<string, string> {
-  const m = raw.match(/^---\n([\s\S]*?)\n---/);
-  if (!m) return {};
-  const fm: Record<string, string> = {};
-  for (const line of m[1].split("\n")) {
-    const mm = line.match(/^([a-z_]+):\s*(.*)$/);
-    if (mm) fm[mm[1]] = mm[2].replace(/^['"]|['"]$/g, "").trim();
-  }
-  return fm;
-}
-
-function loadPage(row: ListRow): Page {
-  const body = gbrain(["get", row.slug], { allowFail: true });
-  const fm = parseFrontmatter(body);
-  return {
-    slug: row.slug,
-    listed_type: row.type,
-    kind: fm.kind,
-    title: fm.title,
-    status: fm.status,
-    confidence: fm.confidence,
-    updated: fm.updated,
-    review_after: fm.review_after,
-    body,
-  };
+/**
+ * Load ALL pages from PGLite in one query — replaces the old 1-RPC
+ * `gbrain list` + N-RPC `gbrain get <slug>` fan-out (which triggered
+ * the macOS 26.3 PGLite WASM init bug under nested subprocess context,
+ * see skills/kos-jarvis/TODO.md § "kos-patrol cron exit-1"). In-process
+ * open keeps PGLite in this process's memory; `gbrain list` bug was
+ * also hitting the upstream 100-row cap on the `list_pages` MCP op.
+ *
+ * Returns the same `Page` shape as the old loader so downstream phases
+ * (staleness, gap detection, dashboard rendering) are untouched.
+ */
+async function loadAllPages(db: BrainDb): Promise<Page[]> {
+  const rows = await db.listAllPages();
+  return rows.map((r) => {
+    const fm = r.frontmatter as Record<string, unknown>;
+    const fmStr = (k: string): string | undefined => {
+      const v = fm?.[k];
+      return typeof v === "string" ? v : undefined;
+    };
+    return {
+      slug: r.slug,
+      listed_type: r.type,
+      kind: fmStr("kind"),
+      title: r.title,
+      status: fmStr("status"),
+      confidence: fmStr("confidence"),
+      // r.updated_at is a Date from PGLite; frontmatter `updated:` is typically a YYYY-MM-DD string.
+      updated: fmStr("updated") ?? new Date(r.updated_at as unknown as string).toISOString().slice(0, 10),
+      review_after: fmStr("review_after"),
+      // compiled_truth + timeline approximates the post-frontmatter body that
+      // the legacy `gbrain get` path returned. Phase 4 strips a frontmatter
+      // prefix if present, which is a no-op here.
+      body: r.compiled_truth + (r.timeline ? "\n" + r.timeline : ""),
+    };
+  });
 }
 
 function daysAgo(dateStr: string | undefined): number | undefined {
@@ -319,15 +303,21 @@ function renderDigest(inv: Inventory, lint: LintSummary, stale: StaleHit[], gaps
 
 // ─────────────────────────── main ───────────────────────────
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry");
 
   console.log(`=== kos-patrol @ ${TODAY} ===`);
 
   console.log("[1] Inventory …");
-  const rows = listAll();
-  const pages = rows.map(loadPage);
+  const db = new BrainDb();
+  let pages: Page[];
+  try {
+    await db.open();
+    pages = await loadAllPages(db);
+  } finally {
+    await db.close().catch(() => {});
+  }
   const inv = phase1(pages);
   console.log(
     `    ${inv.total} pages; kinds: ${Object.entries(inv.byKind).map(([k, n]) => `${k}=${n}`).join(", ")}`,
@@ -371,4 +361,7 @@ function main() {
   process.exit(code);
 }
 
-main();
+main().catch((err) => {
+  console.error("FATAL:", err);
+  process.exit(1);
+});
