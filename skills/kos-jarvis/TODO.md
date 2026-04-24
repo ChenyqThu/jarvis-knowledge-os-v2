@@ -520,12 +520,24 @@ invocation this session.
   persisted (Links 398 → 409). Upstream `gbrain link` subprocess also
   persists (Links 409 → 410). Orphans count dropped 1815 → 1814 in
   real time.
+- ✓ **First real sweep 2026-04-24**: `--apply --limit 20`: 41 edges
+  / $0.065 Haiku / 1815 → 1797 orphans. Second sweep `--limit 100`:
+  244 edges / $0.337 Haiku / 1797 → 1705 orphans. Links 410 → 695.
+  brain_score 56 → 61 (links 5/25 → 9/25, orphans 2/15 → 3/15). Cost
+  ~3× original envelope estimate because candidate compiled_truth is
+  longer than projected — still well within budget. 3 markdown files
+  under `~/brain/sources/notion/` got sentinel blocks (candidates
+  that live on disk); the other 282 candidates are v1-wiki DB-only
+  and landed as DB-only writes. Reports + rollback sidecars committed
+  to `~/brain/.agent/reports/`.
 
-**Plan**: iterate `--apply --limit N --dry-run` / `--apply` through
-2-3 batches of N=20-50 first to spot-check Haiku classification quality
-in the wild. Then scale to `--limit 100` runs, roughly weekly, until
-orphan count stabilizes (<500 is reasonable target; zeroing it is not).
-Cost envelope holds: 100 orphans ≈ $0.08/run.
+**Plan**: iterate `--apply --limit 100` runs roughly weekly (or opportunistically
+when orphan count drifts). Rough projection: 1705 orphans remaining /
+~90 actually deorphaned per run = ~19 more runs to zero, but diminishing
+returns kick in once we hit deeply disconnected v1-wiki islands.
+Realistic target: <800 orphans within a month of weekly runs; <500
+is the brain_score sweet spot (orphans component at ~10/15). Cost
+envelope: ~$6-7 to cover the full reduction pass.
 
 **Design decisions made during build** (documented in plan
 `~/.claude/plans/toasty-dancing-quasar.md`):
