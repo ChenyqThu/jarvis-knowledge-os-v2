@@ -49,6 +49,17 @@ export class BrainDb {
 
   async close(): Promise<void> {
     if (this.db) {
+      // Mirror the fork-local WAL-durability patch in
+      // src/core/pglite-engine.ts:disconnect(). pglite 0.4.4 on macOS
+      // 26.3 loses writes on close() unless a WAL switch forces the
+      // durable LSN forward. See docs/UPSTREAM-PATCHES/
+      // v018-pglite-wal-durability-fix.md. Harmless on read-only
+      // handles (pg_switch_wal is a no-op when no new WAL records).
+      try {
+        await this.db.query("SELECT pg_switch_wal()");
+      } catch {
+        // best-effort: close still proceeds even if the switch fails
+      }
       await this.db.close();
       this.db = null;
     }

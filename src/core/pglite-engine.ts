@@ -74,6 +74,20 @@ export class PGLiteEngine implements BrainEngine {
 
   async disconnect(): Promise<void> {
     if (this._db) {
+      // FORK-LOCAL PATCH (jarvis-knowledge-os-v2, 2026-04-23):
+      // pglite 0.4.4 on macOS 26.3 silently loses writes on close() —
+      // the WAL buffer flush lags and the durable LSN stays behind, so
+      // on reopen recovery replays WAL only up to the last durable
+      // position (any writes after that are discarded). `SELECT
+      // pg_switch_wal()` forces a WAL segment rotation which advances
+      // the durable LSN past our writes. Verified reproducer + fix in
+      // docs/UPSTREAM-PATCHES/v018-pglite-wal-durability-fix.md. Drop
+      // this try/catch when upstream ships a persistent fix.
+      try {
+        await this._db.query('SELECT pg_switch_wal()');
+      } catch {
+        // best-effort: if this fails, close() still runs (writes may be lost)
+      }
       await this._db.close();
       this._db = null;
     }

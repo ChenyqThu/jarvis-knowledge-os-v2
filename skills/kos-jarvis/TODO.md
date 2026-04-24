@@ -77,11 +77,26 @@ Seen on `password-hashing-on-omada`. Error body truncated in shell-job
 stderr_tail. Reproduce with `curl ... /ingest` using the offending payload
 and read `gbrain import` error path.
 
-### [ ] PGLite writes not persisting on handle close — discovered 2026-04-23 (orphan-reducer blocker)
-**Symptom**: inserts land in-process (`SELECT MAX(id)` reflects them
-immediately) but a fresh `PGlite.create({dataDir})` on the same path
-returns the pre-insert max_id. All `gbrain link` / `gbrain tag` / any CLI
-write returns `{"status":"ok"}` exit 0 and silently no-ops on disk.
+### [x] PGLite writes not persisting on handle close — fixed 2026-04-23
+**Resolution** (commit follows this TODO): fork-local patch to
+`src/core/pglite-engine.ts:disconnect()` + `skills/kos-jarvis/_lib/brain-db.ts:close()`.
+Issue `SELECT pg_switch_wal()` before `db.close()`. Forces WAL segment
+rotation → advances the durable LSN past outstanding inserts → reopen
+recovery replays WAL up to the real head instead of a stale durable
+position. Patch rationale + reproducer + validation in
+`docs/UPSTREAM-PATCHES/v018-pglite-wal-durability-fix.md`. Post-patch
+validation: orphan-reducer `--apply --limit 5 --no-commit` now lands
+11/11 edges (ids 399-409) and `gbrain link` via CLI also persists
+(Links 409 → 410).
+
+**Symptom** (before the fix): inserts land in-process (`SELECT MAX(id)`
+reflects them immediately) but a fresh `PGlite.create({dataDir})` on
+the same path returns the pre-insert max_id. All `gbrain link` /
+`gbrain tag` / any CLI write returned `{"status":"ok"}` exit 0 and
+silently no-op'd on disk. Diagnostic signal: manual `CHECKPOINT`
+before `db.close()` errored with `xlog flush request 0/5DADA990 is
+not satisfied --- flushed only to 0/5DA8C080` — durable LSN stalled
+behind the in-memory WAL position.
 
 **Repro** (minimal):
 ```ts
@@ -442,8 +457,8 @@ still writes a digest (though with wrong inventory count). Cron is
 silent; patrol-2026-04-23.md landed at `.agent/digests/` via manual
 invocation this session.
 
-### [~] orphan reducer — dry-run landed, --apply blocked on PGLite persistence — 2026-04-23
-**Status as of 2026-04-23**:
+### [~] orphan reducer — --apply unblocked post-WAL patch, awaiting scale-out runs — 2026-04-23
+**Status as of 2026-04-23** (updated after WAL durability fix landed):
 - ✓ Skill `skills/kos-jarvis/orphan-reducer/` delivered (SKILL.md + run.ts
   + lib/{candidates, haiku-classifier, writer, report}.ts)
 - ✓ BrainDb extended with `listOrphans` / `findSimilar` (pgvector `<=>` +
@@ -454,14 +469,17 @@ invocation this session.
   "implements", anker → gdpr = "supplements" 0.85 conf), ~$0.006/run
 - ✓ 10 real edges landed from the first `--apply` smoke (ids 386–395)
   deorphaning 5 pages (anker/anthropic/aruba/atlassian/ats-technology)
-- ✗ **Blocked on PGLite write persistence bug (see P0 above)**. All
-  subsequent `--apply` runs silently no-op on disk despite CLI returning
-  `{"status":"ok"}`.
+- ✓ **Apply unblocked** 2026-04-23 after the P0 WAL-durability fix
+  landed. Second `--apply --limit 5 --no-commit` smoke: 11/11 edges
+  persisted (Links 398 → 409). Upstream `gbrain link` subprocess also
+  persists (Links 409 → 410). Orphans count dropped 1815 → 1814 in
+  real time.
 
-**Plan**: keep dry-run usable for Haiku-quality review + prompt tuning.
-Run `--apply` at scale only after the P0 PGLite persistence blocker is
-resolved. Cost envelope confirmed: 100 orphans ≈ $0.08/run (matches
-original estimate).
+**Plan**: iterate `--apply --limit N --dry-run` / `--apply` through
+2-3 batches of N=20-50 first to spot-check Haiku classification quality
+in the wild. Then scale to `--limit 100` runs, roughly weekly, until
+orphan count stabilizes (<500 is reasonable target; zeroing it is not).
+Cost envelope holds: 100 orphans ≈ $0.08/run.
 
 **Design decisions made during build** (documented in plan
 `~/.claude/plans/toasty-dancing-quasar.md`):
