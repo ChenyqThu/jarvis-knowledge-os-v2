@@ -186,8 +186,42 @@ type Gap = { entity: string; mentions: number; sample_pages: string[] };
 const GAP_THRESHOLD = 3;
 
 /**
+ * Stoplist for phase 4 ProperName extraction. The regex
+ * `[A-Z][a-zA-Z]{2,}(?:\s[A-Z][a-zA-Z]{2,}){1,3}` happily matches Notion
+ * email-template column headers ("Has Attachments", "Action Required",
+ * "From Name", ...) and generic UI / process labels ("In Progress", "To
+ * Do", ...) that show up ≥ 3 times across the source corpus but carry
+ * zero entity meaning.
+ *
+ * Surfaced 2026-04-23 by P1-C kos-patrol output (TODO §P2 entry); fixed
+ * 2026-04-25 with this stoplist + the (lower) lookup below. Comparison is
+ * case-insensitive — store every term lowercased.
+ *
+ * Add new terms here when phase 4 starts surfacing fresh noise. Do NOT
+ * suppress legit entities — when in doubt, file as a separate skill
+ * (enrich-sweep) decision.
+ */
+const PHASE4_STOPLIST: ReadonlySet<string> = new Set([
+  // Notion email/header noise (the original 2026-04-23 trigger)
+  "has attachments", "action required", "from name", "from email",
+  "processing status", "sender priority", "daily digests", "mail actions",
+  "reply to", "forward to", "subject line", "received at", "sent at",
+  // Notion database column headers (auto-generated)
+  "created time", "last edited", "created by", "last edited by", "due date",
+  "page id", "page title", "rich text", "multi select",
+  // Calendar / fiscal labels
+  "year end", "quarter start", "quarter end", "fiscal year", "calendar year",
+  // Process status labels
+  "in progress", "in review", "not started", "on hold", "to do",
+  // Generic UI affordances
+  "see more", "show all", "click here", "learn more", "read more",
+  "view all", "view more",
+]);
+
+/**
  * Coarse gap detection: find "ProperName LikeThis" tokens that appear
- * ≥ 3 times across pages but don't match any existing slug/title.
+ * ≥ 3 times across pages but don't match any existing slug/title and
+ * aren't in the stoplist.
  * Intentionally approximate — the enrich-sweep skill does the real
  * work. This is a cheap signal for the dashboard.
  */
@@ -222,6 +256,7 @@ function phase4(pages: Page[]): Gap[] {
   for (const [name, { count, pages: ps }] of counts) {
     if (count < GAP_THRESHOLD) continue;
     const lower = name.toLowerCase();
+    if (PHASE4_STOPLIST.has(lower)) continue;
     if (knownTitles.has(lower) || knownSlugTails.has(lower)) continue;
     gaps.push({ entity: name, mentions: count, sample_pages: [...ps].slice(0, 3) });
   }
