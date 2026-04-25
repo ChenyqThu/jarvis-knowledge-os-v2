@@ -17,7 +17,7 @@
  *   bun run skills/kos-jarvis/orphan-reducer/run.ts [flags]
  */
 import { closeSync, existsSync, mkdirSync, openSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { BrainDb } from "../_lib/brain-db.ts";
@@ -155,7 +155,15 @@ Reports:
 
 // ----- Lock -----
 
-const LOCK_DIR = join(homedir(), ".cache", "kos-jarvis");
+// Use os.tmpdir() (= $TMPDIR on macOS, /tmp elsewhere) so the path is
+// inside Claude Code's sandbox write allowlist. Earlier choice of
+// ~/.cache/kos-jarvis/ was outside the allowlist; openSync(..., "wx")
+// silently failed with EACCES under sandbox and showed up as a phantom
+// "another orphan-reducer run appears active" false positive (run.ts
+// catches all openSync errors). Per-user $TMPDIR is stable across
+// sessions on macOS (/var/folders/<hash>/T/) so lock semantics work for
+// both interactive and launchd-cron invocations.
+const LOCK_DIR = join(tmpdir(), "kos-jarvis");
 const LOCK_FILE = join(LOCK_DIR, "orphan-reducer.lock");
 
 function acquireLock(): boolean {
