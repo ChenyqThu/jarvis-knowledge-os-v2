@@ -50,27 +50,26 @@ slugs.
 likely an unescaped multi-line value or missing quotes on the id field.
 Re-emit affected pages after fix.
 
-### [ ] upstream v0.13.0 orchestrator bug — `doctor` stuck on "partial" — refreshed 2026-04-22 (v0.17 sync)
-Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332).
-`src/commands/migrations/v0_13_0.ts:44` uses `process.execPath` for the
-gbrain binary — works on compiled-binary installs, but on our bun-runtime
-symlink install (`~/.bun/bin/gbrain -> src/cli.ts`) it resolves to `bun`,
-so the migration's `frontmatter_backfill` phase tries to run `bun extract`
-instead of `gbrain extract`, fails with "Script not found", and silently
-runs `bun init` as a side effect (pollutes package.json with `private:true`
-+ typescript peerDep, creates `.cursor/rules/`).
+### [x] upstream v0.13.0 orchestrator bug — `doctor` stuck on "partial" — closed 2026-04-25 (v0.20 sync)
 
-**v0.17 sync re-workaround (2026-04-22)**: post-migration manually ran
-`gbrain extract links --source db --include-frontmatter` → 385 links
-created from 1768 pages (14 unresolved refs logged), then `gbrain
-extract timeline --source db` → 5443 timeline entries. Data side is
-100% correct. Orchestrator ledger entry for v0.13.0 stays `partial`
-because the orchestrator re-attempts `bun extract` and keeps failing.
-Upstream #332 still open as of this sync.
+Upstream fixed #332 in v0.19.0 by replacing `process.execPath` with a
+shell-out to `gbrain` on PATH. The v0.20.4 sync (commit `8665afb`)
+brought the fix in. Then `gbrain apply-migrations --force-retry 0.13.0`
++ `gbrain apply-migrations --yes` walked the orchestrator through:
 
-**Cost of leaving broken**: cosmetic. Doctor health_score drops; actual data
-is correct (frontmatter-link graph is wired). Don't patch `src/*` locally
-per fork policy (CLAUDE.md) unless upstream stalls.
+- `frontmatter_backfill` ran `gbrain extract links --source db
+  --include-frontmatter` against all 1988 pages (14 unresolved
+  cross-dir refs logged ... see new P2 below). Created 3 net new
+  links (the 8522 pre-existing ones came from earlier manual runs).
+- Ledger entry for v0.13.0 advanced to `complete`.
+- `gbrain doctor` `minions_migration` check: FAIL → OK.
+  Health score 60/100 → 80/100.
+
+The old `[ ]` entry kept above the `## Done` line for archeology,
+since the v0.17 sync notes referenced it.
+
+**Filed**: [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332).
+**Resolution**: upstream v0.19.0.
 
 ### [x] kos-compat-api `/ingest` HTTP 500 on some Notion pages — fixed transitively 2026-04-24
 
@@ -767,10 +766,78 @@ After 7 days of stable v2:
 3. Evaluate whether to replace `com.jarvis.kos-deep-lint` with a v2 equivalent
 4. Archive v1 repo on GitHub (Settings → Archive)
 
+### [ ] PGLite → Postgres switch evaluation — analyzed 2026-04-25, deferred
+Surfaced during the v0.20 sync review. v0.20.2 / v0.20.3 shipped three
+flagship reliability features that all skip on PGLite (jobs supervisor,
+queue_health doctor check, wedge-rescue wall-clock sweep). Same for
+v0.16 durable agent runtime ... it needs a multi-process worker fleet
+that PGLite's single-writer lock can't serve.
+
+Full evaluation lives at
+[`docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md`](../../docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md).
+TL;DR: **defer indefinitely**. Current 1988 pages on PGLite (416 MB
+dataDir, <100 ms queries) is comfortably within PGLite's sweet spot,
+the WAL durability fork patch has held for 2 days, and Path B retired
+the only real lock-contention failure mode. None of the v0.20
+Postgres-only features map to current pain.
+
+**Trigger conditions for revisiting** (any one):
+1. Brain crosses 5000 pages (PGLite query regressions become visible).
+2. Multi-machine / multi-OS access becomes a requirement (e.g. running
+   kos-compat-api on a server while editing from a laptop).
+3. WAL durability fork patch fails silently (lost write detected via
+   doctor or orphan-reducer dual-write reconciliation).
+4. Need for parallel workers exceeds the single-writer cap (current
+   load is 4-5 cron jobs, well within limit).
+
+When triggered, the migration is `gbrain migrate --to supabase`
+(upstream-supported, ~20 min on 1988 pages). Plus reconfiguring 4
+launchd plists to point at Postgres `DATABASE_URL`. Estimated total
+work: ~1 hour.
+
+### [ ] Unresolved frontmatter cross-dir refs (14 dangling) — surfaced 2026-04-25
+v0.20 sync ran `gbrain extract links --source db --include-frontmatter`
+across all 1988 pages and reported 14 references that don't resolve to
+a slug in the brain. All are v1-wiki legacy `../entities/*.md` /
+`../sources/*.md` paths that import-time slug normalization didn't
+rewrite:
+
+- 10× `related:../entities/jarvis.md` → should be `entity/jarvis`
+- 2× `related:../sources/2026-04-13-alchainhust-darwin-skill-release.md`
+  → should be `sources/2026-04-13-alchainhust-darwin-skill-release`
+- 1× `source:substack` → not a slug, free-text leak
+- 1× `related:../entities/lucien-chen.md` → should be `entity/lucien-chen`
+
+**Fix**: write a one-shot rewrite skill `skills/kos-jarvis/frontmatter-
+ref-fix/run.ts` that walks `~/brain/**/*.md`, parses frontmatter,
+rewrites `*.md`-suffixed cross-dir refs to canonical slugs, commits to
+`~/brain` git, then `gbrain sync`. Estimated 1-2 h.
+
+**Cost of leaving broken**: cosmetic. The 14 broken refs don't break
+queries (they're dead-ends in the graph), just lower link-coverage by a
+fraction of a percent. brain_score still 86/100 with them present.
+
 ---
 
 ## Done (reference)
 
+- [x] 2026-04-25: **Upstream v0.20.4 sync** (commit `8665afb`) — merged 6
+  upstream releases (v0.18.2 → v0.20.4: #326 OpenClaw fallback, #369
+  smoke-test skillpack, #195 BrainBench extract, #364 jobs supervisor,
+  #379 queue resilience, #381 minion-orchestrator skill consolidation).
+  Tests 2429 pass / 250 skip / 4 fail (all 4 are cwd-pollution between
+  parallel tests, pass in isolation). Conflicts: 2 (`.gitignore` union,
+  `manifest.json` skill list union). Auto-merged: 5 (CLAUDE.md,
+  README.md, package.json 0.20.4, RESOLVER.md, src/cli.ts mode 0755).
+  Fork-local patches preserved: 3 (pglite-schema #370, pglite-engine
+  WAL, src/cli.ts +x). Closed P0 [#332](https://github.com/garrytan/gbrain/issues/332)
+  via `apply-migrations --force-retry 0.13.0`. Health 60→80. PGLite
+  baseline 1988 pages / 3750 chunks / 8666 links / 11020 timeline
+  entries / 711 orphans / brain_score 86. v0.20 supervisor +
+  queue_health are Postgres-only and intentionally skipped (see new P2
+  PGLite/Postgres deferral note). Rollback tag `pre-sync-v0.20-1777105378`,
+  PGLite snapshot `~/.gbrain/brain.pglite.pre-sync-v0.20-1777105391`
+  (416 MB).
 - [x] 2026-04-20: **Upstream v0.14.0 sync** — merged 9 upstream releases
   (v0.10.1 → v0.14.0). Tests 1762 unit + 138 E2E green. Merge commit
   `0c0ceec`; rollback tag `pre-sync-v0.14`. 10 kos-jarvis skills

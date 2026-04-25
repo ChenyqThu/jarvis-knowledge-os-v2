@@ -3,6 +3,11 @@
 > 2026-04-23 | Jarvis KOS v2 fork | pending upstream filing.
 > Second fork-local `src/*` patch after
 > [v018-pglite-upgrade-fix.md](v018-pglite-upgrade-fix.md).
+>
+> **Status checks**:
+> - 2026-04-25 (v0.20.4 sync, commit `8665afb`): upstream
+>   `src/core/pglite-engine.ts:75` still calls bare `await this._db.close()`
+>   in `disconnect()` with no WAL flush. Patch retained.
 
 ## What was wrong
 

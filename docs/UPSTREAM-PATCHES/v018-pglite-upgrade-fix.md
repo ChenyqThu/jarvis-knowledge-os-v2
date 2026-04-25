@@ -61,6 +61,11 @@ preserves the index declaration in schema (they may instead
 keep it out of schema entirely, in which case our patch is already
 aligned). Check the upstream diff before resolving merge conflicts.
 
+**Status checks**:
+- 2026-04-25 (v0.20.4 sync, commit `8665afb`): upstream `pglite-schema.ts:63`
+  still emits the bare `CREATE INDEX IF NOT EXISTS idx_pages_source_id ...`
+  outside the `CREATE TABLE` block. Patch retained.
+
 ## Validation
 
 Smoke-tested against a copy of

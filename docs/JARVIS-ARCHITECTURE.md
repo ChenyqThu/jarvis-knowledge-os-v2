@@ -1,8 +1,8 @@
 # Jarvis Knowledge OS v2 — Architecture & Runbook
 
-> 2026-04-17 | Lucien × Jarvis (last sync: 2026-04-22 → upstream v0.17.0)
+> 2026-04-17 | Lucien × Jarvis (last sync: 2026-04-25 → upstream v0.20.4)
 > Fork: [`ChenyqThu/jarvis-knowledge-os-v2`](https://github.com/ChenyqThu/jarvis-knowledge-os-v2)
-> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.17.0 (override: `@electric-sql/pglite` pinned to 0.4.4 instead of upstream's 0.4.3; see §6.6)
+> Upstream: [`garrytan/gbrain`](https://github.com/garrytan/gbrain) v0.20.4 (override: `@electric-sql/pglite` pinned to 0.4.4 instead of upstream's 0.4.3; see §6.6. v0.20 supervisor / queue_health / wedge-rescue features are Postgres-only and skip on our engine; see §6.14)
 > Previous: [`ChenyqThu/jarvis-knowledge-os`](https://github.com/ChenyqThu/jarvis-knowledge-os) (v1, frozen at tag `v1-frozen` on 2026-04-16)
 
 ---
@@ -1069,16 +1069,149 @@ cp -R ~/.gbrain/brain.pglite.pre-step2.3-1776987292 ~/.gbrain/brain.pglite
 
 ---
 
+## 6.14 Upstream v0.20.4 sync (2026-04-25, commit `8665afb`)
+
+Six upstream releases land in one merge: v0.18.2 → v0.19.0 → v0.19.1 →
+v0.20.0 → v0.20.2 → v0.20.3 → v0.20.4. The total diff is 356 files /
++10813 / -9937. Conflict count: 2 real (`.gitignore`, `manifest.json`),
+5 auto-merged (CLAUDE.md, README.md, package.json, RESOLVER.md, src/cli.ts).
+
+### What we adopted
+
+- **#332 closure** ([garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332)).
+  v0.19.0 replaced `process.execPath` in `src/commands/migrations/v0_13_0.ts`
+  with a shell-out to `gbrain` on PATH. The orchestrator now finds our bun
+  shim correctly. Post-merge ran `apply-migrations --force-retry 0.13.0`
+  + `apply-migrations --yes` to walk through `frontmatter_backfill` and
+  advance the ledger from `partial` to `complete`. Doctor health 60→80,
+  the FAIL `minions_migration` check is now OK. Three net new links
+  created across 1988 pages (the rest were already present from earlier
+  manual extracts).
+- **smoke-test skillpack** registered in `manifest.json` alongside our 9
+  kos-jarvis skills (39 total). OpenClaw side will pick up the new
+  triggers automatically; no fork action.
+- **`gbrain check-resolvable --json`** now reachable from the CLI (v0.16.4
+  surfaced this; v0.20.4 polished the JSON envelope). Optional integration
+  point for a daily resolver-health cron, deferred.
+
+### What we skipped (intentional, all Postgres-only)
+
+- **`gbrain jobs supervisor`** (v0.20.2). Self-healing daemon for
+  `jobs work` workers. Skipped because we don't run a worker daemon ...
+  Path B retired the Minion shell-wrap layer for notion-poller, and
+  the remaining 4 launchd cron jobs (notion-poller, dream-cycle,
+  kos-patrol, enrich-sweep) exit synchronously after their work
+  completes. Nothing to supervise.
+- **`queue_health` doctor check** (v0.20.3). Skips on PGLite with
+  `Skipped (PGLite — no multi-process worker surface)`. We have no
+  queue.
+- **Wedge-rescue / `handleWallClockTimeouts`** (v0.20.3). Layer-3 kill
+  shot for jobs holding row locks. We have no multi-row queue at risk.
+- **`backpressure-audit` JSONL trail** (v0.20.3). Caps per-name pile-up.
+  We have at most one submitter per cron job (cardinality 1 per name).
+
+The decision tree on whether to switch engines lives at
+[`docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md`](UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md).
+TL;DR: defer, four trigger conditions named.
+
+### Fork-local patches preserved (re-verified post-merge)
+
+- `src/core/pglite-schema.ts:65` — `idx_pages_source_id` index commented
+  out. Upstream #370 still open; index is recreated by v21 migration so
+  fresh installs lose nothing. See `v018-pglite-upgrade-fix.md`.
+- `src/core/pglite-engine.ts:87` — `SELECT pg_switch_wal()` issued before
+  `db.close()`. Forces WAL segment rotation so the durable LSN catches up
+  with in-memory writes. macOS 26.3 WASM persistence bug. No upstream
+  issue filed yet (the repro is still flaky to script). See
+  `v018-pglite-wal-durability-fix.md`.
+- `src/cli.ts` — file mode 0755 (executable bit for the bun shim at
+  `~/.bun/bin/gbrain`). Auto-merged this round.
+
+### Pre-merge baseline + post-sync diff
+
+| Metric | Pre-merge (HEAD `170876f`) | Post-merge + apply-migrations |
+|---|---|---|
+| Pages | 1988 | 1988 |
+| Chunks | 3750 (100% embedded) | 3750 (100% embedded) |
+| Links | 8522 | 8666 (+144 from frontmatter backfill) |
+| Timeline entries | 10881 | 11020 (+139) |
+| Orphans | 1630 | 711 (orphan-reducer ran during sync; not a sync side-effect) |
+| `doctor` health | 60/100 (FAIL: minions_migration partial 0.13.0) | 80/100 (no FAILs) |
+| `brain_score` | 86/100 | 86/100 (unchanged) |
+| Schema version | 24 (latest) | 24 (latest) |
+
+### Conflict resolution log
+
+- `.gitignore` — union both fork (`.omc/`, kos-jarvis log globs) and upstream
+  (`eval/data/world-v1/world.html`, `amara-life-v1/_cache/`) entries.
+  No semantic conflict, just two append regions overlapping at the same
+  line.
+- `skills/manifest.json` — appended upstream's `smoke-test` skill before our
+  9 kos-jarvis fork skills. 39 total skills registered.
+- `CLAUDE.md` — auto-merged. Fork preamble (Lucien's context, fork-specific
+  rules, upstream sync policy) intact at top; upstream's v0.19/v0.20 file
+  references (queue_health, backpressure-audit, supervisor.ts, wall-clock
+  timeouts) absorbed into the Key files / Operational health sections
+  cleanly.
+- `skills/RESOLVER.md` — auto-merged. Upstream added a `smoke-test` row at
+  line ~57; our `## KOS-Jarvis extensions` append-only section moved from
+  line 103 to 104 with no other change.
+- `package.json` — auto-merged at version `0.20.4`. No dependency changes
+  vs the v0.18.2 baseline (`bun install` reports `Checked 242 installs
+  across 235 packages (no changes)`).
+- `src/cli.ts` — auto-merged at mode `100755`.
+
+### Verification
+
+```bash
+# unit tests (no DB needed)
+bun test                                       # 2429 pass / 250 skip / 4 fail
+                                               # The 4 fails are check-resolvable
+                                               # cwd-pollution between parallel
+                                               # tests (24/24 pass in isolation).
+                                               # Filed as a parallel-test isolation
+                                               # bug, not a fork issue.
+
+bun run typecheck                              # tsc --noEmit clean
+
+# v0.13 ledger advance
+gbrain apply-migrations --force-retry 0.13.0   # writes retry marker
+gbrain apply-migrations --yes                  # backfill links, ledger → complete
+
+# service smoke
+launchctl bootout gui/$(id -u)/com.jarvis.kos-compat-api
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist
+curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:7220/status   # 1988p / 9 kinds
+curl -sS http://localhost:7222/health                                     # gemini-embedding-2-preview
+```
+
+### Rollback
+
+```bash
+git reset --hard pre-sync-v0.20-1777105378
+cp -R ~/.gbrain/brain.pglite.pre-sync-v0.20-1777105391 ~/.gbrain/brain.pglite
+launchctl bootout gui/$(id -u)/com.jarvis.kos-compat-api
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist
+```
+
+The PGLite snapshot is 416 MB. Keep it for ≥7 days, then prune with
+`rm -rf ~/.gbrain/brain.pglite.pre-sync-v0.20-*` once a clean week of
+dream cycles + kos-patrol runs has passed.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
-- **P0**: v0.13.0 migration orchestrator partial-forever under bun-runtime install. Filed as [garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332). `gbrain doctor` permanently reports `MINIONS HALF-INSTALLED (partial migration: 0.13.0)`; cosmetic only — manual `gbrain extract links --source db --include-frontmatter` was run post-migration so the link-graph data is correct. Watch upstream.
+- **P0 resolved 2026-04-25 (v0.20.4 sync)**: v0.13.0 migration orchestrator partial-forever ([garrytan/gbrain#332](https://github.com/garrytan/gbrain/issues/332)). Upstream fixed in v0.19.0 by shell-out to `gbrain` instead of `process.execPath`. Post-merge `gbrain apply-migrations --force-retry 0.13.0` + `apply-migrations --yes` advanced the ledger; doctor health 60→80, no more FAILs. See §6.14.
 - **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
 - **P1 (anchor, Step 2.3 done, Step 2.4 parked +14d)**: filesystem-canonical migration. Steps 1 → 2.3 done + v0.18 upstream synced (see §6.8 → §6.13 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All pre-migration blockers cleared + Step 2.2 landed (`b7212db`) + v0.18.2 merged (`aceb838`) + Step 2.3 dream cron wired (`com.jarvis.dream-cycle` daily 03:11 local, archives to `~/brain/.agent/dream-cycles/`, see §6.13). `/ingest` writes canonical to `~/brain/<kind>/<slug>.md` + git commit + `gbrain sync`, `/status` direct-DB (1930 not 100), `.agent/` hidden from sync, `~/brain/` is a git repo with nightly maintenance pass, schema at v24 with sources.default seeded. Only Step 2.4 (commit-batching + optional explicit `jarvis` source add / remote push) remains, parked +14d.
 - **P1 (open, awaiting upstream)**: [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370) — PGLite v16→v24 upgrade blocker (single-line bug in `pglite-schema.ts`). Fork carries a 1-line local patch (`docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`); remove when upstream merges the fix. See §6.12.
 - **P1 (new, Step 2.2 follow-up)**: kos-patrol launchd cron `LastExitStatus=1` since 2026-04-19 due to macOS 26.3 WASM bug (`#223` class) hitting the minion-wrapped subprocess. Direct bun-run works. Plus kos-patrol uses `gbrain list --limit 10000` (100-row-capped) — migrating to `BrainDb` direct-read is the natural fix.
 - ~~**P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable helpers~~ — **resolved 2026-04-22**: all three landed with `run.ts`, backed by the shared `skills/kos-jarvis/_lib/brain-db.ts` direct-PGLite reader that bypasses the MCP 100-row cap. See TODO.md P1 done markers.
+- **P2 (new, v0.20 sync follow-up)**: PGLite → Postgres switch — analyzed and **deferred**. v0.20.2/v0.20.3's flagship features (jobs supervisor, queue_health, wedge-rescue, backpressure-audit) all skip on PGLite. None of them address pain we currently have. Four trigger conditions documented at [`docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md`](UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md): brain >5000 pages, multi-machine access, WAL fork-patch failure, durable subagent runtime needed. Migration cost ~1 h via `gbrain migrate --to supabase`.
+- **P2 (new, v0.20 sync follow-up)**: 14 unresolved frontmatter cross-dir refs surfaced by `gbrain extract links --source db --include-frontmatter`. All v1-wiki legacy `../entities/*.md` / `../sources/*.md` paths that import-time slug normalization missed. Cosmetic (dead-end refs in the graph, no query impact). Fix is a one-shot rewrite skill, ~1-2 h. Tracked in TODO.md P2.
 - **P2**: v1 Python `kos-api.py` + `kos` CLI still live in `/Users/chenyuanquan/Projects/jarvis-knowledge-os/`. Unloaded from launchd (`com.jarvis.kos-api.plist.bak`) but not archived. After a 7-day v2 soak, move the plist bak into `~/Library/LaunchAgents/_archive/` and archive the v1 repo.
 - **P2**: Evaluate Gemini 3072-dim embeddings vs current 1536-dim truncation; requires full reindex if adopted.
 - **P2**: Evaluate BrainWriter `strict_mode=strict` flip after 7-day lint-observer soak.
