@@ -799,32 +799,60 @@ When triggered, the migration is `gbrain migrate --to supabase`
 launchd plists to point at Postgres `DATABASE_URL`. Estimated total
 work: ~1 hour.
 
-### [ ] Unresolved frontmatter cross-dir refs (14 dangling) — surfaced 2026-04-25
-v0.20 sync ran `gbrain extract links --source db --include-frontmatter`
-across all 1988 pages and reported 14 references that don't resolve to
-a slug in the brain. All are v1-wiki legacy `../entities/*.md` /
-`../sources/*.md` paths that import-time slug normalization didn't
-rewrite:
+### [x] Unresolved frontmatter cross-dir refs — partial fix 2026-04-27 evening (commit `0695a6c`)
 
-- 10× `related:../entities/jarvis.md` → should be `entity/jarvis`
-- 2× `related:../sources/2026-04-13-alchainhust-darwin-skill-release.md`
-  → should be `sources/2026-04-13-alchainhust-darwin-skill-release`
-- 1× `source:substack` → not a slug, free-text leak
-- 1× `related:../entities/lucien-chen.md` → should be `entity/lucien-chen`
+Built [`skills/kos-jarvis/frontmatter-ref-fix/`](frontmatter-ref-fix/)
+(SKILL.md + run.ts, 617 LOC). Walks `~/brain/**/*.md`, normalizes
+frontmatter `*.md`-suffix refs to canonical slugs via line-level regex
+(preserves quote style + field order; no yaml.parse so diffs stay tight).
+First sweep on production:
 
-**Fix**: write a one-shot rewrite skill `skills/kos-jarvis/frontmatter-
-ref-fix/run.ts` that walks `~/brain/**/*.md`, parses frontmatter,
-rewrites `*.md`-suffixed cross-dir refs to canonical slugs, commits to
-`~/brain` git, then `gbrain sync`. Estimated 1-2 h.
+- Refs found: **220** (vs handoff's 14 estimate — handoff under-counted)
+- Resolved + rewritten: **150 across 51 files**
+- Unresolved (left alone): **70** — see follow-up below
+- Brain commit: ~/brain `d6be7ce`. DB sync absorbed +177 links
+  (8666 → 8843).
 
-**Cost of leaving broken**: cosmetic. The 14 broken refs don't break
-queries (they're dead-ends in the graph), just lower link-coverage by a
-fraction of a percent. brain_score still 86/100 with them present.
+Two handoff assumptions turned out wrong: (1) actual count is 150+,
+not 14 ... handoff only saw the residual after the first 80% silently
+got dropped by `gbrain extract`'s DIR_PATTERN missing `sources/` plural.
+(2) Target dir is `entities/` (plural; brain layout), not `entity/`.
+
+### [ ] frontmatter-ref-fix v2 — raw_path exclusion + bare-slug fuzzy resolve
+
+The 70 unresolved targets from the first sweep (commit `0695a6c`) split into:
+
+- ~30 `raw_path:` field values pointing at brain-external raw snapshots
+  (`../../raw/web/X.md`). They're correctly external; v2 should
+  whitelist `raw_path:` (and any other known external-pointer key) and
+  skip them to clean up report noise.
+- ~30 bare-slug refs without a dir prefix (`harness-engineering.md` —
+  v1-wiki sibling-dir form). v2 should fuzzy-resolve: search the slug
+  index for `*/harness-engineering` matches; rewrite if exactly one hit.
+- 3 `../../SCHEMA.md` and 1 `../../meta/lint-rules.md` — brain-external
+  v1 references that should be deleted (no on-disk replacement).
+- 2 `../sources/2026-04-13-alchainhust-darwin-skill-release.md` — real
+  dead links; either re-ingest the missing source or delete the refs.
+
+Estimated 1-2h. Cosmetic — current dry-run report shows them as
+"unresolved" but they don't break queries.
 
 ---
 
 ## Done (reference)
 
+- [x] 2026-04-27 evening: **Tier 1 maintenance sweep** (~12 min wall, $0.336 Haiku).
+  Three commits in `~/brain`: `eadf1d3` (4 lint ERROR fixes adding missing
+  `updated:` field on v1-wiki sources), `5a6a584` (orphan-reducer apply
+  --limit 100: 89 edges across 88 candidate pages, 1 no_file fallback),
+  `d6be7ce` (frontmatter-ref-fix: 150 refs normalized across 51 files).
+  One commit in fork repo: `0695a6c` (new
+  [`skills/kos-jarvis/frontmatter-ref-fix/`](frontmatter-ref-fix/) skill,
+  617 LOC). Aggregate: Pages 2091 → 2114, Links 8666 → **8843 (+177)**,
+  Orphans 814 → **793 (-21)**, lint ERROR 4 → **0**. `brain_score`
+  85/100 stable (links 25/25 maxed; orphans component 12/15 needs ~70
+  more deorphans to advance). Story in
+  [`docs/JARVIS-ARCHITECTURE.md §6.15`](../../docs/JARVIS-ARCHITECTURE.md#615-tier-1-maintenance-sweep--orphan-reducer--frontmatter-ref-fix-2026-04-27-evening).
 - [x] 2026-04-25: **Upstream v0.20.4 sync** (commit `8665afb`) — merged 6
   upstream releases (v0.18.2 → v0.20.4: #326 OpenClaw fallback, #369
   smoke-test skillpack, #195 BrainBench extract, #364 jobs supervisor,

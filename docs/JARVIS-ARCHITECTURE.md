@@ -1200,6 +1200,113 @@ dream cycles + kos-patrol runs has passed.
 
 ---
 
+## 6.15 Tier 1 maintenance sweep — orphan-reducer + frontmatter-ref-fix (2026-04-27 evening)
+
+Two-day post-sync soak finished green, so this session executed the
+Tier 1 punch list from
+[`docs/SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md`](SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md)
+in one ~12-minute window: lint ERROR fixes, an orphan-reducer sweep, and
+a brand-new `frontmatter-ref-fix` skill. End-to-end: 4 commits, $0.336
+Haiku, +177 links, -21 orphans.
+
+### What ran
+
+1. **4 lint ERROR fixes** — `~/brain` commit `eadf1d3`. Patrol
+   2026-04-27 dashboard reported 4 ERROR-level findings: v1-wiki
+   `sources/2026-{04-01,03-20,03-13}-*.md` files missing the `updated:`
+   frontmatter field. Backfilled with `created` value (means: not
+   modified since import). Pure data-shape fix, no body change.
+
+2. **orphan-reducer apply --limit 100** — `~/brain` commit `5a6a584`,
+   430s, $0.336. Haiku 4.5 classified 100 orphans against pgvector
+   top-K candidates; 89 edges met the `--min-confidence 0.7` bar
+   (`related` link_type, relation encoded in `context`). 88 of 89
+   candidate pages exist on disk so a sentinel block (`<!-- orphan-
+   reducer-inbound -->...`) was upserted at EOF; 1 candidate was
+   DB-only (notion-source without a markdown file → recorded as
+   `markdown_reason: "no_file"` in the JSON sidecar for future
+   filesystem-mirror backfill). Sample edges: `people/harry-zhao →
+   people/joe-qiu (supplements)`, `people/teresa-xu → people/josh-ye
+   (implements)`. Cost matched handoff projection (~$0.35).
+
+3. **frontmatter-ref-fix (new skill)** — fork repo commit `0695a6c`
+   (`skills/kos-jarvis/frontmatter-ref-fix/SKILL.md` + `run.ts`,
+   617 LOC); brain repo commit `d6be7ce` (apply). Walks
+   `~/brain/**/*.md`, splits the `--- ... ---` block, scans
+   line-by-line for `.md`-suffixed refs (with optional `../` prefix
+   and yaml list dash or `key:` prefix), drops the decoration, looks
+   up the canonical slug in an on-disk index, rewrites if resolved.
+   Deliberately uses line-level regex rather than yaml.parse +
+   yaml.stringify to preserve quote style + field order — that
+   avoids producing a noisy notion-poller-vs-fix-skill emit-format
+   diff.
+
+   First sweep result: **220 refs found** (vs handoff's "14 dangling"
+   — handoff under-counted because gbrain's link-extraction
+   `DIR_PATTERN` (src/core/link-extraction.ts:47) doesn't accept
+   `sources/` plural, so the ~80 source-page refs silently failed to
+   resolve and didn't show up as "dangling"). 150 resolved + rewritten
+   across 51 files; 70 left untouched (mostly `raw_path:` fields
+   pointing at brain-external snapshots, plus ~30 bare-slug v1
+   sibling refs that need fuzzy resolve — tracked as P2 follow-up
+   `frontmatter-ref-fix v2` in TODO.md).
+
+   Two handoff assumptions turned out wrong: (1) actual count is
+   150+, not 14. (2) Target dir is `entities/` plural (matches
+   brain layout), not `entity/` singular as handoff §3 suggested.
+   The skill verifies against the on-disk slug index, so it gets
+   the right answer regardless of what the handoff said.
+
+### Aggregate metrics
+
+| Metric | 2026-04-27 morning (handoff) | 2026-04-27 evening | Δ |
+|---|---|---|---|
+| Pages | 2091 | 2114 | +23 (notion-poller natural growth) |
+| Chunks | 3963 | 4016 | +53 (frontmatter rewrite re-chunked 51 files) |
+| Links | 8666 | **8843** | **+177** (89 from orphan-reducer + 88 from frontmatter resolved-rewrites flowing through `gbrain sync`'s extract phase) |
+| Orphans | 814 | **793** | **-21** |
+| Lint ERRORs | 4 | **0** | -4 |
+| Brain score | 85/100 | 85/100 | unchanged (orphans 12/15 needs -70 more to advance) |
+| Doctor health | 80/100 | 80/100 | unchanged (3 PGLite-quirk WARN: pgvector / graph_coverage / jsonb_integrity — known limitation, no FAIL) |
+
+### What was built
+
+```
+skills/kos-jarvis/frontmatter-ref-fix/
+├── SKILL.md          (107 lines, ~4.4 KB) — pipeline, usage, scope
+└── run.ts            (510 lines, ~14.7 KB) — flag parsing, fs walk,
+                       slug index, frontmatter splitter, regex
+                       rewriter, report builder, git commit helper
+```
+
+The skill follows kos-jarvis conventions (no `src/*` touched, all
+ext-pack-local, dry-run default with `--apply` opt-in, JSONL events
+optional, report under `~/brain/.agent/reports/`).
+
+### Cost / time accounting
+
+- Wall time: ~12 min (5 min orphan-reducer in background while writing
+  the new skill, 7 min for everything else: scan + dry-run review +
+  apply + sync + verify).
+- Haiku 4.5 calls: 105 (5 dry-run smoke + 100 apply). Total cost:
+  **$0.336**, all via the `crs.chenge.ink/api` proxy (set
+  `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` from `.env.local`; the
+  Anthropic SDK reads both env vars natively).
+- File operations: 51 frontmatter rewrites + 88 sentinel-block
+  upserts + 4 lint backfills, 4 git commits across two repos.
+
+### Follow-ups parked
+
+- **frontmatter-ref-fix v2** (TODO.md P2): exclude `raw_path:`,
+  fuzzy-resolve bare-slug v1 sibling refs. Closes the 70-unresolved
+  long tail. ~1-2h.
+- **orphan-reducer cadence**: weekly until orphans &lt;500 (currently
+  793). Next sweep aims for `--limit 100`, expected -90 → ~700.
+  Three more sweeps puts the orphans component at 13/15 → 14/15 →
+  brain_score 85 → 87.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
