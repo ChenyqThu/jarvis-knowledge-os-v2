@@ -8,9 +8,11 @@
 > stable `kos.chenge.ink` HTTP boundary.
 >
 > **What's different from upstream:**
-> - `skills/kos-jarvis/` — fork-local extension pack (8 skills + templates);
->   upstream `skills/*` and `src/*` are untouched so we can `git merge upstream/master`
->   with minimal conflict surface. See [`skills/kos-jarvis/README.md`](skills/kos-jarvis/README.md).
+> - `skills/kos-jarvis/` — fork-local extension pack (10 skills + templates);
+>   upstream `skills/*` is untouched and `src/*` carries 2 narrow PGLite
+>   patches recorded in `docs/UPSTREAM-PATCHES/` so we can `git merge
+>   upstream/master` with minimal conflict surface. Last sync: v0.20.4
+>   (2026-04-25). See [`skills/kos-jarvis/README.md`](skills/kos-jarvis/README.md).
 > - `server/kos-compat-api.ts` — drop-in replacement for the KOS v1 `kos-api.py`
 >   HTTP contract (`/query /ingest /digest /status /health`); lets the existing
 >   Notion Knowledge Agent keep working after the cutover without redeploy.

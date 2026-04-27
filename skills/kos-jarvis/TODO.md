@@ -2,6 +2,10 @@
 
 > Live tracker for v2 fork. Items are ordered by blocking severity. Each
 > has a concrete acceptance criterion. Cross-linked with commits when done.
+>
+> **Latest session handoff**: [`docs/SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md`](../../docs/SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md)
+> ... start there if you're picking up cold. Captures current run-state,
+> next steps in priority order, file map, day-zero checks.
 
 ## P0 — blocking full autonomy
 
