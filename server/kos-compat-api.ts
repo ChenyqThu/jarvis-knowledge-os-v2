@@ -27,11 +27,17 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { BrainDb } from "../skills/kos-jarvis/_lib/brain-db.ts";
+import { fetchUrl } from "../skills/kos-jarvis/url-fetcher/index.ts";
 
 const PORT = Number(process.env.KOS_API_PORT ?? readFlag("--port") ?? 7220);
 const TOKEN = process.env.KOS_API_TOKEN ?? "";
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
 const DIGEST_DIR = join(BRAIN, ".agent", "digests");
+// URL fetch deadline. Cloudflare's edge will 524 after ~100s if origin doesn't
+// respond, so we keep this well below that. X/Twitter + reflective targets
+// frequently stall HTTPS handshake without ever erroring, so AbortSignal is
+// the only thing that prevents the request from sitting forever.
+const FETCH_TIMEOUT_MS = Number(process.env.KOS_FETCH_TIMEOUT_MS ?? 20_000);
 
 // kind → filesystem directory mapping for filesystem-canonical /ingest.
 // Matches gbrain's 20-dir MECE + KOS 9-kind structure. Unknown kinds land
@@ -392,28 +398,57 @@ ${markdown}
 `;
     }
   } else {
-    // URL fetch path (unchanged from v1)
-    let fetched: string;
-    try {
-      const r = await fetch(url!, {
-        headers: { "User-Agent": "kos-compat-api/1.0 (gbrain-ingest)" },
+    // URL fetch path routes through skills/kos-jarvis/url-fetcher which
+    // prefers UltimateSearchSkill's Tavily/FireCrawl tiers (X/Twitter,
+    // FlareSolverr-protected sites) and falls back to native fetch with
+    // AbortSignal deadline. Backend via KOS_FETCH_BACKEND env (default
+    // auto). Defends against the bare-fetch hang that caused Cloudflare
+    // 524 to /ingest callers.
+    const result = await fetchUrl(url!, { timeoutMs: FETCH_TIMEOUT_MS });
+    if (!result.ok) {
+      console.error(JSON.stringify({
+        t: new Date().toISOString(),
+        op: "ingest.fetch.fail",
+        url, slug, kind,
+        backend: result.backend,
+        error: result.error,
+        timeout: result.timeout,
+        http_status: result.http_status,
+        dur_ms: result.dur_ms,
+      }));
+      return send(res, result.timeout ? 504 : 502, {
+        error: result.timeout
+          ? `fetch timeout after ${FETCH_TIMEOUT_MS}ms (backend=${result.backend})`
+          : `failed to fetch url: ${result.error} (backend=${result.backend})`,
+        url,
+        backend: result.backend,
       });
-      if (!r.ok) throw new Error(`fetch ${r.status}`);
-      fetched = await r.text();
-    } catch (e) {
-      return send(res, 502, { error: `failed to fetch url: ${String(e)}` });
     }
+    const fetched = result.content;
+    console.log(JSON.stringify({
+      t: new Date().toISOString(),
+      op: "ingest.fetch.ok",
+      url, slug, kind,
+      backend: result.backend,
+      source: result.source,
+      format: result.format,
+      bytes: result.bytes,
+      dur_ms: result.dur_ms,
+    }));
 
-    // Minimal HTML strip — full opencli 79-platform routing handled by v1 during
-    // transition; Week 4 replaces this with a proper ingest-via-idea-ingest path.
-    const plain = fetched
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-      .slice(0, 50_000);
+    // ultimate-search returns markdown; native returns html. Skip the HTML
+    // strip when the body is already markdown — strip-on-markdown is mostly
+    // a no-op but the regex chain has cost on long docs.
+    const plain = result.format === "markdown"
+      ? fetched.slice(0, 50_000)
+      : fetched
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+\n/g, "\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim()
+          .slice(0, 50_000);
 
     const title = body.title?.trim() || slug;
     md = `---
@@ -513,6 +548,26 @@ const server = createServer(async (req, res) => {
 
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
+
+  // Request-line log on response end. Skip /health to keep stdout signal-rich.
+  // Without this, the only stdout entries are startup banners — last night's
+  // 524 was invisible to the operator because no per-request line was written.
+  const t0 = Date.now();
+  if (path !== "/health") {
+    const origEnd = res.end.bind(res);
+    res.end = ((...args: unknown[]) => {
+      console.log(JSON.stringify({
+        t: new Date().toISOString(),
+        op: "req",
+        method: req.method,
+        path,
+        status: res.statusCode,
+        dur_ms: Date.now() - t0,
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (origEnd as any)(...args);
+    }) as typeof res.end;
+  }
 
   try {
     if (req.method === "GET" && path === "/health") return handleHealth(res);

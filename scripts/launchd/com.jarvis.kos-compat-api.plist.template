@@ -31,6 +31,8 @@
     <true/>
     <key>RunAtLoad</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>StandardOutPath</key>
     <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/server/kos-compat-api.stdout.log</string>
     <key>StandardErrorPath</key>
