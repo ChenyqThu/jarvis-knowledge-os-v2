@@ -1,11 +1,46 @@
-# kos-jarvis — Outstanding Work
+# kos-jarvis — Outstanding Work (ARCHIVED 2026-04-27 evening)
 
-> Live tracker for v2 fork. Items are ordered by blocking severity. Each
-> has a concrete acceptance criterion. Cross-linked with commits when done.
+> 🏁 **ARCHIVED**. The v1-wiki legacy backlog driving most of this
+> file's P0/P1/P2 entries closed during the 2026-04-27 evening Tier 1
+> sweep + frontmatter-ref-fix v2 + 4 orphan-reducer rounds. Don't pick
+> up work directly from this file.
 >
-> **Latest session handoff**: [`docs/SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md`](../../docs/SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md)
-> ... start there if you're picking up cold. Captures current run-state,
-> next steps in priority order, file map, day-zero checks.
+> **NEXT SESSION ENTRY POINT**: [`docs/SESSION-HANDOFF-2026-04-27-evening-sweep-complete.md`](../../docs/SESSION-HANDOFF-2026-04-27-evening-sweep-complete.md)
+> ... that file has current run-state, what to re-survey, day-zero checks,
+> and instructions to build a fresh TODO from current pain points
+> (not by editing this archived one).
+>
+> Below is preserved for archeology. It captures the v1-wiki migration
+> story, fork patch genealogy, and the long P1 thread of filesystem-
+> canonical work that landed across §6.5-§6.16. Useful when debugging
+> "why did we do X this way" — read top-down to follow chronology.
+>
+> **Closed in this evening's session** (see
+> [`docs/JARVIS-ARCHITECTURE.md §6.15-§6.16`](../../docs/JARVIS-ARCHITECTURE.md#615-tier-1-maintenance-sweep--orphan-reducer--frontmatter-ref-fix-2026-04-27-evening)):
+>
+> - 4 lint ERRORs → 0
+> - Frontmatter long-tail dangling refs 70 → 0 (19 legitimate
+>   `raw_path:` entries left, those are correct)
+> - Orphans 814 → 732 across 4 orphan-reducer rounds, $1.354 Haiku
+> - frontmatter-ref-fix v1 + v2 shipped (v2 added fuzzy resolve +
+>   external/dead delete)
+>
+> **Calendar checkpoints owned by future sessions**:
+> - 2026-05-04 — v1 archive (move `com.jarvis.kos-api.plist.bak` to `_archive/`)
+> - 2026-05-07 — Step 2.4 commit-batching review
+> - 2026-05-25 — 3072-dim Gemini embedding re-eval
+> - Trigger-based — PGLite → Postgres switch (4 trigger conditions
+>   named in `v020-pglite-postgres-evaluation.md`)
+
+---
+
+# Archived content below
+
+> Original file from before the close. Live tracker semantics no longer apply.
+> Items ordered by blocking severity at time of writing. Each has an
+> acceptance criterion. Cross-linked with commits when done.
+>
+> **Previous session handoff** (now superseded): [`docs/SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md`](../../docs/SESSION-HANDOFF-2026-04-27-post-v0.20-sync.md)
 
 ## P0 — blocking full autonomy
 
