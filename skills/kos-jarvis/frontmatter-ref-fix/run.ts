@@ -2,7 +2,21 @@
 /**
  * frontmatter-ref-fix — normalize `../X/Y.md`-style frontmatter refs to
  * canonical slug form (`X/Y`), verify each target exists on disk, leave
- * unresolved refs untouched and reported.
+ * unresolved refs untouched (or optionally delete brain-external /
+ * dead-link refs), report everything.
+ *
+ * v2 (2026-04-27 evening) extends v1 with:
+ *   - EXTERNAL_POINTER_KEYS: known frontmatter keys that legitimately
+ *     point at brain-external paths (e.g. `raw_path:`); skipped without
+ *     warning.
+ *   - Bare-slug fuzzy resolve: `harness-engineering.md` (no dir
+ *     prefix) is matched against a basename → full-slug index. Unique
+ *     hits get rewritten; ambiguous + zero hits go to the report.
+ *   - External-path detection: paths with 2+ leading `../` segments
+ *     escape the brain root. Reported separately; optionally deleted
+ *     with `--delete-external`.
+ *   - Dead-link detection: `X/Y.md`-shape ref where `X/Y` is not on
+ *     disk. Reported separately; optionally deleted with `--delete-dead`.
  *
  * v1-wiki migration legacy. See SKILL.md for context.
  *
@@ -27,6 +41,9 @@ type Flags = {
   apply: boolean;
   noCommit: boolean;
   brainDir: string;
+  fuzzy: boolean;
+  deleteExternal: boolean;
+  deleteDead: boolean;
   json: boolean;
   help: boolean;
 };
@@ -36,6 +53,9 @@ function parseFlags(argv: string[]): Flags {
     apply: false,
     noCommit: false,
     brainDir: process.env.KOS_BRAIN_DIR ?? join(homedir(), "brain"),
+    fuzzy: true,
+    deleteExternal: false,
+    deleteDead: false,
     json: false,
     help: false,
   };
@@ -55,6 +75,22 @@ function parseFlags(argv: string[]): Flags {
       case "--no-commit":
         f.noCommit = true;
         break;
+      case "--no-fuzzy":
+        f.fuzzy = false;
+        break;
+      case "--fuzzy":
+        f.fuzzy = true;
+        break;
+      case "--delete-external":
+        f.deleteExternal = true;
+        break;
+      case "--delete-dead":
+        f.deleteDead = true;
+        break;
+      case "--delete-all":
+        f.deleteExternal = true;
+        f.deleteDead = true;
+        break;
       case "--json":
         f.json = true;
         break;
@@ -72,7 +108,8 @@ function parseFlags(argv: string[]): Flags {
 }
 
 const USAGE = `
-frontmatter-ref-fix — normalize '../X/Y.md' frontmatter refs to slug form.
+frontmatter-ref-fix v2 — normalize '../X/Y.md' refs, fuzzy-resolve bare
+slugs, optionally delete brain-external + dead-link refs.
 
 Usage:
   bun run skills/kos-jarvis/frontmatter-ref-fix/run.ts [flags]
@@ -81,6 +118,11 @@ Flags:
   --dry-run              (default) report-only, no writes
   --apply                rewrite resolved refs + git commit
   --no-commit            apply without git commit (testing)
+  --fuzzy                (default on) fuzzy-resolve bare slugs against basename index
+  --no-fuzzy             disable fuzzy resolve (v1 behavior)
+  --delete-external      with --apply, delete refs that escape brain root (../../X)
+  --delete-dead          with --apply, delete refs of shape X/Y.md where target is missing
+  --delete-all           shorthand for --delete-external + --delete-dead
   --brain-dir DIR        override ~/brain location
   --json                 JSONL events to stdout
   --help, -h             this message
@@ -88,6 +130,16 @@ Flags:
 Reports:
   <brain-dir>/.agent/reports/frontmatter-ref-fix-<ISO>.md
 `;
+
+/**
+ * Frontmatter keys whose values are by-design pointers at brain-external
+ * snapshots. Lines under these keys are skipped without warning.
+ *
+ * Add new keys here as the schema grows. Be conservative — only add a
+ * key when its value is *always* an external path; otherwise the skill
+ * will silently miss real ref problems on that key.
+ */
+const EXTERNAL_POINTER_KEYS = new Set<string>(["raw_path"]);
 
 // ---------- Filesystem walk ----------
 
@@ -127,6 +179,26 @@ function pathToSlug(absPath: string, brainDir: string): string {
   return norm.replace(/\.md$/, "");
 }
 
+/**
+ * Build a basename → full-slug index for fuzzy resolve.
+ * `concepts/harness-engineering` indexes basename `harness-engineering`.
+ * If two slugs share a basename, both go in; the lookup returns null
+ * (ambiguous) rather than picking one.
+ */
+function buildBaseIndex(slugs: Set<string>): Map<string, string | null> {
+  const index = new Map<string, string | null>();
+  for (const slug of slugs) {
+    const lastSlash = slug.lastIndexOf("/");
+    const base = lastSlash < 0 ? slug : slug.slice(lastSlash + 1);
+    if (index.has(base)) {
+      index.set(base, null); // ambiguous
+    } else {
+      index.set(base, slug);
+    }
+  }
+  return index;
+}
+
 // ---------- Frontmatter splitting ----------
 
 /**
@@ -157,23 +229,36 @@ function splitFrontmatter(content: string): [string | null, string] {
 
 // ---------- Ref rewriting ----------
 
+type HitCategory =
+  | "resolved" // exact slug match, rewritten
+  | "fuzzy_resolved" // bare-slug → unique fuzzy match, rewritten
+  | "external_key_skipped" // value under EXTERNAL_POINTER_KEYS, untouched
+  | "external_path" // 2+ leading `../`, escapes brain root
+  | "dead" // looks like a real slug but target missing
+  | "bare_ambiguous" // bare slug with multiple basename hits
+  | "bare_unresolved"; // bare slug, no basename hit at all
+
 type RewriteHit = {
   file: string;
   line: number;
   before: string;
   candidateSlug: string;
-  resolved: boolean;
-  field: string | null; // last seen frontmatter key, when detectable
+  category: HitCategory;
+  field: string | null;
+  resolvedTo: string | null; // for resolved + fuzzy_resolved
+  deleted: boolean; // line removed (only when --delete-external/--delete-dead)
 };
 
 /**
  * Match a frontmatter line that ends in `.md`, optionally with `../`
- * prefixes, optionally wrapped in single or double quotes, optionally a
- * yaml list dash.
+ * prefixes, optionally wrapped in single or double quotes, optionally
+ * preceded by a yaml list dash or `key:` prefix.
  *
- * Excluded: lines containing `://` (URLs) — the only legitimate way a
- * `.md`-ending value should appear in frontmatter is as an inter-page
- * ref, not a URL.
+ * Captures:
+ *   1: prefix (indent + `-` or `key:`)
+ *   2: optional quote
+ *   3: dotdot run (e.g. `../../`) or empty
+ *   4: slug body (sans `.md`)
  */
 const REF_LINE_REGEX =
   /^(\s*(?:-\s+|[A-Za-z_][A-Za-z0-9_-]*:\s*))(['"]?)((?:\.\.\/)+)?([A-Za-z0-9][A-Za-z0-9_./-]*?)\.md\2\s*$/;
@@ -181,14 +266,65 @@ const REF_LINE_REGEX =
 const KEY_LINE_REGEX = /^([A-Za-z_][A-Za-z0-9_-]*):\s*$/;
 const KEY_INLINE_REGEX = /^([A-Za-z_][A-Za-z0-9_-]*):\s+/;
 
+function classify(
+  slugBody: string,
+  dotdot: string | undefined,
+  slugs: Set<string>,
+  baseIndex: Map<string, string | null>,
+  fuzzy: boolean,
+  field: string | null
+): { category: HitCategory; resolvedTo: string | null } {
+  // External pointer key (e.g. raw_path).
+  if (field && EXTERNAL_POINTER_KEYS.has(field)) {
+    return { category: "external_key_skipped", resolvedTo: null };
+  }
+
+  // Brain-external: 2+ leading `../` definitely escapes the brain root.
+  // Single `../` from brain/<dir>/file.md still lands inside brain at
+  // brain/<other-dir>/... so it's covered by the slug check.
+  const dotdotCount = (dotdot ?? "").length / 3; // each `../` is 3 chars
+  if (dotdotCount >= 2) {
+    return { category: "external_path", resolvedTo: null };
+  }
+
+  // Exact slug match.
+  if (slugs.has(slugBody)) {
+    return { category: "resolved", resolvedTo: slugBody };
+  }
+
+  // Bare slug (no slash) → try fuzzy.
+  if (!slugBody.includes("/")) {
+    if (!fuzzy) {
+      return { category: "bare_unresolved", resolvedTo: null };
+    }
+    const hit = baseIndex.get(slugBody);
+    if (hit === null) {
+      return { category: "bare_ambiguous", resolvedTo: null };
+    }
+    if (hit !== undefined) {
+      return { category: "fuzzy_resolved", resolvedTo: hit };
+    }
+    return { category: "bare_unresolved", resolvedTo: null };
+  }
+
+  // Pathlike slug but missing on disk → dead link.
+  return { category: "dead", resolvedTo: null };
+}
+
 function rewriteFrontmatter(
   fm: string,
   slugs: Set<string>,
-  filePath: string
-): { newFm: string; hits: RewriteHit[] } {
+  baseIndex: Map<string, string | null>,
+  filePath: string,
+  fuzzy: boolean,
+  deleteExternal: boolean,
+  deleteDead: boolean
+): { newFm: string; hits: RewriteHit[]; changed: boolean } {
   const hits: RewriteHit[] = [];
   const lines = fm.split("\n");
+  const linesToDelete = new Set<number>();
   let lastKey: string | null = null;
+  let changed = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -208,28 +344,55 @@ function rewriteFrontmatter(
     const m = line.match(REF_LINE_REGEX);
     if (!m) continue;
 
-    const [, prefix, quote, , slugBody] = m;
-    const candidateSlug = slugBody;
-    const resolved = slugs.has(candidateSlug);
+    const [, prefix, quote, dotdot, slugBody] = m;
+    const { category, resolvedTo } = classify(
+      slugBody,
+      dotdot,
+      slugs,
+      baseIndex,
+      fuzzy,
+      lastKey
+    );
+
+    let deleted = false;
+    if (
+      (category === "resolved" || category === "fuzzy_resolved") &&
+      resolvedTo
+    ) {
+      lines[i] = `${prefix}${quote}${resolvedTo}${quote}`;
+      changed = true;
+    } else if (category === "external_path" && deleteExternal) {
+      linesToDelete.add(i);
+      deleted = true;
+      changed = true;
+    } else if (category === "dead" && deleteDead) {
+      linesToDelete.add(i);
+      deleted = true;
+      changed = true;
+    }
+    // external_key_skipped, bare_ambiguous, bare_unresolved: report only.
 
     hits.push({
       file: filePath,
       line: i + 1,
       before: line,
-      candidateSlug,
-      resolved,
+      candidateSlug: slugBody,
+      category,
       field: lastKey,
+      resolvedTo,
+      deleted,
     });
-
-    if (resolved) {
-      // Preserve original prefix (list dash + indent or `key: `) and
-      // quote style.
-      lines[i] = `${prefix}${quote}${candidateSlug}${quote}`;
-    }
-    // Unresolved: leave line untouched.
   }
 
-  return { newFm: lines.join("\n"), hits };
+  // Apply deletions in reverse order.
+  if (linesToDelete.size > 0) {
+    const sorted = [...linesToDelete].sort((a, b) => b - a);
+    for (const idx of sorted) {
+      lines.splice(idx, 1);
+    }
+  }
+
+  return { newFm: lines.join("\n"), hits, changed };
 }
 
 // ---------- Reporting ----------
@@ -239,35 +402,45 @@ type Summary = {
   durationMs: number;
   mode: "dry-run" | "apply";
   brainDir: string;
+  flags: {
+    fuzzy: boolean;
+    delete_external: boolean;
+    delete_dead: boolean;
+  };
   totals: {
     files_scanned: number;
     files_with_frontmatter: number;
     files_rewritten: number;
     refs_found: number;
-    refs_rewritten: number;
-    refs_unresolved: number;
+    refs_resolved: number;
+    refs_fuzzy_resolved: number;
+    refs_external_key_skipped: number;
+    refs_external_path: number;
+    refs_dead: number;
+    refs_bare_ambiguous: number;
+    refs_bare_unresolved: number;
+    refs_deleted: number;
   };
   git: { committed: boolean; sha: string | null; error: string | null } | null;
 };
 
 function buildReport(summary: Summary, hits: RewriteHit[]): string {
-  const resolved = hits.filter((h) => h.resolved);
-  const unresolved = hits.filter((h) => !h.resolved);
-
-  // Group unresolved by candidate slug (so we see "10x ../entities/jarvis.md" type patterns).
-  const unresolvedBySlug = new Map<string, RewriteHit[]>();
-  for (const h of unresolved) {
-    const arr = unresolvedBySlug.get(h.candidateSlug) ?? [];
+  const byCategory = new Map<HitCategory, RewriteHit[]>();
+  for (const h of hits) {
+    const arr = byCategory.get(h.category) ?? [];
     arr.push(h);
-    unresolvedBySlug.set(h.candidateSlug, arr);
+    byCategory.set(h.category, arr);
   }
 
   const lines: string[] = [];
-  lines.push(`# Frontmatter Ref Fix — ${summary.startedAt}`);
+  lines.push(`# Frontmatter Ref Fix v2 — ${summary.startedAt}`);
   lines.push("");
   lines.push(`**Mode**: ${summary.mode}`);
   lines.push(`**Brain dir**: ${summary.brainDir}`);
   lines.push(`**Duration**: ${(summary.durationMs / 1000).toFixed(2)}s`);
+  lines.push(
+    `**Flags**: fuzzy=${summary.flags.fuzzy} delete-external=${summary.flags.delete_external} delete-dead=${summary.flags.delete_dead}`
+  );
   lines.push("");
   lines.push("## Totals");
   lines.push("");
@@ -275,8 +448,22 @@ function buildReport(summary: Summary, hits: RewriteHit[]): string {
   lines.push(`- Files with frontmatter: ${summary.totals.files_with_frontmatter}`);
   lines.push(`- Files rewritten: ${summary.totals.files_rewritten}`);
   lines.push(`- Refs found: ${summary.totals.refs_found}`);
-  lines.push(`- Refs rewritten (resolved): ${summary.totals.refs_rewritten}`);
-  lines.push(`- Refs unresolved (left alone): ${summary.totals.refs_unresolved}`);
+  lines.push("");
+  lines.push("By category:");
+  lines.push(`- resolved (rewritten): ${summary.totals.refs_resolved}`);
+  lines.push(`- fuzzy_resolved (rewritten): ${summary.totals.refs_fuzzy_resolved}`);
+  lines.push(
+    `- external_key_skipped (raw_path etc.): ${summary.totals.refs_external_key_skipped}`
+  );
+  lines.push(
+    `- external_path (../../escapes brain): ${summary.totals.refs_external_path}`
+  );
+  lines.push(`- dead (target missing): ${summary.totals.refs_dead}`);
+  lines.push(`- bare_ambiguous: ${summary.totals.refs_bare_ambiguous}`);
+  lines.push(`- bare_unresolved: ${summary.totals.refs_bare_unresolved}`);
+  if (summary.totals.refs_deleted > 0) {
+    lines.push(`- deleted lines: ${summary.totals.refs_deleted}`);
+  }
   if (summary.git) {
     lines.push(
       `- Git: ${summary.git.committed ? `committed ${summary.git.sha}` : `not committed${summary.git.error ? ` (${summary.git.error})` : ""}`}`
@@ -284,45 +471,57 @@ function buildReport(summary: Summary, hits: RewriteHit[]): string {
   }
   lines.push("");
 
-  lines.push("## Unresolved targets (grouped)");
-  lines.push("");
-  if (unresolvedBySlug.size === 0) {
-    lines.push("_None — every ref resolved to an on-disk page._");
-  } else {
-    const keys = [...unresolvedBySlug.keys()].sort();
-    for (const slug of keys) {
-      const arr = unresolvedBySlug.get(slug)!;
-      lines.push(`### \`${slug}\` (${arr.length}×)`);
+  // Per-category sections (skip empty + skip resolved details — they're already absorbed).
+  const sectionOrder: HitCategory[] = [
+    "fuzzy_resolved",
+    "external_path",
+    "dead",
+    "bare_ambiguous",
+    "bare_unresolved",
+    "external_key_skipped",
+    "resolved",
+  ];
+
+  for (const cat of sectionOrder) {
+    const arr = byCategory.get(cat) ?? [];
+    if (arr.length === 0) continue;
+    lines.push(`## ${cat} (${arr.length})`);
+    lines.push("");
+    if (cat === "resolved") {
+      lines.push(`Sample (first 30):`);
       lines.push("");
-      for (const h of arr) {
+      for (const h of arr.slice(0, 30)) {
         lines.push(
-          `- ${h.file.replace(summary.brainDir + "/", "")}:${h.line}${h.field ? ` (key: \`${h.field}\`)` : ""}`
+          `- ${h.file.replace(summary.brainDir + "/", "")}:${h.line} → \`${h.resolvedTo}\``
+        );
+      }
+      if (arr.length > 30) lines.push(`- ... +${arr.length - 30} more`);
+      lines.push("");
+      continue;
+    }
+    // Group by candidate slug.
+    const bySlug = new Map<string, RewriteHit[]>();
+    for (const h of arr) {
+      const a = bySlug.get(h.candidateSlug) ?? [];
+      a.push(h);
+      bySlug.set(h.candidateSlug, a);
+    }
+    for (const slug of [...bySlug.keys()].sort()) {
+      const hs = bySlug.get(slug)!;
+      lines.push(
+        `### \`${slug}\`${hs[0].resolvedTo ? ` → \`${hs[0].resolvedTo}\`` : ""} (${hs.length}×)`
+      );
+      lines.push("");
+      for (const h of hs) {
+        const tag = h.deleted ? " [DELETED]" : "";
+        lines.push(
+          `- ${h.file.replace(summary.brainDir + "/", "")}:${h.line}${h.field ? ` (key: \`${h.field}\`)` : ""}${tag}`
         );
         lines.push(`  - before: \`${h.before.trim()}\``);
       }
       lines.push("");
     }
   }
-
-  lines.push("## Resolved rewrites");
-  lines.push("");
-  if (resolved.length === 0) {
-    lines.push("_None — no refs needed normalization._");
-  } else {
-    lines.push(`${resolved.length} refs rewritten across ${
-      new Set(resolved.map((h) => h.file)).size
-    } files.`);
-    lines.push("");
-    lines.push("Sample (first 30):");
-    lines.push("");
-    for (const h of resolved.slice(0, 30)) {
-      lines.push(
-        `- ${h.file.replace(summary.brainDir + "/", "")}:${h.line} → \`${h.candidateSlug}\``
-      );
-    }
-    if (resolved.length > 30) lines.push(`- ... +${resolved.length - 30} more`);
-  }
-  lines.push("");
 
   return lines.join("\n");
 }
@@ -403,11 +602,16 @@ async function main(): Promise<number> {
   const slugs = new Set<string>(
     allFiles.map((f) => pathToSlug(f, flags.brainDir))
   );
+  const baseIndex = buildBaseIndex(slugs);
 
   emit(flags.json, "scan.start", {
     brain_dir: flags.brainDir,
     files: allFiles.length,
     slugs: slugs.size,
+    base_index_size: baseIndex.size,
+    fuzzy: flags.fuzzy,
+    delete_external: flags.deleteExternal,
+    delete_dead: flags.deleteDead,
   });
 
   const allHits: RewriteHit[] = [];
@@ -425,32 +629,53 @@ async function main(): Promise<number> {
     if (fm === null) continue;
     filesWithFm += 1;
 
-    const { newFm, hits } = rewriteFrontmatter(fm, slugs, file);
+    const { newFm, hits, changed } = rewriteFrontmatter(
+      fm,
+      slugs,
+      baseIndex,
+      file,
+      flags.fuzzy,
+      flags.deleteExternal,
+      flags.deleteDead
+    );
     if (hits.length === 0) continue;
     allHits.push(...hits);
 
-    if (newFm !== fm) {
+    if (changed) {
       filesToWrite.set(file, newFm + body);
     }
   }
 
+  const tally = (cat: HitCategory) =>
+    allHits.filter((h) => h.category === cat).length;
+
   emit(flags.json, "scan.complete", {
     refs_found: allHits.length,
-    refs_to_rewrite: allHits.filter((h) => h.resolved).length,
-    refs_unresolved: allHits.filter((h) => !h.resolved).length,
+    refs_resolved: tally("resolved"),
+    refs_fuzzy_resolved: tally("fuzzy_resolved"),
+    refs_external_key_skipped: tally("external_key_skipped"),
+    refs_external_path: tally("external_path"),
+    refs_dead: tally("dead"),
+    refs_bare_ambiguous: tally("bare_ambiguous"),
+    refs_bare_unresolved: tally("bare_unresolved"),
     files_to_rewrite: filesToWrite.size,
   });
 
   let gitResult: Summary["git"] = null;
+  const refsDeleted = allHits.filter((h) => h.deleted).length;
 
   if (flags.apply) {
     for (const [file, content] of filesToWrite) {
       writeFileSync(file, content, "utf8");
     }
     if (!flags.noCommit && filesToWrite.size > 0) {
-      const message = `chore(frontmatter-ref-fix): normalize ${
-        allHits.filter((h) => h.resolved).length
-      } refs across ${filesToWrite.size} files`;
+      const summary_parts: string[] = [];
+      const r = tally("resolved");
+      const fr = tally("fuzzy_resolved");
+      if (r > 0) summary_parts.push(`${r} normalized`);
+      if (fr > 0) summary_parts.push(`${fr} fuzzy-resolved`);
+      if (refsDeleted > 0) summary_parts.push(`${refsDeleted} deleted`);
+      const message = `chore(frontmatter-ref-fix): v2 sweep — ${summary_parts.join(", ")} across ${filesToWrite.size} files`;
       gitResult = gitCommitBrain(flags.brainDir, message);
       emit(flags.json, "git.commit", {
         committed: gitResult.committed,
@@ -465,13 +690,24 @@ async function main(): Promise<number> {
     durationMs: Date.now() - t0,
     mode: flags.apply ? "apply" : "dry-run",
     brainDir: flags.brainDir,
+    flags: {
+      fuzzy: flags.fuzzy,
+      delete_external: flags.deleteExternal,
+      delete_dead: flags.deleteDead,
+    },
     totals: {
       files_scanned: allFiles.length,
       files_with_frontmatter: filesWithFm,
       files_rewritten: filesToWrite.size,
       refs_found: allHits.length,
-      refs_rewritten: allHits.filter((h) => h.resolved).length,
-      refs_unresolved: allHits.filter((h) => !h.resolved).length,
+      refs_resolved: tally("resolved"),
+      refs_fuzzy_resolved: tally("fuzzy_resolved"),
+      refs_external_key_skipped: tally("external_key_skipped"),
+      refs_external_path: tally("external_path"),
+      refs_dead: tally("dead"),
+      refs_bare_ambiguous: tally("bare_ambiguous"),
+      refs_bare_unresolved: tally("bare_unresolved"),
+      refs_deleted: refsDeleted,
     },
     git: gitResult,
   };
@@ -482,21 +718,27 @@ async function main(): Promise<number> {
   if (!flags.json) {
     console.error("");
     console.error(
-      `frontmatter-ref-fix ${summary.mode} done in ${(summary.durationMs / 1000).toFixed(2)}s`
+      `frontmatter-ref-fix v2 ${summary.mode} done in ${(summary.durationMs / 1000).toFixed(2)}s`
     );
-    console.error(`  files scanned:   ${summary.totals.files_scanned}`);
-    console.error(`  refs found:      ${summary.totals.refs_found}`);
-    console.error(`  refs rewritten:  ${summary.totals.refs_rewritten}`);
-    console.error(`  refs unresolved: ${summary.totals.refs_unresolved}`);
+    console.error(`  files scanned:        ${summary.totals.files_scanned}`);
+    console.error(`  refs found:           ${summary.totals.refs_found}`);
+    console.error(`  resolved:             ${summary.totals.refs_resolved}`);
+    console.error(`  fuzzy_resolved:       ${summary.totals.refs_fuzzy_resolved}`);
+    console.error(`  external_key_skipped: ${summary.totals.refs_external_key_skipped}`);
+    console.error(`  external_path:        ${summary.totals.refs_external_path}`);
+    console.error(`  dead:                 ${summary.totals.refs_dead}`);
+    console.error(`  bare_ambiguous:       ${summary.totals.refs_bare_ambiguous}`);
+    console.error(`  bare_unresolved:      ${summary.totals.refs_bare_unresolved}`);
     if (summary.mode === "apply") {
-      console.error(`  files written:   ${summary.totals.files_rewritten}`);
+      console.error(`  files written:        ${summary.totals.files_rewritten}`);
+      console.error(`  refs deleted:         ${summary.totals.refs_deleted}`);
       if (gitResult) {
         console.error(
-          `  git:             ${gitResult.committed ? gitResult.sha : `no commit${gitResult.error ? ` (${gitResult.error})` : ""}`}`
+          `  git:                  ${gitResult.committed ? gitResult.sha : `no commit${gitResult.error ? ` (${gitResult.error})` : ""}`}`
         );
       }
     }
-    console.error(`  report:          ${mdPath}`);
+    console.error(`  report:               ${mdPath}`);
   }
 
   return 0;
