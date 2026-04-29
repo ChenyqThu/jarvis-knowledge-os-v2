@@ -40,7 +40,7 @@ two-sync Notion Worker idiom, and compounding signal-detector loop.
   Knowledge-OS v2 ────────────── OpenClaw Jarvis
   (GBrain fork)                  (execution orchestrator)
    ~1800 compiled pages          3-agent topology
-   kos-compat-api (v2) 7220      6 cron jobs
+   kos-compat-api (v2) 7225      6 cron jobs
    gemini-embed-shim 7222        feishu skill (HTTP to kos.chenge.ink)
    v1 kos-api.py unloaded        MEMORY reflux (digest-to-memory)
    skills/kos-jarvis/            MEMORY reflux (digest-to-memory)
@@ -67,7 +67,7 @@ two-sync Notion Worker idiom, and compounding signal-detector loop.
              ┌────────────────────────────────┐
              │  launchctl list | grep jarvis  │
              ├────────────────────────────────┤
-             │  com.jarvis.kos-compat-api     │ ← port 7220
+             │  com.jarvis.kos-compat-api     │ ← port 7225
              │     server/kos-compat-api.ts   │
              │     (TypeScript, bun runtime)  │
              │            ↓ shells gbrain     │
@@ -94,7 +94,7 @@ two-sync Notion Worker idiom, and compounding signal-detector loop.
 
 | Port | Service | Auth | Exposed |
 |------|---------|------|---------|
-| 7220 | kos-compat-api | Bearer token (`KOS_API_TOKEN`) | Yes (via kos.chenge.ink + Notion Worker) |
+| 7225 | kos-compat-api | Bearer token (`KOS_API_TOKEN`) | Yes (via kos.chenge.ink + Notion Worker) |
 | 7222 | gemini-embed-shim | None (internal) | No, loopback only |
 
 ### External routing
@@ -228,8 +228,8 @@ quiet-hours), and shell job type. We merged, ran the full test suite
 ### Topology changes (post-cutover)
 
 - **v1 wiki imported**: 85 pages from `/Users/chenyuanquan/Projects/jarvis-knowledge-os/knowledge/wiki/` imported into v2 PGLite (`~/.gbrain/brain.pglite`) via `gbrain import` in 25.4 s / 91 chunks / 0 errors.
-- **Port cutover**: v2 bun `kos-compat-api` now owns :7220 (production, serves `kos.chenge.ink` through the cloudflared token tunnel). v1 Python `kos-api.py` is unloaded (`.plist.bak` retained for 30-s rollback).
-- **Poller cutover**: `notion-poller` now posts to :7220 (v2). Notion content and v1 wiki content both live in `~/.gbrain/brain.pglite`. Total 100 pages as of 2026-04-20.
+- **Port cutover**: v2 bun `kos-compat-api` now owns :7225 (production, serves `kos.chenge.ink` through the cloudflared token tunnel). v1 Python `kos-api.py` is unloaded (`.plist.bak` retained for 30-s rollback).
+- **Poller cutover**: `notion-poller` now posts to :7225 (v2). Notion content and v1 wiki content both live in `~/.gbrain/brain.pglite`. Total 100 pages as of 2026-04-20.
 - **Phase-2 synthesis**: `kos-compat-api` `/query` now does retrieval (`gbrain ask`) + LLM synthesis (Anthropic Messages API via `crs.chenge.ink`, model `claude-sonnet-4-6` by default). Matches v1's `{result: "...Phase 2..."}` response shape so Notion Knowledge Agent and feishu-bridge consumers keep working without changes.
 
 ### Rollback
@@ -755,7 +755,7 @@ Validation this session:
 | `~/brain/raw/web/*.md` upgrade | Became `sources/2026-04-21-ai-economy-disruption-dual-jarvis.md` with full KOS frontmatter |
 | `git init ~/brain` + seed commit | branch=main, commit=6ed6653, 10 files |
 | `gbrain sync --repo ~/brain --no-pull` (first call) | +1 added, sync.repo_path registered in config, 1858 pages |
-| `/status` endpoint via prod port 7220 | total_pages=1858 (was 100-capped), full KOS 9-kind + confidence breakdown |
+| `/status` endpoint via prod port 7225 | total_pages=1858 (was 100-capped), full KOS 9-kind + confidence breakdown |
 | `/ingest` POST smoke | file at `~/brain/sources/*.md`, git commit 116a5d1, sync +1, DB 1859, frontmatter preserved |
 | `/digest` endpoint | Returns patrol-2026-04-19.md from new `.agent/digests/` path |
 | `notion-poller` manual kickstart | Normal DELTA cycle against new `.agent/notion-poller-state.json` path |
@@ -1181,7 +1181,7 @@ gbrain apply-migrations --yes                  # backfill links, ledger → comp
 # service smoke
 launchctl bootout gui/$(id -u)/com.jarvis.kos-compat-api
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist
-curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:7220/status   # 1988p / 9 kinds
+curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:7225/status   # 1988p / 9 kinds
 curl -sS http://localhost:7222/health                                     # gemini-embedding-2-preview
 ```
 

@@ -17,7 +17,7 @@
 >   HTTP contract (`/query /ingest /digest /status /health`); lets the existing
 >   Notion Knowledge Agent keep working after the cutover without redeploy.
 > - `scripts/launchd/` — templates for the two macOS services
->   (`com.jarvis.gemini-embed-shim` on 7222, `com.jarvis.kos-compat-api` on 7220).
+>   (`com.jarvis.gemini-embed-shim` on 7222, `com.jarvis.kos-compat-api` on 7225).
 > - Full migration history, architecture, and operational runbook live in
 >   [`docs/JARVIS-ARCHITECTURE.md`](docs/JARVIS-ARCHITECTURE.md).
 >

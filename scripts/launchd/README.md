@@ -4,7 +4,7 @@ Two services replace v1 `com.jarvis.kos-api` (Python kos-api.py):
 
 1. **com.jarvis.gemini-embed-shim** — port 7222, OpenAI→Gemini translator
    for pgvector embeddings. Requires `NANO_BANANA_API_KEY`.
-2. **com.jarvis.kos-compat-api** — port 7220, drop-in HTTP replacement for
+2. **com.jarvis.kos-compat-api** — port 7225, drop-in HTTP replacement for
    kos-api.py. Talks to gbrain CLI. Inherits old KOS_API_TOKEN so Notion
    Knowledge Agent keeps working unchanged.
 
@@ -35,7 +35,7 @@ Run these in order. After each step verify the expected state.
 ```bash
 # 1. Stop v1 kos-api.py (keeps plist on disk for rollback)
 launchctl unload ~/Library/LaunchAgents/com.jarvis.kos-api.plist
-lsof -i :7220 -P  # expect: no listeners
+lsof -i :7225 -P  # expect: no listeners
 
 # 2. Start the embed shim first (embedding is a dep of some gbrain queries)
 launchctl load ~/Library/LaunchAgents/com.jarvis.gemini-embed-shim.plist
@@ -43,10 +43,10 @@ sleep 2
 curl -s http://127.0.0.1:7222/health | jq .
 # expect: {"status":"ok","upstream":"gemini","model":"gemini-embedding-2-preview"}
 
-# 3. Start kos-compat-api (takes over 7220)
+# 3. Start kos-compat-api (takes over 7225)
 launchctl load ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist
 sleep 2
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7220/health | jq .
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7225/health | jq .
 # expect: {"status":"ok","brain":"/Users/chenyuanquan/brain","engine":"gbrain"}
 
 # 4. End-to-end check via kos.chenge.ink (same domain, new backend)

@@ -24,7 +24,7 @@
   kos-worker  (已部署 Notion Worker)
         │ HTTPS Bearer
         ▼
-  https://kos.chenge.ink  →  kos-compat-api:7220 on Mac
+  https://kos.chenge.ink  →  kos-compat-api:7225 on Mac
         │ gbrain CLI
         ▼
   gbrain (pglite + Gemini embeds)  ←  enrich-sweep / kos-patrol 周期任务

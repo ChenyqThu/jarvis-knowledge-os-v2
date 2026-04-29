@@ -28,7 +28,7 @@
         <key>GBRAIN_HOME</key>
         <string>/Users/chenyuanquan/brain</string>
         <key>KOS_API_BASE</key>
-        <string>http://127.0.0.1:7220</string>
+        <string>http://127.0.0.1:7225</string>
     </dict>
     <!-- Every 5 minutes -->
     <key>StartInterval</key>

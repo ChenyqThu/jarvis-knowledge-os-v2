@@ -58,7 +58,7 @@ inherit the v1-wiki legacy backlog — it's all closed.
 | Doctor health | 80/100 (3 PGLite-quirk WARN, no FAIL) |
 | Upstream sync | v0.20.4 (2026-04-25), latest fork commit `<§6.16-docs>` (this commit) |
 | `~/brain` git | 13 ingest + 6 sweep commits across 24h, no remote pushed |
-| Production endpoint | `kos.chenge.ink` → cloudflared → :7220 (kos-compat-api PID 61588) |
+| Production endpoint | `kos.chenge.ink` → cloudflared → :7225 (kos-compat-api PID 61588) |
 | Embed shim | `:7222` gemini-embedding-2-preview (PID 56860) |
 
 ### Running services (`launchctl list | grep jarvis`)
@@ -196,7 +196,7 @@ under a fresh header) — not by editing the archived one.
 
 ```bash
 # 1. service health (PIDs should be stable from this handoff)
-lsof -iTCP:7220 -sTCP:LISTEN | tail -1                 # kos-compat-api
+lsof -iTCP:7225 -sTCP:LISTEN | tail -1                 # kos-compat-api
 lsof -iTCP:7222 -sTCP:LISTEN | tail -1                 # gemini-embed-shim
 ls -t ~/brain/.agent/dashboards/ | head -1             # latest patrol
 

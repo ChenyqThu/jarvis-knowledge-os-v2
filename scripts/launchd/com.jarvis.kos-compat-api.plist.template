@@ -15,7 +15,7 @@
         <key>PATH</key>
         <string>/Users/chenyuanquan/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
         <key>KOS_API_PORT</key>
-        <string>7220</string>
+        <string>7225</string>
         <key>KOS_API_TOKEN</key>
         <string><FILL:KOS_API_TOKEN></string>
         <key>GBRAIN_HOME</key>

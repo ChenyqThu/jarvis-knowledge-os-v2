@@ -25,7 +25,7 @@ below points at existing docs for the full story.
 **Current state snapshot** (verify with commands before assuming):
 - 85 pages, 92 embedded chunks, 0 lint errors on frontmatter block
 - `launchctl list | grep com.jarvis` shows `kos-compat-api`, `gemini-embed-shim` healthy
-- `kos.chenge.ink` routes to port 7220 (v2 TypeScript)
+- `kos.chenge.ink` routes to port 7225 (v2 TypeScript)
 - OpenClaw 4 crons + Feishu skill migrated to HTTP on 2026-04-17
 - v1 frozen at tag `v1-frozen` in `~/Projects/jarvis-knowledge-os/`, repo untouched
 
