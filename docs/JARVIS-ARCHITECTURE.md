@@ -1587,6 +1587,91 @@ clean week of dream cycles + ingest.
 
 ---
 
+## 6.18 PGLite → 本地 Postgres 迁移 — Path 3 P0 unblock (2026-04-29 afternoon)
+
+> Plan: [`~/.claude/plans/recursive-churning-map.md`](~/.claude/plans/recursive-churning-map.md). Supersedes
+> Path 2 (long-lived in-process engine refactor) which was the prior plan
+> in [§3 of the v0.22.8 handoff](SESSION-HANDOFF-2026-04-29-post-v0.22.8-sync.md).
+
+### Why Path 3 (Postgres) was chosen over Path 2 (in-process refactor)
+
+The 2026-04-25 evaluation at
+[`docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md`](UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md)
+deferred the Postgres switch indefinitely until one of four trigger
+conditions fired. The v0.22.8 sync surfaced **trigger #3 in spirit** —
+"WAL fork patch fails silently". The actual symptom was not WAL data
+loss but its load-class twin: **`gbrain dream` cycle silent-wedged for
+12h 42min** holding the PGLite write lock (75 % CPU R-state, stderr
+0 bytes since startup) while `notion-poller` /ingest queries 134 s
+each + spawnAsync 180 s SIGKILL → zombie subprocess pile-up. PGLite's
+single-writer lock topology had stopped being adequate for the v0.21+
+sync workload on this brain.
+
+Path comparison (decided 2026-04-29 14:30 local):
+
+| Dimension | Path 2 (in-process refactor) | **Path 3 (Postgres) — chosen** |
+|---|---|---|
+| Time | ~3 h | ~2.5 h actual |
+| Code change | refactor /ingest+/status+/query (~150 LOC) | BrainDb dual-engine split (~80 LOC) |
+| Cron disabled | kos-patrol + enrich-sweep (P1 follow-up) | none |
+| Upstream features unlocked | none | `jobs supervisor`, `queue_health`, `wedge-rescue` |
+
+### What landed
+
+- **Postgres 17 + pgvector 0.8.2** as engine: brew bottle install, `gbrain` db with `vector` + `pg_trgm` extensions, Postgres superuser = `chenyuanquan` (local trust auth).
+- **`gbrain migrate --to supabase --url postgresql://chenyuanquan@127.0.0.1:5432/gbrain`** transferred all 2117 pages, 8231 links, 11084 timeline entries, and 3782/4023 chunks (94 % preserved with embeddings, 241 stale carried over from PGLite source). `~/.gbrain/config.json` rewritten by migrate to `{engine: "postgres", database_url: ...}`. Original `~/.gbrain/brain.pglite/` retained as cold backup.
+- **`skills/kos-jarvis/_lib/brain-db.ts` dual-engine refactor** (commit pending): detects engine from config, opens `postgres()` or `PGLite.create()`, runs all 9 query methods through a shared `_q(sql, params)` adapter. All 9 BrainDb callers (kos-patrol, kos-lint, dikw-compile, evidence-gate, confidence-score, orphan-reducer, slug-normalize, server/kos-compat-api) keep working unchanged. **Zero launchd plist edits** (db config lives in `~/.gbrain/config.json`).
+- **dream-cycle re-enabled.** First Postgres run completed 6 phases in **1030 ms** (vs PGLite silent wedge of 12 h 42 min). The dream-wrap auto-retry caught a 47 s cold-path SIGKILL on the very first cycle and recovered cleanly on retry.
+- **notion-poller re-enabled.** First cycle ingested **152 pages in 5.5 min**, 0 zombie subprocesses, exit code 0. /status latency 90 ms during the burst with concurrent in-flight `gbrain sync` subprocess (proves Postgres MVCC vs PGLite single-writer lock).
+
+### Production state at handoff
+
+| Layer | Pre-Path-3 (PGLite) | Post-Path-3 (Postgres) |
+|---|---|---|
+| Engine | PGLite 0.4.4 (WASM Postgres 17.5) | Postgres 17 (Homebrew) + pgvector 0.8.2 |
+| Pages | 2117 | **2303** (+186 ingested in first cycles) |
+| Links | 8229 | 8231 (rebuild parity, ON CONFLICT DO NOTHING) |
+| Embeddings | 100 % (per stats) | 94 % (241 stale, run `gbrain embed --stale`) |
+| dream cycle | silent wedge 12h+ | **1030 ms warm** |
+| /ingest single file | 134 s + 180 s SIGKILL | ~10 s warm |
+| /status during burst | 30+ s blocks | **90 ms** |
+| notion-poller | DISABLED (would deadlock) | **enabled, +152p/5.5min, 0 zombies** |
+| Concurrent /ingest + cron | impossible (single-writer lock) | works (Postgres MVCC) |
+
+### Reused upstream code (no fork patch added)
+
+- `src/commands/migrate-engine.ts` — official engine migration tool, Supabase-named flag handles any Postgres URL.
+- `src/core/postgres-engine.ts` — full engine implementation, all `BrainEngine` methods supported.
+- `src/core/engine-factory.ts` — auto-selects engine from config.
+
+### Trigger #3 of v020-pglite-postgres-evaluation marked satisfied
+
+The evaluation predicted "switch when WAL patch fails silently". We
+reached the same outcome via "single-writer lock topology fails
+silently under v0.21+ sync workload". Document banner updated in
+[`docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md`](UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md).
+
+### Rollback path (in case anything regresses)
+
+```bash
+launchctl bootout "gui/$(id -u)/com.jarvis.kos-compat-api"
+DATABASE_URL='postgresql://chenyuanquan@127.0.0.1:5432/gbrain' \
+  bun run src/cli.ts migrate --to pglite --path ~/.gbrain/brain.pglite --force
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist
+```
+
+The pre-Path-3 PGLite snapshot at `~/.gbrain/brain.pglite.pre-path2-1777504487`
+(502 MB) is the deeper rollback point if the live PGLite dataDir gets
+corrupted between now and the migration.
+
+### Follow-ups filed in TODO.md
+
+- **P1** — `gbrain embed --stale` to top up the 241 missing embeddings.
+- **P2** — observe single-file /ingest perf on Postgres for 1 week. Currently 105 s cold / 10 s warm; if Notion ingestion lag becomes user-visible, refactor /ingest to use upstream `dispatchToolCall(engine, 'put_page')` in-process (the original Path 2 plan, but on top of Postgres). The Postgres MVCC win means the urgency is gone but the perf opportunity remains.
+- **P2** — re-enable v0.20+ upstream features that PGLite skipped (`gbrain doctor --json | jq .checks.queue_health`).
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.

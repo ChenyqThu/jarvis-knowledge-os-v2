@@ -1,5 +1,11 @@
 # Session Handoff — Post v0.22.8 Sync + Event-Loop Fix
 
+> **⚠️ SUPERSEDED 2026-04-29 17:00 by [`SESSION-HANDOFF-2026-04-29-post-postgres-migration.md`](SESSION-HANDOFF-2026-04-29-post-postgres-migration.md).**
+> Path 3 (PGLite → Postgres migration) closed all P0 in this handoff.
+> See [`docs/JARVIS-ARCHITECTURE.md §6.18`](JARVIS-ARCHITECTURE.md#618-pglite--本地-postgres-迁移--path-3-p0-unblock-2026-04-29-afternoon)
+> for the migration story. This handoff body retained for the
+> diagnosis trail it left.
+
 > **Date**: 2026-04-29 (extended into early morning ~04:30 local)
 > **From**: Lucien × Claude (v0.22.8 sync + notion-poller deadlock root-cause + 方案 A fix)
 > **To**: next Claude Code session picking up Jarvis KOS v2

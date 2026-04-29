@@ -1,6 +1,21 @@
 # PGLite → Postgres switch evaluation (v0.20.4 sync)
 
 > 2026-04-25 | Jarvis KOS v2 fork | analysis decision: **defer indefinitely**
+>
+> **STATUS UPDATE 2026-04-29 17:00 local — TRIGGER #3 SATISFIED, MIGRATED**.
+> The "defer until trigger fires" expectation was correct: trigger #3
+> ("WAL fork patch fails silently") materialized in spirit on 2026-04-29
+> as **PGLite single-writer lock topology silent-fail under v0.21+ sync
+> workload** — same load-class twin without WAL data loss. `gbrain dream`
+> wedged 12 h 42 min holding the write lock; 6 zombie `gbrain sync`
+> subprocesses pre-existed. Migrated to local Postgres 17 + pgvector via
+> Path 3, ~2.5 h actual end-to-end.
+>
+> **See [`docs/JARVIS-ARCHITECTURE.md §6.18`](../JARVIS-ARCHITECTURE.md#618-pglite--本地-postgres-迁移--path-3-p0-unblock-2026-04-29-afternoon)
+> for the migration runbook + outcomes.**
+>
+> The body below is preserved as the original evaluation that
+> correctly predicted the trigger condition; treat it as historical context.
 
 ## Why this document exists
 

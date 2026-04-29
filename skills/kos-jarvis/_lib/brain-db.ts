@@ -1,22 +1,55 @@
 /**
- * Direct PGLite reader for KOS quality-gate skills.
+ * Direct brain-DB reader for KOS quality-gate skills.
+ *
+ * Dual-engine: detects engine from `~/.gbrain/config.json`:
+ *   - `engine: "pglite"` (legacy) → embedded WASM Postgres via @electric-sql/pglite
+ *   - `engine: "postgres"` (default after Path 3 migration 2026-04-29) →
+ *     postgres.js client against local Postgres 17 + pgvector.
  *
  * Why direct: `gbrain list` caps at 100 rows (MCP list_pages operation).
- * With 1700+ pages we need full-table access. `engine.listPages({ limit:
+ * With 2k+ pages we need full-table access. `engine.listPages({ limit:
  * 100000 })` in upstream does exactly that; we call it the same way.
  *
- * Single-writer lock: PGLite is one-writer, many-reader-via-same-handle.
- * Open briefly, read, close. Don't hold across LLM calls. When
- * `kos-compat-api` is running its own gbrain subprocess, we'll hit
- * "Timed out waiting for PGLite lock" — caller should retry or run
- * during quiet window.
+ * Why we no longer fear lock contention (post-Path-3): Postgres allows
+ * multiple concurrent clients (kos-compat-api server holds one pool, while
+ * kos-patrol/dream-cycle/etc. open short-lived connections in parallel).
+ * The PGLite single-writer file lock that motivated "open briefly, read,
+ * close" is gone. We still call `close()` for cleanup hygiene.
+ *
+ * Surface API is unchanged from the PGLite-only version — all 9 callers
+ * (kos-patrol, kos-lint, dikw-compile, evidence-gate, confidence-score,
+ * orphan-reducer, slug-normalize, server/kos-compat-api) keep working.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite/vector";
 import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
+import postgres from "postgres";
 import { homedir } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
 
-const DEFAULT_DB = `${homedir()}/.gbrain/brain.pglite`;
+const DEFAULT_PGLITE_PATH = `${homedir()}/.gbrain/brain.pglite`;
+const CONFIG_PATH = `${homedir()}/.gbrain/config.json`;
+
+type EngineKind = "pglite" | "postgres";
+
+interface GbrainConfig {
+  engine: EngineKind;
+  database_path?: string;  // pglite
+  database_url?: string;   // postgres
+}
+
+function readConfig(): GbrainConfig {
+  if (!existsSync(CONFIG_PATH)) {
+    return { engine: "pglite", database_path: DEFAULT_PGLITE_PATH };
+  }
+  try {
+    const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as GbrainConfig;
+    if (!cfg.engine) cfg.engine = "pglite";
+    return cfg;
+  } catch {
+    return { engine: "pglite", database_path: DEFAULT_PGLITE_PATH };
+  }
+}
 
 export type PageRow = {
   id: number;
@@ -34,21 +67,50 @@ export type PageRow = {
 export type BackrefCount = { to_slug: string; inbound: number };
 
 export class BrainDb {
-  private db: PGlite | null = null;
-  constructor(private path: string = DEFAULT_DB) {}
+  private engineKind: EngineKind = "pglite";
+  private pglite: PGlite | null = null;
+  private pgClient: ReturnType<typeof postgres> | null = null;
+
+  /** `path` is only consulted for PGLite mode and only as fallback when the
+   * config file omits database_path. Post-Path-3 migration the value is
+   * irrelevant on production (engine=postgres); kept for back-compat with
+   * any caller that constructs `new BrainDb(custom_pglite_path)` for tests
+   * or scratch brains. */
+  constructor(private path: string = DEFAULT_PGLITE_PATH) {}
 
   async open(): Promise<void> {
-    if (this.db) return;
-    // Match src/core/pglite-engine.ts:48 — without the `vector` extension the
-    // `<=>` operator fails at load time with code 58P01 on fresh handles.
-    this.db = await PGlite.create({
-      dataDir: `file://${this.path}`,
-      extensions: { vector, pg_trgm },
-    });
+    if (this.pglite || this.pgClient) return;
+
+    const cfg = readConfig();
+    if (cfg.engine === "postgres") {
+      if (!cfg.database_url) {
+        throw new Error(
+          `BrainDb: config.engine="postgres" but database_url missing in ${CONFIG_PATH}`
+        );
+      }
+      this.engineKind = "postgres";
+      this.pgClient = postgres(cfg.database_url, {
+        onnotice: () => {},  // suppress NOTICE log noise
+        idle_timeout: 20,
+        connect_timeout: 10,
+        // Bypass prepared statements — we issue ad-hoc queries via unsafe()
+        // and don't want session-level prep cache bloat.
+        prepare: false,
+      });
+    } else {
+      this.engineKind = "pglite";
+      // Match src/core/pglite-engine.ts:48 — without the `vector` extension the
+      // `<=>` operator fails at load time with code 58P01 on fresh handles.
+      const dataDir = cfg.database_path ?? this.path;
+      this.pglite = await PGlite.create({
+        dataDir: `file://${dataDir}`,
+        extensions: { vector, pg_trgm },
+      });
+    }
   }
 
   async close(): Promise<void> {
-    if (this.db) {
+    if (this.pglite) {
       // Mirror the fork-local WAL-durability patch in
       // src/core/pglite-engine.ts:disconnect(). pglite 0.4.4 on macOS
       // 26.3 loses writes on close() unless a WAL switch forces the
@@ -56,24 +118,59 @@ export class BrainDb {
       // v018-pglite-wal-durability-fix.md. Harmless on read-only
       // handles (pg_switch_wal is a no-op when no new WAL records).
       try {
-        await this.db.query("SELECT pg_switch_wal()");
+        await this.pglite.query("SELECT pg_switch_wal()");
       } catch {
         // best-effort: close still proceeds even if the switch fails
       }
-      await this.db.close();
-      this.db = null;
+      await this.pglite.close();
+      this.pglite = null;
+    }
+    if (this.pgClient) {
+      // 5s grace for in-flight queries; postgres.js then forces socket close.
+      await this.pgClient.end({ timeout: 5 });
+      this.pgClient = null;
     }
   }
 
-  private get pg(): PGlite {
-    if (!this.db) throw new Error("BrainDb.open() not called");
-    return this.db;
+  /** Query adapter that hides the engine difference from individual methods.
+   * - PGLite: `pg.query(sql, params)` returns `{ rows }`.
+   * - postgres.js: `pg.unsafe(sql, params)` returns the rows array directly.
+   * Both engines accept `$1, $2, ...` placeholders so the SQL strings are
+   * shared verbatim across engines. */
+  private async _q<T = Record<string, unknown>>(
+    sql: string,
+    params: unknown[] = []
+  ): Promise<T[]> {
+    if (this.engineKind === "postgres" && this.pgClient) {
+      // unsafe is the parameterized escape hatch for ad-hoc SQL in postgres.js.
+      const rows = await this.pgClient.unsafe(sql, params as never[]);
+      return rows as unknown as T[];
+    }
+    if (this.pglite) {
+      const { rows } = await this.pglite.query<T>(sql, params);
+      return rows;
+    }
+    throw new Error("BrainDb.open() not called");
+  }
+
+  /** Normalize a frontmatter cell. PGLite returns jsonb as a string;
+   * postgres.js v3 returns it parsed already. The check covers both. */
+  private normalizeFrontmatter(raw: unknown): Record<string, unknown> {
+    if (raw == null) return {};
+    if (typeof raw === "string") {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return {};
+      }
+    }
+    return raw as Record<string, unknown>;
   }
 
   async listAllPages(filter?: { type?: string }): Promise<PageRow[]> {
     const where = filter?.type ? `WHERE type = $1` : "";
     const params = filter?.type ? [filter.type] : [];
-    const { rows } = await this.pg.query<PageRow>(
+    const rows = await this._q<PageRow>(
       `SELECT id, slug, type, title, compiled_truth, timeline, frontmatter,
               content_hash, created_at, updated_at
        FROM pages ${where}
@@ -82,15 +179,12 @@ export class BrainDb {
     );
     return rows.map((r) => ({
       ...r,
-      frontmatter:
-        typeof r.frontmatter === "string"
-          ? JSON.parse(r.frontmatter)
-          : r.frontmatter ?? {},
+      frontmatter: this.normalizeFrontmatter(r.frontmatter),
     }));
   }
 
   async getPage(slug: string): Promise<PageRow | null> {
-    const { rows } = await this.pg.query<PageRow>(
+    const rows = await this._q<PageRow>(
       `SELECT id, slug, type, title, compiled_truth, timeline, frontmatter,
               content_hash, created_at, updated_at
        FROM pages WHERE slug = $1`,
@@ -100,16 +194,13 @@ export class BrainDb {
     const r = rows[0];
     return {
       ...r,
-      frontmatter:
-        typeof r.frontmatter === "string"
-          ? JSON.parse(r.frontmatter)
-          : r.frontmatter ?? {},
+      frontmatter: this.normalizeFrontmatter(r.frontmatter),
     };
   }
 
   /** Count inbound links grouped by target slug, for all pages in one scan. */
   async inboundCounts(): Promise<Map<string, number>> {
-    const { rows } = await this.pg.query<{ slug: string; inbound: number }>(
+    const rows = await this._q<{ slug: string; inbound: number | string }>(
       `SELECT p.slug, COUNT(l.id)::int AS inbound
        FROM pages p
        LEFT JOIN links l ON l.to_page_id = p.id
@@ -125,8 +216,6 @@ export class BrainDb {
    * (engine.addLink). Default link_source='manual' — our callers are
    * programmatic writers, not markdown extraction.
    *
-   * Called in-process to avoid the PGLite lock contention you hit when
-   * `spawnSync('gbrain link')` is invoked while BrainDb is already open.
    * Returns true if a new row was inserted, false if it was a no-op
    * (ON CONFLICT DO UPDATE touches the same row).
    */
@@ -140,7 +229,7 @@ export class BrainDb {
     } = {}
   ): Promise<boolean> {
     const src = opts.linkSource ?? "manual";
-    const result = await this.pg.query<{ id: number; xmax: number }>(
+    const result = await this._q<{ id: number; xmax: number | string }>(
       `INSERT INTO links (from_page_id, to_page_id, link_type, context, link_source)
        SELECT f.id, t.id, $3, $4, $5
        FROM pages f, pages t
@@ -150,9 +239,9 @@ export class BrainDb {
        RETURNING id, xmax::text::int AS xmax`,
       [from, to, opts.linkType ?? "", opts.context ?? "", src]
     );
-    if (result.rows.length === 0) return false;
+    if (result.length === 0) return false;
     // xmax is 0 on pure INSERT, non-zero when the ON CONFLICT branch fired.
-    return result.rows[0].xmax === 0;
+    return Number(result[0].xmax) === 0;
   }
 
   /** Count rows in the links table (fast, used by tests/validation). */
@@ -168,7 +257,7 @@ export class BrainDb {
       clauses.push(`link_source = $${params.length}`);
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const { rows } = await this.pg.query<{ n: number }>(
+    const rows = await this._q<{ n: number | string }>(
       `SELECT COUNT(*)::int AS n FROM links ${where}`,
       params
     );
@@ -180,8 +269,7 @@ export class BrainDb {
     sql: string,
     params: unknown[] = []
   ): Promise<T[]> {
-    const { rows } = await this.pg.query<T>(sql, params);
-    return rows as T[];
+    return this._q<T>(sql, params);
   }
 
   /**
@@ -190,7 +278,7 @@ export class BrainDb {
    * applies pseudo/domain filters (see src/commands/orphans.ts:shouldExclude).
    */
   async listOrphans(): Promise<Array<{ slug: string; title: string; domain: string | null }>> {
-    const { rows } = await this.pg.query<{ slug: string; title: string; domain: string | null }>(
+    return await this._q<{ slug: string; title: string; domain: string | null }>(
       `SELECT p.slug,
               COALESCE(p.title, p.slug) AS title,
               p.frontmatter->>'domain' AS domain
@@ -198,7 +286,6 @@ export class BrainDb {
        WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
        ORDER BY p.slug`
     );
-    return rows;
   }
 
   /**
@@ -214,11 +301,11 @@ export class BrainDb {
   ): Promise<
     Array<{ slug: string; title: string; compiled_truth: string; distance: number }>
   > {
-    const { rows } = await this.pg.query<{
+    const rows = await this._q<{
       slug: string;
       title: string;
       compiled_truth: string;
-      distance: number;
+      distance: number | string;
     }>(
       `WITH target AS (
          SELECT c.embedding, p.id AS page_id
@@ -241,12 +328,12 @@ export class BrainDb {
        LIMIT $2`,
       [slug, limit]
     );
-    return rows;
+    return rows.map((r) => ({ ...r, distance: Number(r.distance) }));
   }
 
   /** Chunk count per page — used by citation-density heuristic. */
   async chunkCounts(): Promise<Map<string, number>> {
-    const { rows } = await this.pg.query<{ slug: string; n: number }>(
+    const rows = await this._q<{ slug: string; n: number | string }>(
       `SELECT p.slug, COUNT(c.id)::int AS n
        FROM pages p
        LEFT JOIN content_chunks c ON c.page_id = p.id

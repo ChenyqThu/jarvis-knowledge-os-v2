@@ -3,9 +3,18 @@
 **报告日期**: 2026-04-28  
 **严重程度**: High — 导致 kos.chenge.ink 外部完全不可用  
 **发现者**: Jarvis (OpenClaw)  
-**状态**: 🟡 **方案 A (短期) 已实施 2026-04-29** — 事件循环不再被
-spawnSync 冻结。**方案 B (彻底)** 仍是 P1 follow-up
-([TODO.md](../../skills/kos-jarvis/TODO.md))。
+**状态**: ✅ **CLOSED 2026-04-29 17:00 by Path 3 (PGLite → Postgres migration)**
+
+**Resolution**: 方案 A (spawnSync → spawnAsync) landed earlier on 2026-04-29
+to unfreeze the Bun event loop. Then dream-cycle was found to be silent-wedging
+12+ hours holding the PGLite write lock — proof that the lock topology was
+the root cause, not just slow ingest. Migrated to local Postgres 17 + pgvector
+(~2.5h actual). Postgres MVCC eliminates lock contention as a problem class.
+First cycle post-migration: **+186 pages ingested in 5.5 min, 0 zombies,
+/status 90 ms during burst**. See
+[`docs/JARVIS-ARCHITECTURE.md §6.18`](../JARVIS-ARCHITECTURE.md#618-pglite--本地-postgres-迁移--path-3-p0-unblock-2026-04-29-afternoon).
+方案 B (in-process BrainDb refactor) is **no longer needed** — Postgres
+removes the lock-contention problem domain entirely.
 
 ---
 
