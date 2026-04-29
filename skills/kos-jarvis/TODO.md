@@ -13,7 +13,80 @@ ranked by blocking severity. Each has an acceptance criterion.
 
 ---
 
+## P0 — production blocker
+
+### [ ] notion-poller is DISABLED, awaiting either full re-walk or 方案 B
+
+**State as of 2026-04-29 04:00 local**: notion-poller launchd job is
+**bootouted + disabled**. Re-enabling it now would re-introduce the
+zombie sync subprocess pile-up because individual /ingest still takes
+2+ minutes (gbrain sync takes minutes for first-walk, our 180s timeout
+SIGKILLs subprocess but lock release isn't always immediate).
+
+**Two unblock paths**:
+
+**Path 1 — maintenance-window full re-walk** (~30 min, 1-shot):
+1. Bootout kos-compat-api (eliminate BrainDb contention)
+2. Run `gbrain sync --repo ~/brain --no-pull` to completion (no timeout)
+3. Verify `sources.chunker_version='4', last_commit=<HEAD>` settled
+4. Bootstrap kos-compat-api back
+5. Re-enable notion-poller
+6. Watch one cycle: gbrain sync should now be a no-op (single-file diff)
+
+Tried 2026-04-29 03:30 local — gbrain sync ran for 18 min pegged
+100% CPU but produced ZERO progress lines after `[sync.imports] start`.
+Killed at 18 min. Maybe needs a much longer window, or there's a
+separate progress-flush bug. Manually pinned `chunker_version='4',
+last_commit=<HEAD>` to bypass the gate, but subsequent sync is still
+slow (134s for one new file → spawnAsync 180s timeout fires SIGKILL).
+Implies sync's import or extract phase has its own slowness even
+without the chunker gate firing — needs investigation.
+
+**Path 2 — 方案 B (in-process BrainDb writes)** (proper fix, ~150 LOC):
+- Refactor `server/kos-compat-api.ts` `/ingest` handler to call BrainDb's
+  putPage / extractLinks / extractTimeline TypeScript APIs directly
+- No subprocess, no PGLite cross-process lock, no spawnAsync timeout
+  cliff, no zombie risk
+- BrainDb at `skills/kos-jarvis/_lib/brain-db.ts` currently only has
+  reader methods (listAllPages, findSimilar, ...); needs `putPage` +
+  `extractLinks` + `extractTimeline` ports from gbrain's import-file.ts
+
+Recommended sequencing:
+1. Try Path 1 in a calm window first (lower-risk, proves whether sync
+   is fundamentally usable post-v0.21.0 on our brain)
+2. If Path 1 produces a working steady-state, defer Path 2 and
+   re-enable notion-poller
+3. If Path 1 still wedges, prioritize Path 2 — the fundamental
+   subprocess-lock model is broken for this workload
+
+**Current production state**: kos.chenge.ink ✅ 2117 pages responsive,
+external queries (Notion Knowledge Agent, OpenClaw feishu) work, but
+no new Notion → KOS ingestion is happening until either path lands.
+
+**Acceptance**:
+- notion-poller runs 5 cycles back-to-back without piling up zombie
+  sync subprocesses (`pgrep -lf 'gbrain sync'` returns 0 between
+  cycles)
+- /status latency stays <500ms even during a notion-poller burst
+
+---
+
 ## P1 — quality, fast follow-up
+
+### [x] kos-compat-api event loop blocked by spawnSync — fixed 2026-04-29
+
+`server/kos-compat-api.ts` had 4 `spawnSync` calls (in /ingest, /query,
+gitCommitIngest) that froze the Bun HTTP event loop for the entire
+duration of every gbrain subprocess (up to 180s for sync). Replaced
+with Promise-wrapped `spawn` (commit `<pending>`). Concurrency proof:
+during in-flight /ingest's gbrain sync, 5 concurrent /status probes
+returned HTTP 200 in 138-193ms (vs pre-fix's 30+s blocks). External
+kos.chenge.ink stays responsive even when /ingest itself is slow.
+
+This is the 短期 / 方案 A from
+[`docs/bug-reports/notion-poller-pglite-lock-deadlock.md`](../../docs/bug-reports/notion-poller-pglite-lock-deadlock.md).
+The 彻底 / 方案 B (in-process BrainDb) is in P0 above as the path-2
+unblock for re-enabling notion-poller.
 
 ### [ ] Zombie `gbrain sync` subprocess leak — root cause + plug
 
@@ -23,7 +96,9 @@ min CPU each, parented to PID 1, ignored SIGTERM, only released lock
 on SIGKILL). They're the **mechanical explanation** for the recurring
 kos-compat-api `/ingest` 500 timeout pattern that motivated commit
 `971b9ba` (CF 524 defense). The 6 we killed are gone; the source that
-spawned them is still active.
+spawned them is still active. **Now partially mitigated by spawnAsync's
+SIGKILL on timeout** (logs `spawn.timeout_kill` JSONL when fired), but
+zombies can still appear if SIGKILL doesn't propagate (D-state child).
 
 **What** (investigative steps):
 1. Monitor `pgrep -lf 'gbrain sync.*--no-pull'` over 24 h. If new
