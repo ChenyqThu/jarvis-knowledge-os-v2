@@ -1424,6 +1424,169 @@ The next session should:
 
 ---
 
+## 6.17 Upstream v0.22.8 sync (2026-04-29, commit `811c266`)
+
+Nine upstream releases land in one merge: v0.21.0 → v0.22.0 → v0.22.1 →
+v0.22.2 → v0.22.4 → v0.22.5 → v0.22.6 → v0.22.6.1 → v0.22.7 → v0.22.8
+(11 commits, 189 files, +20725 / -573). The headline win is
+**v0.22.6.1's `applyForwardReferenceBootstrap()` closing the 10-issue
+PGLite wedge cycle** that we'd been carrying a fork patch for since
+v0.18 — see §6.12. The fork patch on `pglite-schema.ts` (idx_pages_source_id
+comment block) was dropped during merge; upstream's bootstrap probe
+in `initSchema()` supersedes it.
+
+### What we adopted
+
+- **#370 closure (#440 / v0.22.6.1)** — bootstrap probe handles the
+  pre-v0.18 forward-reference. Our 11-line comment block + missing
+  `CREATE INDEX` line are gone; upstream's verbatim restored.
+- **v0.21.0 Code Cathedral II** — schema migrations v25..v28 (parent_symbol_path
+  TEXT[], doc_comment, search_vector TSVECTOR + plpgsql trigger,
+  code_edges_chunk + code_edges_symbol tables). CHUNKER_VERSION 3→4
+  forces full re-walk on next sync via `sources.chunker_version` gate.
+  Our brain is markdown-heavy (notion sources) so re-chunking cost
+  is mostly cache-hit; cost preview not run pre-cutover (see follow-up).
+- **v0.22.0 source-aware search ranking** — default boost map doesn't
+  recognize our layout (`sources/notion/`, `concepts/`, `projects/`),
+  so default behavior is no-op (factor=1.0 for unknown prefixes).
+  `GBRAIN_SOURCE_BOOST` tune-up parked for 1-week observation.
+- **v0.22.2 cold-start retry** — `connectWithRetry()` default-on; helps
+  every CLI call against PGLite under contention. RSS watchdog +
+  autopilot backpressure are Postgres-only, skipped.
+- **v0.22.4 frontmatter-guard** — new skill registered in manifest
+  (`frontmatter-guard`); doctor gains `frontmatter_integrity` subcheck.
+  First audit on production: `{ok: true, total: 0, errors_by_code: {},
+  per_source: []}` — clean. Per-source array empty because our
+  `default` source's `local_path` isn't set up the way the v0.22.4
+  audit walker expects; not blocking, audit returned green anyway.
+- **v0.22.5 cycle.ts per-source anchor** — `gbrain dream` now reads
+  `sources.last_commit` instead of the global `config.sync.last_commit`.
+  Reduces the "GC'd commit → full reimport" failure mode. We have a
+  `default` source registered (Step 2.2), so this is a free win.
+
+### What we skipped (intentional)
+
+- **v0.22.6 post-migration schema self-healing** — Postgres + PgBouncer
+  specific. PGLite no-op.
+- **v0.22.7 built-in HTTP MCP transport** — we use stdio MCP only.
+- **v0.22.8 doctor integrity batch-load** — Postgres-only path; PGLite
+  takes the unchanged sequential path.
+- **v0.22.1 autopilot fix wave** — we don't run autopilot. NOTE:
+  v0.11.0's autopilot-install side effect did NOT re-trigger today
+  because the v0.11.0 ledger entry was already `complete` from
+  2026-04-22; only v0.21.0 + v0.22.4 ran today, and neither installs
+  launchd services. (For future syncs that include v0.11.0 first-run,
+  set `gbrain config set minion_mode off` BEFORE `apply-migrations`.)
+
+### Fork-local patches state (re-verified post-merge)
+
+| Patch | Status | Reason |
+|---|---|---|
+| `src/core/pglite-schema.ts` idx_pages_source_id comment | **DROPPED** | Closed by v0.22.6.1 bootstrap |
+| `src/core/pglite-engine.ts` `pg_switch_wal()` before close | **RETAINED** | macOS 26.3 WASM persistence — upstream doesn't address this; `applyForwardReferenceBootstrap` runs in `initSchema()`, our patch in `close()`/`disconnect()` — they don't conflict |
+| `src/cli.ts` mode 0755 | **RETAINED** | Bun shim at `~/.bun/bin/gbrain → src/cli.ts` |
+
+### Sync sequence (notable surprises)
+
+This sync taught two lessons the runbook didn't anticipate:
+
+1. **`bun install` postinstall ran apply-migrations against PRODUCTION
+   during Phase B.** Upstream's `package.json` has a `postinstall` hook
+   `command -v gbrain && gbrain apply-migrations --yes --non-interactive`.
+   With our `~/.bun/bin/gbrain` symlink pointing at the repo's
+   `src/cli.ts` (which was now v0.22.8 mid-merge), `bun install` to
+   regenerate `bun.lock` triggered apply-migrations on the live brain.
+   Two ledger entries written at 07:13:32: v0.21.0 status=complete (schema
+   v25..v28 walked), v0.22.4 status=complete (audit skipped, no_sources_registered).
+   **Production schema_version went 24 → 29 inside Phase B**, before
+   we'd taken the planned Phase C snapshot. Did not cause data loss
+   because v0.22.6.1's bootstrap is robust and the migration was
+   what we'd have run in Phase C anyway, just earlier.
+2. **6 zombie gbrain subprocess sync workers had been holding the
+   PGLite lock for hours**, accumulating 200+ minutes of CPU each.
+   They were spawned by old crons (likely from `kos-deep-lint` / older
+   notion-poller wrappers) and never reaped. After bootouting all
+   jarvis services, `gbrain stats` still timed out on lock; lsof
+   surfaced PIDs 23625/36238/57969/58201/62243/70599 — none of them
+   in launchd's process tree, all parented to PID 1. SIGTERM ignored;
+   SIGKILL released the lock. **This explains the recurring kos-compat-api
+   /ingest 500 timeout pattern** observed earlier (commit `971b9ba`).
+   Filed as new TODO P1.
+
+### Validation (all green)
+
+| Check | Result |
+|---|---|
+| schema_version | 24 → **29** (latest) ✓ |
+| Pages | 2117 / 2117 (zero drift) ✓ |
+| Chunks | 4023 / 4023, 100% embedded ✓ |
+| Links | 8225 → 8229 (+4 from notion-poller during phase) ✓ |
+| Timeline | 11084 / 11084 ✓ |
+| brain_score | 85/100 unchanged (embed 35/35, links 25/25, timeline 3/15, orphans 12/15, dead-links 10/10) |
+| doctor health | 85/100 (3 PGLite-quirk WARN: pgvector / graph_coverage / jsonb_integrity, no FAIL) |
+| `frontmatter audit` | `{ok: true, total: 0}` ✓ |
+| `/status` smoke | 200 in 298ms, total_pages=2117 ✓ |
+| `/query` Chinese smoke | 200 in 11.7s, retrieved relevant person/concept pages ✓ |
+| typecheck | clean ✓ |
+
+### Conflict resolution (3 manual)
+
+- `package.json`: kept upstream's new `@dqbd/tiktoken: ^1.0.22` dep,
+  overrode upstream pin `pglite: 0.4.3 → 0.4.4` (macOS 26.3 still aborts
+  on 0.4.3 per `#223` class).
+- `bun.lock`: regenerated via `bun install` against the resolved package.json.
+- `src/core/pglite-schema.ts`: replaced our 11-line `FORK-LOCAL PATCH`
+  comment block with upstream's verbatim
+  `CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);` line.
+
+7 files auto-merged (CLAUDE.md, README.md, src/cli.ts, skills/RESOLVER.md,
+skills/manifest.json, src/core/pglite-engine.ts — including additive
+of upstream's `applyForwardReferenceBootstrap()` at line 137 with our
+`pg_switch_wal()` at line 89 surviving — and others).
+
+### Rollback matrix
+
+```bash
+git reset --hard pre-sync-v0.22.8-1777445821
+cp -R ~/.gbrain/brain.pglite.pre-sync-v0.22.8-1777447016 ~/.gbrain/brain.pglite
+launchctl bootout gui/$UID/com.jarvis.kos-compat-api
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist
+```
+
+The PGLite snapshot is 550 MB. Keep for ≥7 days; prune
+`~/.gbrain/brain.pglite.pre-sync-v0.20-*` and `pre-step3.0-*` after a
+clean week of dream cycles + ingest.
+
+### Follow-ups for next session (filed in new TODO.md)
+
+1. **Zombie sync subprocess leak** (P1 NEW) — root-cause why 6 `gbrain sync`
+   workers ran for 4-12 hours each holding the PGLite lock. Probably
+   `~/.openclaw` cron or stale `kos-deep-lint` wrapper. Add a sanity
+   `pgrep -lf 'gbrain sync.*--no-pull'` check + alert in kos-patrol.
+2. **graph_coverage 0% post-v0.21.0** (P2) — doctor's new metric reports
+   0% entity-link / timeline coverage despite 8229 links + 11084 timeline
+   entries. Likely a rename of what's counted as "graph coverage" — the
+   link extractor may need a fresh run with the v0.21.0 chunker version
+   to write into the new `code_edges_*` tables. Suggested: `gbrain
+   link-extract && gbrain timeline-extract` per doctor's hint.
+3. **CHUNKER_VERSION 3→4 dry-run never executed** (P2) — `gbrain
+   reindex-code --dry-run` was deferred during cutover. The
+   `sources.chunker_version` gate will trigger a full re-walk on
+   next `gbrain sync` regardless. Run a manual dry-run when convenient
+   to know cost in advance.
+4. **`default` source `local_path` not set** (P2) — v0.22.4 frontmatter
+   audit returns `per_source: []` because the source-resolver doesn't
+   see `local_path` for our `default` source. Set it via
+   `gbrain sources update default --local-path ~/brain` (CLI shape may
+   differ; confirm with `--help`). Cosmetic until v0.22.4 starts
+   gating something on the audit.
+5. **`GBRAIN_SOURCE_BOOST` tune-up** (P2) — observe Chinese-query
+   quality for 1 week; if `sources/notion/` is swamping retrieval,
+   set `GBRAIN_SOURCE_BOOST="concepts/:1.5,projects/:1.3,sources/notion/:0.7"`
+   in `com.jarvis.kos-compat-api.plist` env.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
@@ -1431,7 +1594,7 @@ The next session should:
 - **P1 (new, v0.17 sync follow-up)**: refactor `kos-compat-api` to import in-process instead of `spawnSync("gbrain import")`. Removes the lock-contention root cause for all future callers, not just notion-poller. ~150 LOC touch in `server/kos-compat-api.ts`. Path B is the Band-Aid; Path C is the cure.
 - **P1**: `kos-compat-api /ingest` returns HTTP 500 for some Notion pages (seen on `password-hashing-on-omada`); investigate `gbrain import` failure mode.
 - **P1 (anchor, Step 2.3 done, Step 2.4 parked +14d)**: filesystem-canonical migration. Steps 1 → 2.3 done + v0.18 upstream synced (see §6.8 → §6.13 + [`docs/FILESYSTEM-CANONICAL-EXPORT-AUDIT.md`](FILESYSTEM-CANONICAL-EXPORT-AUDIT.md)). All pre-migration blockers cleared + Step 2.2 landed (`b7212db`) + v0.18.2 merged (`aceb838`) + Step 2.3 dream cron wired (`com.jarvis.dream-cycle` daily 03:11 local, archives to `~/brain/.agent/dream-cycles/`, see §6.13). `/ingest` writes canonical to `~/brain/<kind>/<slug>.md` + git commit + `gbrain sync`, `/status` direct-DB (1930 not 100), `.agent/` hidden from sync, `~/brain/` is a git repo with nightly maintenance pass, schema at v24 with sources.default seeded. Only Step 2.4 (commit-batching + optional explicit `jarvis` source add / remote push) remains, parked +14d.
-- **P1 (open, awaiting upstream)**: [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370) — PGLite v16→v24 upgrade blocker (single-line bug in `pglite-schema.ts`). Fork carries a 1-line local patch (`docs/UPSTREAM-PATCHES/v018-pglite-upgrade-fix.md`); remove when upstream merges the fix. See §6.12.
+- **P1 resolved 2026-04-29 (v0.22.8 sync)**: [garrytan/gbrain#370](https://github.com/garrytan/gbrain/issues/370) — closed by upstream PR #440 / v0.22.6.1. Fork patch on `pglite-schema.ts` dropped during merge (commit `811c266`); upstream's `applyForwardReferenceBootstrap()` in `pglite-engine.ts:initSchema()` supersedes it. See §6.17.
 - **P1 (new, Step 2.2 follow-up)**: kos-patrol launchd cron `LastExitStatus=1` since 2026-04-19 due to macOS 26.3 WASM bug (`#223` class) hitting the minion-wrapped subprocess. Direct bun-run works. Plus kos-patrol uses `gbrain list --limit 10000` (100-row-capped) — migrating to `BrainDb` direct-read is the natural fix.
 - ~~**P1**: `dikw-compile`, `evidence-gate`, `confidence-score` lack runnable helpers~~ — **resolved 2026-04-22**: all three landed with `run.ts`, backed by the shared `skills/kos-jarvis/_lib/brain-db.ts` direct-PGLite reader that bypasses the MCP 100-row cap. See TODO.md P1 done markers.
 - **P2 (new, v0.20 sync follow-up)**: PGLite → Postgres switch — analyzed and **deferred**. v0.20.2/v0.20.3's flagship features (jobs supervisor, queue_health, wedge-rescue, backpressure-audit) all skip on PGLite. None of them address pain we currently have. Four trigger conditions documented at [`docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md`](UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md): brain >5000 pages, multi-machine access, WAL fork-patch failure, durable subagent runtime needed. Migration cost ~1 h via `gbrain migrate --to supabase`.

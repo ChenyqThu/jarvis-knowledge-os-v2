@@ -65,6 +65,19 @@ aligned). Check the upstream diff before resolving merge conflicts.
 - 2026-04-25 (v0.20.4 sync, commit `8665afb`): upstream `pglite-schema.ts:63`
   still emits the bare `CREATE INDEX IF NOT EXISTS idx_pages_source_id ...`
   outside the `CREATE TABLE` block. Patch retained.
+- **2026-04-29 (v0.22.8 sync, commit `811c266`): CLOSED by upstream
+  v0.22.6.1 (PR #440)**. Upstream's `applyForwardReferenceBootstrap()` in
+  `pglite-engine.ts:initSchema()` probes for missing forward-referenced
+  state (`pages.source_id`, `links.link_source`, `links.origin_page_id`,
+  `content_chunks.symbol_name`, `content_chunks.language`, plus the
+  `sources` FK target table) and adds only what's missing before SCHEMA_SQL
+  runs. Closes the entire 10-issue wedge cycle (#239/#243/#266/#357/#366/
+  #374/#375/#378/#395/#396). Our fork patch dropped during merge — the
+  original `CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);`
+  line is restored. Smoke-tested against a copy of production brain
+  (v24, 2117 pages) → walked v24→v29 cleanly via the new bootstrap.
+  Production cutover landed 2026-04-29 03:45 local; schema_version=29,
+  2117 pages preserved, 0 data loss.
 
 ## Validation
 
