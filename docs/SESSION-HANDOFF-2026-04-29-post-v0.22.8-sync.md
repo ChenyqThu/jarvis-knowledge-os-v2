@@ -1,60 +1,110 @@
-# Session Handoff — Post v0.22.8 Sync
+# Session Handoff — Post v0.22.8 Sync + Event-Loop Fix
 
-> **Date**: 2026-04-29 (early morning, ~03:45 local)
-> **From**: Lucien × Claude (post-v0.22.4 sync execution)
+> **Date**: 2026-04-29 (extended into early morning ~04:30 local)
+> **From**: Lucien × Claude (v0.22.8 sync + notion-poller deadlock root-cause + 方案 A fix)
 > **To**: next Claude Code session picking up Jarvis KOS v2
 > **Supersedes**: [`SESSION-HANDOFF-2026-04-27-evening-sweep-complete.md`](SESSION-HANDOFF-2026-04-27-evening-sweep-complete.md)
 
 ---
 
-## 0. 速读
+## 0. 速读 (read this first)
 
-上一 session 把上游 9 个 minor (v0.20.4 → v0.22.8) 全部 sync 到 fork
-master,production schema 从 v24 → v29,brain 在 v0.22.8 baseline 下健康
-运行。**fork 三个 patch 中有一个被关闭** (`pglite-schema.ts` #370 / v0.22.6.1),
-`pglite-engine.ts` 的 WAL patch + `cli.ts` 的 +x 保留。
+**Two waves landed in this session:**
 
-合并 commit: `811c266`。Phase A→D 全部完成,新 TODO.md 写完。
+### Wave 1 — upstream v0.22.8 sync (commit `811c266` + `bae3833`)
+9 minor releases merged. Schema v24 → v29. Fork patch on
+`pglite-schema.ts` (#370) **dropped** because v0.22.6.1's
+`applyForwardReferenceBootstrap()` supersedes it. WAL patch on
+`pglite-engine.ts:89` + `cli.ts` +x retained. Brain healthy at
+2117 pages.
 
-**This session's surprise findings** (新 P1):
-- 6 个 zombie `gbrain sync` 子进程持有 PGLite lock 长达 4-12 小时,
-  累计 200-700 min CPU。SIGTERM 不响应,SIGKILL 才释放。**这解释了
-  之前 kos-compat-api `/ingest` 偶发 500 timeout 的根因** — production
-  cron 的某个 wrapper 没回收子进程。
-- v0.21.0 后 doctor 的 `graph_coverage` 报 0%(尽管实际 8229 links +
-  11084 timeline 条目都在),可能新指标走 `code_edges_*` 表,需要 `gbrain
-  link-extract` 重建。
+### Wave 2 — notion-poller deadlock fix (commits `093601e` + `3af5275`)
+
+The user's [bug report](bug-reports/notion-poller-pglite-lock-deadlock.md)
+matched what Phase C uncovered: notion-poller was hammering /ingest,
+each call freezing the Bun event loop for 30s+ via `spawnSync gbrain
+sync`, deadlocking external requests. **kos.chenge.ink was unreachable
+externally** for ~30+ min during the bad period.
+
+**方案 A landed** ([server/kos-compat-api.ts:111-184](../server/kos-compat-api.ts#L111)):
+all 4 `spawnSync` call sites replaced with Promise-wrapped `spawn`.
+Concurrency proof: while /ingest's gbrain sync is in flight (134s),
+5 concurrent /status probes return HTTP 200 in **138-193ms**
+(pre-fix: 30+s blocks).
+
+External kos.chenge.ink is now responsive, BUT **notion-poller is
+still bootouted + disabled** because individual /ingest is still slow
+(`gbrain sync` 134s for one new file → spawnAsync 180s timeout, /ingest
+returns 500 to caller). Fixing the event-loop block unblocks /status
++ /query + external Cloudflare tunnel users, but doesn't make /ingest
+itself fast.
+
+**P0 unblock paths** (see [TODO.md](../skills/kos-jarvis/TODO.md)):
+1. **Maintenance window full re-walk** — try `gbrain sync --repo
+   ~/brain --no-pull` to completion (no timeout), let it do whatever
+   the v0.21.0 chunker walk wants. Tried this session for 18 min,
+   produced 0 progress lines after `[sync.imports] start`. Maybe
+   needs hours? Or there's a sync-internal wedge to investigate.
+2. **方案 B** — refactor /ingest to use BrainDb in-process (no
+   subprocess, no PGLite cross-process lock, no spawnAsync timeout
+   cliff). ~150 LOC. The proper cure.
+
+Manual settle was attempted: `UPDATE sources SET chunker_version='4',
+last_commit='<HEAD>'` to bypass the gate. Subsequent sync still slow
+(134s for one file) → implies the slowness is NOT the chunker gate but
+something else in sync's import/extract/embed phases on this brain.
+
+### Other surprise from Wave 1
+- 6 zombie `gbrain sync` subprocesses (200-700 min CPU each, parented
+  to PID 1, ignored SIGTERM) had been holding the PGLite lock for
+  hours. SIGKILL released them. spawnAsync's timeout-driven SIGKILL
+  should prevent regression but D-state children may still leak.
+- v0.21.0 doctor's `graph_coverage` reports 0% despite 8229 links +
+  11084 timeline entries existing. Likely new metric only counts
+  `code_edges_*` tables. P2 follow-up.
 
 ---
 
-## 1. Current state (2026-04-29 03:45 local)
+## 1. Current state (2026-04-29 04:30 local)
 
 | Layer | Status |
 |---|---|
 | Engine | PGLite 0.4.4 (fork-pinned), schema **v29** |
-| Pages | 2117 (was 2118 morning of 4-27, -1 drift over 2 days) |
+| Pages | 2117 (incl. 2 test pages from spawnAsync smoke: `sources/test-async-smoke-2026-04-29.md` + `test-async-smoke-2-2026-04-29.md`) |
 | Chunks | 4023 (100% embedded) |
-| Links | 8229 (+4 since 4-27 evening close) |
+| Links | 8229 |
 | Timeline | 11084 |
-| Orphans | unchanged from 4-27 close (732); not re-counted today |
+| Orphans | 732 (4-27 close baseline) |
 | brain_score | 85/100 stable |
 | doctor health | 85/100 (3 PGLite-quirk WARN + new graph_coverage WARN, no FAIL) |
 | Upstream sync | **v0.22.8** (was v0.20.4); commit `811c266` |
-| Production endpoint | `kos.chenge.ink` → cloudflared → :7225 (kos-compat-api PID 72344) |
+| `sources.chunker_version` | **manually pinned to '4'** by SQL UPDATE this session — NOT settled by a real walk |
+| `sources.last_commit` | **manually pinned** to `3dee3c4f...` (HEAD as of 03:30) — may have drifted since |
+| Production endpoint | `kos.chenge.ink` → cloudflared → :7225 (latest PID at handoff time: 37656) |
 | Embed shim | :7222 gemini-embedding-2-preview (PID 2502) |
 
-### Running services (`launchctl print gui/$UID`)
+### Running services (`launchctl print gui/$UID`) — **partially down**
 
-All 9 services healthy:
-- `com.jarvis.kos-compat-api` PID 72344 (re-bootstrapped post-cutover)
-- `com.jarvis.gemini-embed-shim` PID 2502
-- `com.jarvis.cloudflared` PID 2505
-- `com.jarvis.notion-poller` (idle, will fire next 5min cron)
-- `com.jarvis.dream-cycle` (idle, daily 03:11 — already ran today at 03:11Z = 4-29 03:11)
-- `com.jarvis.kos-patrol` (idle, daily)
-- `com.jarvis.enrich-sweep` (idle)
-- `com.jarvis.kos-deep-lint` (idle, weekly Mon)
-- `com.jarvis.star-office-ui-backend` (unrelated)
+| Service | State |
+|---|---|
+| `com.jarvis.kos-compat-api` | ✅ running (re-bootstrapped post-fix on async code) |
+| `com.jarvis.gemini-embed-shim` | ✅ running |
+| `com.jarvis.cloudflared` | ✅ running (kos.chenge.ink tunnel) |
+| `com.jarvis.dream-cycle` | ✅ idle (will fire daily 03:11 local) |
+| `com.jarvis.kos-patrol` | ✅ idle |
+| `com.jarvis.enrich-sweep` | ✅ idle |
+| `com.jarvis.kos-deep-lint` | ✅ idle (weekly Mon) |
+| `com.jarvis.star-office-ui-backend` | ✅ running (unrelated) |
+| **`com.jarvis.notion-poller`** | **🔴 BOOTOUTED + DISABLED** — see P0 in TODO.md |
+
+**Why notion-poller is down**: re-enabling it without P0 unblock would
+re-introduce the deadlock loop. Wave 2 fixed the event-loop block
+(/status now stays responsive), but each individual /ingest is still
+slow (90-180s). notion-poller fires every 5 min → would spawn N gbrain
+sync subprocesses queuing on PGLite lock. spawnAsync's timeout-SIGKILL
+prevents zombie pile-up but ingestion would still fail
+(500 returned to notion-poller per page). **Notion → KOS ingestion is
+paused** until P0 unblocks via Path 1 (full re-walk) or Path 2 (方案 B).
 
 ### Fork-local patches state
 
@@ -104,60 +154,108 @@ has the full story. Summary:
 
 ## 3. Next session: what to do
 
-### Step 1: production health re-check
+**Primary mission**: unblock notion-poller (P0). Two paths in TODO.md;
+prefer Path 1 first because it's lower-risk.
+
+### Step 1: production health re-check (5 min)
 
 ```bash
+# 1. external + internal /status both alive?
 TOKEN=$(grep -o '[a-f0-9]\{64\}' ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist | head -1)
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7225/status | jq .total_pages
-# expect: 2117 + N (N depends on hours since handoff; notion-poller writes ~1-3/cycle)
+curl -s -H "Authorization: Bearer $TOKEN" https://kos.chenge.ink/status | jq .total_pages
+# expect: both = 2117 (notion-poller bootouted means count is frozen)
 
-bun run src/cli.ts doctor 2>&1 | grep -E "Health score|FAIL|WARN"
-# expect: 85/100, 0 FAIL, ~3-4 WARN (pgvector/jsonb_integrity = PGLite-quirk; graph_coverage = NEW, see TODO P2)
+# 2. zero zombies?
+pgrep -lf 'gbrain sync\|gbrain extract\|workers/notion-poller'
+# expect: empty
 
-ls -t ~/brain/.agent/dream-cycles/ | head -1
-# expect: 2026-04-29T10:11:xxZ (today's 03:11 local cycle)
+# 3. notion-poller still bootouted?
+launchctl print "gui/$(id -u)/com.jarvis.notion-poller" 2>&1 | head -2
+# expect: "Bad request. Could not find service..."
+
+# 4. concurrency proof — spawnAsync fix still working
+( curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7225/ingest \
+    -X POST -H 'Content-Type: application/json' \
+    -d '{"markdown":"# health check","slug":"smoke-'$(date +%s)'","source":"test","kind":"source","title":"smoke"}' &
+)
+sleep 1
+time curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7225/status -o /dev/null
+# expect: /status <500ms even though /ingest is in flight
 ```
 
-### Step 2: address new P1 — zombie sync subprocesses
+### Step 2: P0 — pick a path to unblock notion-poller
 
-The 6 zombies SIGKILLed during Phase C are gone, but the **source** that
-spawns them is still active. Hunt:
+#### Path 1 — full re-walk in maintenance window (try this first)
+
+This session attempted Path 1 for 18 min and got 0 progress lines after
+`[sync.imports] start`. Either it needs much longer, OR there's a real
+wedge. Worth re-trying with closer observation:
 
 ```bash
-# A. Check whether new zombies are accumulating
-pgrep -lf 'gbrain sync.*--no-pull' | head
+# 1. Eliminate contention
+launchctl bootout gui/$(id -u)/com.jarvis.kos-compat-api
+pgrep -lf 'gbrain' | xargs -r kill -9
+rm -rf ~/.gbrain/brain.pglite/.gbrain-lock
 
-# B. Find what cron / launchd job spawns them (check time-of-day pattern)
-launchctl print gui/$UID 2>&1 | grep -E "kos-deep-lint|notion-poller|dream-cycle" | head -5
-# Look for the one that calls `gbrain sync` directly without timeout
+# 2. Reset chunker_version + last_commit to NULL (force a clean re-walk)
+bun -e "import {BrainDb} from './skills/kos-jarvis/_lib/brain-db.ts';
+const db = new BrainDb(); await db.open();
+await (db as any).pg.query(\"UPDATE sources SET chunker_version=NULL, last_commit=NULL WHERE id='default'\");
+await db.close();"
 
-# C. Read each cron's wrapper script
-cat scripts/launchd/com.jarvis.kos-deep-lint.plist.template
-ls scripts/launchd/ | grep -v plist
+# 3. Fresh snapshot (the long op may need rollback)
+cp -R ~/.gbrain/brain.pglite ~/.gbrain/brain.pglite.pre-rewalk-$(date +%s)
+
+# 4. Run sync with NO timeout, log to file, observe via polling
+gbrain sync --repo ~/brain --no-pull > /tmp/rewalk.out 2>&1 &
+SP=$!
+while kill -0 $SP 2>/dev/null; do
+  sleep 30
+  echo "T+$(ps -o etime= -p $SP 2>/dev/null | xargs):"
+  tail -3 /tmp/rewalk.out
+done
+echo "DONE; verify settle"
+bun -e "import {BrainDb} from './skills/kos-jarvis/_lib/brain-db.ts';
+const db = new BrainDb(); await db.open();
+console.log(await (db as any).pg.query('SELECT id, chunker_version, last_commit FROM sources').then(r=>r.rows));
+await db.close();"
+
+# 5. Bootstrap kos-compat-api back, smoke ingest speed
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist
+TOKEN=$(grep -o '[a-f0-9]\{64\}' ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist | head -1)
+time curl -s -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:7225/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"markdown":"# settle test","slug":"settle-test-'$(date +%s)'","source":"test","kind":"source","title":"settle"}'
+# expect: <5 sec total (single-file diff against now-set last_commit)
+
+# 6. If green, re-enable notion-poller + watch one cycle
+launchctl enable user/$(id -u)/com.jarvis.notion-poller
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.notion-poller.plist
+sleep 360  # one 5-min cycle
+pgrep -lf 'gbrain sync'   # expect: empty (no zombies)
 ```
 
-Hypothesis ordered by likelihood:
-1. **`com.jarvis.kos-deep-lint`** — it's the OLDEST cron (weekly Monday).
-   The wrapper may shell `gbrain sync --no-pull` somewhere; if it hangs
-   on lock contention, launchd's StartCalendarInterval re-fires next
-   week, accumulating zombies.
-2. **`workers/notion-poller/run.ts`** — Path B retired the minion-wrap,
-   but the run.ts itself may shell `gbrain sync` for cleanup. With
-   2026-04-23 commit `444cc81` it should NOT, but verify.
-3. **OpenClaw cron** in `~/.openclaw/workspace/` — outside this repo,
-   but worth checking. `~/.openclaw/workspace/skills/knowledge-os/SKILL.md`
-   may issue `gbrain sync --no-pull` from a cron entry.
+If the sync wedges with 0 progress for 10+ min after `[sync.imports]
+start`: STOP. Capture state via `sample $SP 30` or `lldb -p $SP` to
+see what it's blocked on. May need an upstream issue. Defer to Path 2.
 
-Fix: add `timeout 600 gbrain sync ...` (or wrapper-level Promise.race)
-to whichever site is the leak. Monitor 1 week.
+#### Path 2 — 方案 B: in-process BrainDb writes
 
-### Step 3: graph_coverage 0% mystery
+If Path 1 is unworkable, refactor `server/kos-compat-api.ts` `/ingest`
+to call BrainDb's TypeScript API directly. ~150 LOC, depends on
+extending [`skills/kos-jarvis/_lib/brain-db.ts`](../skills/kos-jarvis/_lib/brain-db.ts) with:
 
-doctor reports `graph_coverage: Entity link coverage 0%, timeline 0%.
-Run: gbrain link-extract && gbrain timeline-extract` despite 8229 links
-+ 11084 timeline entries existing in DB. v0.21.0 added new `code_edges_*`
-tables; the metric may have re-defined. Try the suggested commands and
-see if the metric updates:
+- `putPage(slug, frontmatter, body, contentHash)` — DB upsert + chunk + replace
+- `extractLinks(slug)` — port of upstream's `link-extraction.ts`
+- `extractTimeline(slug)` — port of upstream's timeline parser
+- `embedChunks(slug, chunkIds)` — call gemini-embed-shim HTTP, write back
+
+After this lands, /ingest runs everything in-process: no spawn, no
+PGLite cross-process lock, no timeout cliff, no zombies. Re-enable
+notion-poller post-merge.
+
+### Step 3: graph_coverage 0% (P2, can defer)
 
 ```bash
 bun run src/cli.ts link-extract 2>&1 | tail -10
@@ -165,22 +263,10 @@ bun run src/cli.ts timeline-extract 2>&1 | tail -10
 bun run src/cli.ts doctor 2>&1 | grep graph_coverage
 ```
 
-If still 0% after extract, file upstream issue (probably new metric
-counts only the v0.21.0 chunk-level edges, not page-level frontmatter
-edges).
+If still 0%, accept it as a code-edge-only metric (we have ~no code)
+and document in README/handoff so future syncs don't re-investigate.
 
-### Step 4 (optional): CHUNKER_VERSION 3→4 cost preview
-
-```bash
-bun run src/cli.ts reindex-code --dry-run 2>&1 | tail -20
-```
-
-The `sources.chunker_version` gate forces a full re-walk on next
-`gbrain sync`. Markdown bodies likely cache-hit on embedding (we have
-4023 chunks already embedded), so cost should be small. Run preview
-when you have time to know in advance.
-
-### Step 5 (optional): unfinished calendar checkpoints
+### Step 4 (optional): unfinished calendar checkpoints
 
 | Date | Action |
 |---|---|
@@ -255,7 +341,14 @@ cat ~/.gbrain/config.json
 
 ## End of handoff
 
-Production is on v0.22.8, schema v29, healthy. Next session should hunt
-the zombie-sync source and decide whether to push the merge commit
-`811c266` to `origin/master`. Fork master is **NOT yet pushed** —
-`git push origin master` is the user's call.
+Production:
+- Code: v0.22.8 fork master, pushed to `origin/master` (4 commits beyond
+  the v0.22.8 sync alone).
+- Schema: v29, 2117 pages, brain_score 85/100, doctor health 85/100.
+- External: `kos.chenge.ink` ✅ responsive (recovered from earlier
+  CF-tunnel block via Wave-2 spawnAsync fix).
+- Notion-poller: 🔴 **DISABLED**. Notion → KOS ingestion is paused
+  until P0 unblocks. Re-enable only after Path 1 (full re-walk) or
+  Path 2 (方案 B in-process) lands successfully.
+
+Next session's mission: P0 — pick a path and execute. See §3 above.
