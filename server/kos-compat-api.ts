@@ -22,7 +22,7 @@
  *   KOS_API_TOKEN=secret bun run server/kos-compat-api.ts
  */
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -99,24 +99,6 @@ function deriveTitle(body: string | undefined, slug: string): string {
   return slug;
 }
 
-/** Commit a single ingest to the ~/brain git repo. Idempotent on unchanged content. */
-function gitCommitIngest(slug: string): { ok: boolean; msg: string } {
-  const add = spawnSync("git", ["-C", BRAIN, "add", "-A"], { encoding: "utf-8", timeout: 10_000 });
-  if (add.status !== 0) return { ok: false, msg: `git add failed: ${(add.stderr ?? "").slice(0, 200)}` };
-  const cmt = spawnSync(
-    "git",
-    ["-C", BRAIN, "commit", "-m", `ingest: ${slug}`],
-    { encoding: "utf-8", timeout: 10_000 }
-  );
-  if (cmt.status !== 0) {
-    const err = (cmt.stderr ?? "") + (cmt.stdout ?? "");
-    // "nothing to commit" = idempotent re-ingest of unchanged payload; fine.
-    if (err.includes("nothing to commit")) return { ok: true, msg: "no-op (content unchanged)" };
-    return { ok: false, msg: `git commit failed: ${err.slice(0, 200)}` };
-  }
-  return { ok: true, msg: "committed" };
-}
-
 function readFlag(name: string): string | undefined {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
@@ -126,10 +108,97 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function gbrain(args: string[], timeoutMs = 120_000): { code: number; stdout: string } {
-  const r = spawnSync("gbrain", args, { encoding: "utf-8", timeout: timeoutMs });
-  const out = stripAnsi((r.stdout ?? "") + (r.stderr ?? ""));
-  return { code: r.status ?? 1, stdout: out };
+/**
+ * Async, non-blocking spawn helper. Replaces the previous `spawnSync`-based
+ * helpers because spawnSync froze the Bun HTTP event loop for the duration
+ * of the child process — when /ingest spawned `gbrain sync` (which can hold
+ * the PGLite write lock for 30 s on a deadlock), every other concurrent
+ * request (/status, /query, externally-tunneled traffic) blocked too.
+ *
+ * See docs/bug-reports/notion-poller-pglite-lock-deadlock.md for the
+ * incident report. This helper is the 短期 / 方案 A fix; the 彻底 / 方案 B
+ * fix (in-process BrainDb writes, no subprocess at all) is filed as P1
+ * in skills/kos-jarvis/TODO.md.
+ *
+ * Behavior:
+ * - Captures stdout + stderr, returns combined as `stdout` (keeping the
+ *   existing return contract callers expect).
+ * - Strips ANSI on the way out (preserves prior behavior).
+ * - Sends SIGKILL on timeout. Process MUST die on SIGKILL; if it doesn't,
+ *   the orphan keeps holding the PGLite lock — the original incident.
+ *   Logs the SIGKILL to stderr so operators can correlate with future
+ *   zombies (P1 zombie-leak hunt).
+ */
+function spawnAsync(
+  cmd: string,
+  args: string[],
+  opts: { timeoutMs?: number } = {},
+): Promise<{ code: number; stdout: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (chunk: Buffer | string) => {
+      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    });
+    proc.stderr?.on("data", (chunk: Buffer | string) => {
+      stderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    if (opts.timeoutMs && opts.timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          proc.kill("SIGKILL");
+          console.error(JSON.stringify({
+            t: new Date().toISOString(),
+            op: "spawn.timeout_kill",
+            cmd, args: args.slice(0, 6),
+            timeout_ms: opts.timeoutMs,
+            pid: proc.pid,
+          }));
+        } catch { /* race: process already exited */ }
+      }, opts.timeoutMs);
+    }
+    proc.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      const out = stripAnsi(stdout + stderr);
+      resolve({ code: timedOut ? 124 : (code ?? 1), stdout: out });
+    });
+    proc.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      resolve({
+        code: 1,
+        stdout: stripAnsi(`[spawn error] ${String(err)}\n${stdout}${stderr}`),
+      });
+    });
+  });
+}
+
+async function gbrain(
+  args: string[],
+  timeoutMs = 120_000,
+): Promise<{ code: number; stdout: string }> {
+  return spawnAsync("gbrain", args, { timeoutMs });
+}
+
+/** Commit a single ingest to the ~/brain git repo. Idempotent on unchanged content. */
+async function gitCommitIngest(slug: string): Promise<{ ok: boolean; msg: string }> {
+  const add = await spawnAsync("git", ["-C", BRAIN, "add", "-A"], { timeoutMs: 10_000 });
+  if (add.code !== 0) return { ok: false, msg: `git add failed: ${add.stdout.slice(0, 200)}` };
+  const cmt = await spawnAsync(
+    "git",
+    ["-C", BRAIN, "commit", "-m", `ingest: ${slug}`],
+    { timeoutMs: 10_000 }
+  );
+  if (cmt.code !== 0) {
+    const err = cmt.stdout;
+    // "nothing to commit" = idempotent re-ingest of unchanged payload; fine.
+    if (err.includes("nothing to commit")) return { ok: true, msg: "no-op (content unchanged)" };
+    return { ok: false, msg: `git commit failed: ${err.slice(0, 200)}` };
+  }
+  return { ok: true, msg: "committed" };
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -237,7 +306,7 @@ async function handleQuery(req: IncomingMessage, res: ServerResponse) {
   if (!q) return send(res, 400, { error: "question is required" });
 
   // Phase 1 — retrieval
-  const r = gbrain(["ask", q, "--no-expand"], 120_000);
+  const r = await gbrain(["ask", q, "--no-expand"], 120_000);
   if (r.code !== 0) return send(res, 500, r.stdout);
 
   // Phase 2 — LLM synthesis (matches v1 Python kos-api contract; consumers
@@ -487,7 +556,7 @@ ${plain}
   // Commit to ~/brain git repo so `gbrain sync` has a HEAD to diff from.
   // Per-ingest commits are noisy but functional; Step 2.3/2.4 layers
   // commit-batching on top.
-  const commit = gitCommitIngest(slug);
+  const commit = await gitCommitIngest(slug);
   if (!commit.ok) {
     return send(res, 500, {
       imported: false,
@@ -499,7 +568,7 @@ ${plain}
 
   // Incremental sync from HEAD. --no-pull avoids attempting git pull on
   // our local-only repo (no remote configured for ~/brain).
-  const syncRes = gbrain(["sync", "--repo", BRAIN, "--no-pull"], 180_000);
+  const syncRes = await gbrain(["sync", "--repo", BRAIN, "--no-pull"], 180_000);
   if (syncRes.code !== 0) {
     return send(res, 500, {
       imported: false,
@@ -517,7 +586,7 @@ ${plain}
   // page is already vectored. Slug is <dir>/<slug> — gbrain pages are
   // stored under their full path slug.
   const fullSlug = `${dir}/${slug}`;
-  const embedRes = gbrain(["embed", fullSlug], 120_000);
+  const embedRes = await gbrain(["embed", fullSlug], 120_000);
   const embedded = embedRes.code === 0;
 
   send(res, 200, {
