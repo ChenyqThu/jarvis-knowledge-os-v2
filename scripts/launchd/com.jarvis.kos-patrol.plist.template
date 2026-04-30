@@ -27,6 +27,13 @@
     </dict>
     <key>RunAtLoad</key>
     <false/>
+    <!-- patrol's exit code is by design: 0=clean, 1=ERROR (real fail), 2=WARN-only.
+         Treat 0+2 as success so launchd doesn't flag normal warn-only runs. -->
+    <key>SuccessfulExitCodes</key>
+    <array>
+        <integer>0</integer>
+        <integer>2</integer>
+    </array>
     <key>StandardOutPath</key>
     <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/kos-patrol/patrol.stdout.log</string>
     <key>StandardErrorPath</key>

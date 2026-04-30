@@ -295,7 +295,57 @@ function phase4(pages: Page[]): Gap[] {
     gaps.push({ entity: name, mentions: count, sample_pages: [...ps].slice(0, 3) });
   }
   gaps.sort((a, b) => b.mentions - a.mentions);
-  return gaps.slice(0, 20); // cap for dashboard readability
+
+  // 2026-04-30 case-variant + edit-distance dedup. The 04-30 dashboard
+  // surfaced "Link Systems Inc" / "Link System Inc" / "LINK SYSTEMS INC" /
+  // "Link System" — five variants of one company occupying five of the
+  // twenty dashboard slots. Two-stage merge:
+  //   1) lowercase + drop non-alphanum + drop common company suffixes
+  //      (Inc/LLC/Ltd/Corp/Co/GmbH) → exact-match merge.
+  //   2) Levenshtein ≤ 1 on the normalized form (≥ 4 chars) → singular/
+  //      plural merge ("linksystems" ↔ "linksystem").
+  // Highest-mention variant wins as canonical entity name; merged entries
+  // sum mentions and union sample_pages (cap 3). Items processed in
+  // mention-desc order so the top variant becomes the rep.
+  const SUFFIX_RE = /\b(inc|llc|ltd|corp|co|company|corporation|gmbh|sa|bv)\b/g;
+  const normalize = (s: string): string =>
+    s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(SUFFIX_RE, "")
+      .replace(/\s+/g, "").trim();
+  const lev = (a: string, b: string): number => {
+    if (a === b) return 0;
+    if (Math.abs(a.length - b.length) > 1) return 2; // can't reach ≤ 1
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        cur.push(Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost));
+      }
+      prev = cur;
+    }
+    return prev[b.length];
+  };
+  const reps: { canonical: string; gap: Gap }[] = [];
+  for (const g of gaps) {
+    const n = normalize(g.entity);
+    let merged = false;
+    if (n) {
+      for (const r of reps) {
+        if (n === r.canonical ||
+            (n.length >= 4 && r.canonical.length >= 4 && lev(n, r.canonical) <= 1)) {
+          r.gap.mentions += g.mentions;
+          const union = new Set([...r.gap.sample_pages, ...g.sample_pages]);
+          r.gap.sample_pages = [...union].slice(0, 3);
+          merged = true;
+          break;
+        }
+      }
+    }
+    if (!merged) {
+      reps.push({ canonical: n, gap: { ...g, sample_pages: [...g.sample_pages] } });
+    }
+  }
+  return reps.map((r) => r.gap).slice(0, 20); // cap for dashboard readability
 }
 
 // ─────────────────────────── Phase 5: Dashboard ───────────────────────────

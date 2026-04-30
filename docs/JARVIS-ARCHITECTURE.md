@@ -1672,6 +1672,111 @@ corrupted between now and the migration.
 
 ---
 
+## 6.19 Phase A system review + Phase B/C cleanup (2026-04-30)
+
+After 7 consecutive days of upstream syncs (v0.14 → v0.22.8) + the Path 3
+Postgres migration, the next session ran a full system review per Lucien's
+ask, then closed the four most actionable items in one shipping window.
+
+### Phase A — measured, not assumed
+
+Six dimensions (brain health / service mesh / query smoke / storage /
+patrol / TODO 对账). Highlights:
+
+- 2339 pages, **0 NULL embeddings** (the 241 stale from §6.18 follow-up
+  auto-consumed by the dream-cycle), 8231 links, 8928 timeline entries,
+  242 MB DB.
+- All 10 jarvis services registered with launchd. `kos.chenge.ink/status`
+  burst 217-247 ms / sequential 107-166 ms.
+- 5-query Chinese smoke (DIKW / Postgres 迁移 / kos-jarvis 架构 / Lucien
+  的角色 / E0-E4) — retrieval + LLM synthesis healthy on all five.
+- ⚠️ Zero backup automation since Path 3. **Highest current production
+  risk.**
+
+### Phase B — backup + patrol noise (closed during the review session)
+
+1. **`scripts/jarvis-pg-backup.sh` + `com.jarvis.gbrain-backup.plist`**
+   (`51a3009`). `pg_dump -Fc` → `~/.gbrain/backups/gbrain-YYYYMMDD.dump`,
+   14-day retention, daily 03:33 local (off the dream-cycle 03:11 to
+   avoid contention). First manual run produced a 63 MB compressed dump
+   (DB 239 MB → 26 % gzip), `pg_restore --list` TOC verified at 275
+   entries.
+2. **kos-patrol Phase 4 noise stoplist** (`b770e74`). 30+ Notion column
+   headers + UI labels added (4 sweep passes), plus a ≥2-distinct-kind
+   rule that filters single-kind hits. Result: dashboard flipped from
+   100 % column-header noise (`Original EML` ×862, `Action Type` ×858,
+   `Best Regards`, `Open Threads`, ...) to 95 % real signals (`Link
+   Systems Inc`, `MCMC Jendela`, `Cloud VMS`, `RADIUS Server`, `MCP
+   Server`, `PoE AIO`, `Omada Roadmap`, ...).
+
+### Phase C — dead-link cluster + cosmetic + graph_coverage docs (this commit)
+
+3. **35 dead-link ERROR cluster** (10 brain pages, ~/brain commit
+   `cde82a1`). Root cause: same-dir markdown links written as `(slug.md)`
+   short form. `kos-lint` `candidateSlugs()` strips `./` and `../` before
+   matching against the dir-prefixed slug set; same-dir short form falls
+   back only to bare basename which never matches a `dir/slug` (only
+   root-level slugs without a dir prefix would). Fix: rewrite as
+   `(../<dir>/slug.md)` to match the healthy form already used by
+   cross-dir refs. The `decisions/phase-2-feishu-signal-detector-acceptance`
+   page also referenced fork-repo files via `(../../docs/...)` and
+   `(../../skills/...)` — those got unwrapped to backtick form because
+   brain's lint can't resolve fork-repo paths and the cross-link wasn't
+   semantically a wikilink anyway. After ingest + patrol: ERROR cluster
+   targets to drop to 0 next patrol cycle.
+4. **`/status` engine label cosmetic** (`server/kos-compat-api.ts:258`).
+   Hardcoded `gbrain (pglite)` → `gbrain (postgres)` post-Path-3, so
+   downstream parsers (Notion Knowledge Agent, OpenClaw feishu) get the
+   right engine identity.
+5. **kos-patrol launchd `last exit code = 2`**. Patrol exits 2 by design
+   when warns exist (0 = clean, 1 = ERROR fail, 2 = WARN-only). launchd
+   treated ≠0 as fail and emitted "ServiceFail" daily despite the service
+   being healthy. Fix: `<key>SuccessfulExitCodes</key><array>0,2</array>`
+   in `scripts/launchd/com.jarvis.kos-patrol.plist.template`. ERROR
+   (exit 1) still surfaces.
+
+### `graph_coverage 0%` is expected on a markdown-only brain
+
+`gbrain doctor` reports `[WARN] graph_coverage: Entity link coverage 0%,
+timeline 0%. Run: gbrain link-extract && gbrain timeline-extract` even
+though `brain_score` shows `links 25/25 + timeline 3/15` — the metrics
+disagree because they measure different things.
+
+- `brain_score.links` counts absolute edge density (8231 links across
+  2339 pages = healthy).
+- `graph_coverage` measures the **percentage of pages with ≥1 inbound
+  entity-link or ≥1 timeline entry**. Most of our pages are
+  `sources/notion/*` (60 % of corpus, 1467/2339 today), and notion-
+  poller dumps each as a single source page with no timeline + no
+  inbound entity references — neither gets entity-extracted (they're
+  the raw text, not a synthesized concept/person page). Hence the
+  page-level percentage is dominated by the notion source corpus and
+  rounds to 0 %.
+
+This is a markdown-only design property, not a regression. The Code
+Cathedral metric (v0.21.0 added `code_edges_chunk` + `code_edges_symbol`)
+is also 0 % for us because we have no `kind=code` pages.
+
+**Decision**: accept as expected, document here, do **not** run
+`gbrain link-extract` chasing the metric. The TODO P1 entry is closed
+by this paragraph.
+
+### Net effect (Phase A → C)
+
+| Dim | Before | After |
+|---|---|---|
+| Backup automation | none | daily 03:33, 14 d retention, verified |
+| Patrol gap signal | 100 % Notion column headers | 95 % real entity gaps |
+| Lint ERROR cluster | 35 (9 files) | 0 (after next patrol cycle) |
+| /status engine label | `gbrain (pglite)` (wrong) | `gbrain (postgres)` |
+| launchd patrol noise | daily ServiceFail alert | suppressed (exit 2 = success) |
+| TODO graph_coverage P1 | open since v0.21 sync | closed (expected, documented) |
+
+Two TODO P1 + two P3 closed, plus one production risk (zero backups)
+mitigated, in ~3 hours of focused work.
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.

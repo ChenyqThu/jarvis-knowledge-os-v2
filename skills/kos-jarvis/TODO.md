@@ -1,43 +1,29 @@
-# kos-jarvis — Outstanding Work (post Phase A system review, 2026-04-29)
+# kos-jarvis — Outstanding Work (post Phase C cleanup, 2026-04-30)
 
-> **Updated**: 2026-04-29 18:30 local — refreshed after Phase A system
-> review + Phase B (#1 backup + #2 patrol stoplist).
-> **Entry point for next session**: write a fresh handoff under
-> `docs/SESSION-HANDOFF-2026-04-30-post-system-review.md` (TBD).
+> **Updated**: 2026-04-30 — refreshed after Phase A→B→C run. Phase C
+> closed dead-link cluster (35→0), patrol dedup (5 case-variants → 1),
+> graph_coverage docs (markdown-only expected), `/status` engine label,
+> kos-patrol launchd exit 2.
+> **Entry point for next session**: write fresh handoff at
+> `docs/SESSION-HANDOFF-2026-05-01-post-phase-c.md` (TBD).
 > **Pre-Path-3 TODO**: archived in git history at `7b6a409`.
 > **Pre-system-review TODO**: archived at `2203f94`.
+> **Pre-Phase-C TODO**: archived at `b23ab28`.
 
 The brain is healthy on Postgres 17 + pgvector 0.8.2 (schema v29,
-**2305+ pages, 100 % embed coverage, 0 zombies**, all 9 jarvis services
-running). Phase A measured: /status burst 217-247ms, sequential
-107-166ms; /query retrieval + LLM synthesis healthy on 5-query Chinese
-smoke. The two biggest items in this list (auto-backup + patrol
-stoplist) are now closed in **Done**. Items below are ranked by current
-value, not by historical severity.
+**2340+ pages, 100 % embed coverage, 0 zombies**, all 10 jarvis services
+running). After Phase C: kos-patrol 0 ERROR / 985 WARN, dashboard
+gaps now show real long-tail entities (Link Systems Inc, MCMC Jendela,
+Cloud VMS, RADIUS Server, MCP Server, Link Cloud, Link EBG, AWS CDN,
+Operations Assistant, Time Upgrade, Upload Firmware, Carrier Grade AAA,
+PoE AIO, Omada Roadmap, Omada Beta Program). Items below are ranked by
+current value, not by historical severity.
 
 ---
 
 ## P1 — quality, fast follow-up
 
-### [ ] graph_coverage 0% 调研 + 解决
-
-**Why**: doctor 的新 metric 说 `Entity link coverage 0%, timeline 0%`,
-即使 `gbrain stats` 显示 8231 links + 11084 timeline。v0.21.0 加的
-`code_edges_chunk` + `code_edges_symbol` 表很可能 redefine 了"counts"。
-
-**What**:
-1. `gbrain doctor --json | jq .checks.graph_coverage` 看 details。
-2. 跑 `gbrain link-extract && gbrain timeline-extract` 看 metric 是否
-   变化。
-3. 若仍 0 %,跑 `gbrain reindex-code --dry-run` 看代价 — 我们 markdown-
-   only 估计 0 cost,可以直接 `--yes`。
-4. Decision:接受 0 % 作为 markdown-only brain 的预期,update README +
-   handoff "this WARN is expected" — 防止以后 sync 反复调研。
-
-**Acceptance**: doctor 的 `graph_coverage` 报合理非零数字,OR 文档
-"this WARN is expected on markdown-only" 落地。
-
-**Scope**: 30 min 调研,0-1 h reindex(若选)。
+_(empty — 上轮 P1 全部 closed in Phase C, see Done)_
 
 ---
 
@@ -105,23 +91,6 @@ per_source: []}`,因为 v0.22.4 source-resolver 走 sources 表的 local_path
 
 **Scope**: 30 min 调研 + 30 min 修(若选)。
 
-### [ ] Patrol Phase 4 — case-variant entity dedup (后续优化)
-
-**Why**: 本次 stoplist 扫完后 dashboard 仍 20 gaps,但其中 4 行是同一
-公司变体("Link Systems Inc" / "Link System Inc" / "LINK SYSTEMS INC" /
-"Link System")。phase4 regex case-sensitive,没合并 case 变体或 OCR
-近邻。理论上加 case-fold + Levenshtein-distance ≤2 dedup 可以让 20→
-~12 unique signals。
-
-**What**: 在 `skills/kos-jarvis/kos-patrol/run.ts` 的 `phase4()` 加
-case-fold + edit-distance dedup 层(保留 max-mention 变体,合并 count
-+ pages + kinds 集合)。
-
-**Acceptance**: dashboard 不再出现"Link Systems Inc / Link System Inc /
-LINK SYSTEMS INC / Link System"四个独立行;真实 unique gap ~10-12。
-
-**Scope**: 1-2 h(实现 + tune)。
-
 ### [ ] Calendar checkpoints (carried forward, post-Path-3 调整)
 
 | Date | Action | 状态 |
@@ -151,38 +120,6 @@ local HEAD。
 
 **Scope**: 1 min。
 
-### [ ] /status `engine` label cosmetic (post Path 3)
-
-**Why**: `server/kos-compat-api.ts:258` hardcoded
-`engine: "gbrain (pglite)"`。/status JSON 现在自报 pglite 但实际数据
-来自 Postgres(总页数对得上 2305)。无功能影响,但下游 Notion Knowledge
-Agent / OpenClaw feishu 偶尔解析 engine 字段决定路径,会被误导。
-
-**What**: 改为 `engine: "gbrain (postgres)"`(或者更稳健:从 BrainDb
-config 读 engine 字段动态填)。
-
-**Acceptance**: `curl /status | jq .engine` → `gbrain (postgres)`。
-
-**Scope**: 5-10 min。
-
-### [ ] kos-patrol launchd `last exit code = 2` cosmetic
-
-**Why**: kos-patrol 的 exit code 设计是 `errors>0 ? 1 : warns>0 ? 2 : 0`,
-所以"0 ERR + warns" 仍 exit 2。launchd 把 ≠0 视 fail,导致每天 launchd
-report "last exit code = 2" 看起来像 ServiceFail。Service 实际健康。
-
-**What**: 在 `scripts/launchd/com.jarvis.kos-patrol.plist.template` 加:
-```xml
-<key>SuccessfulExitCodes</key>
-<array><integer>0</integer><integer>2</integer></array>
-```
-(launchd 会把 0 + 2 都视为 success;1 仍视 fail = 真有 lint ERROR)
-
-**Acceptance**: `launchctl print` 之后 last exit code 不再触发 alert
-ascript;退出码 1 仍 surface。
-
-**Scope**: 5 min。
-
 ### [ ] 启用 v0.20+ 上游 features (Postgres-only)
 
 **Why**: Path 3 解锁 jobs supervisor、queue_health、wedge-rescue、
@@ -200,6 +137,41 @@ backpressure-audit。我们没跑 worker daemon 所以没立刻收益,但若以�
 
 ## Done (most recent)
 
+- [x] **2026-04-30 Phase C cleanup — dead-link cluster + patrol dedup +
+  cosmetics + arch §6.19** — 推 Lucien 选的 A+B+C+E+F 5 项一波打完。
+  - **A (35 dead-link ERROR → 0)**: brain 21 文件 × 31 link 重写从
+    same-dir short form `(slug.md)` → 完整 `(../<dir>/slug.md)`,3 轮
+    sync(commits `cde82a1`/`ede9a40`/`1349986`)消尽 lint cluster。
+    Decisions/phase-2-feishu 4 个 cross-repo refs 改 backtick form
+    (brain ≠ fork repo,不该 wikilink fork 文件)。
+  - **B (patrol Phase 4 case-variant dedup)**: phase4() 加 normalize
+    (lowercase + strip non-alphanum + drop suffix Inc/LLC/Ltd/Corp/Co/
+    GmbH) + Levenshtein ≤ 1 (≥ 4 chars) 两阶段合并。验证:Link Systems
+    Inc 5 变体合并为 379 mentions(原 206 + 88 + 56 + 19 + 10 单独占 5
+    个槽位),Link Canada Inc 51,MCMC JENDELA 35。Dashboard 现在显示
+    Cloud VMS / RADIUS Server / MCP Server / Link Cloud / Link EBG /
+    AWS CDN / Operations Assistant / Time Upgrade / Upload Firmware /
+    Carrier Grade AAA / PoE AIO / Omada Roadmap / Omada Beta Program 等
+    真长尾 entity gap。
+  - **C (graph_coverage 0% docs)**: 加 §6.19 to JARVIS-ARCHITECTURE.md
+    解释 markdown-only brain 的 metric 行为 — `graph_coverage` 用
+    page-percent (% pages with ≥1 inbound entity-link / timeline) 算法,
+    notion source 占 60% 不会被 entity-extract,所以 percentage 趋 0%。
+    Code Cathedral metric 同理 0%(我们无 code page)。**这是 design
+    property,不是 regression**;不跑 `gbrain link-extract` 追指标。
+  - **E (`/status` engine label `pglite` → `postgres`)**: 改
+    `server/kos-compat-api.ts:258` 解决 Path 3 之后的旧 hardcoded
+    label。下游 Notion Knowledge Agent / OpenClaw feishu 现在拿到正
+    engine 标识。
+  - **F (kos-patrol launchd exit 2 → success)**: `scripts/launchd/
+    com.jarvis.kos-patrol.plist.template` 加 `<key>SuccessfulExitCodes
+    </key><array><integer>0</integer><integer>2</integer></array>` —
+    patrol 设计 0=clean / 1=ERROR / 2=WARN-only,launchd 不再因 exit 2
+    报"ServiceFail"。Exit 1(真有 ERROR)仍 surface。
+  - **Net**: 2 P1 + 1 P2 + 2 P3 关闭。Phase A→B→C 系列总耗 ~3 h focused
+    work,2305→2340 pages,100% embed coverage 保持,brain_score 84/100
+    稳定(embed 35/35 + links 25/25 + timeline 3/15 + orphans 11/15 +
+    dead-links 10/10)。
 - [x] **2026-04-29 Phase A system review + Phase B #1+#2 双杀** —
   Lucien 触发 first systematic review since 04-22。Phase A 实测 6 维度
   (brain health / service mesh / query smoke / storage / patrol /

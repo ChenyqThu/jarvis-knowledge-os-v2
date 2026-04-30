@@ -255,9 +255,9 @@ async function handleStatus(res: ServerResponse) {
       by_type: byType,
       by_kind: byKind,
       by_confidence: byConfidence,
-      engine: "gbrain (pglite)",
+      engine: "gbrain (postgres)",
       brain: BRAIN,
-      note: "direct PGLite read (Step 2.2); DIKW rollup via kos-patrol",
+      note: "direct Postgres read (Path 3, 2026-04-29); DIKW rollup via kos-patrol",
     });
   } catch (e) {
     send(res, 500, { error: `status query failed: ${String(e).slice(0, 200)}` });
