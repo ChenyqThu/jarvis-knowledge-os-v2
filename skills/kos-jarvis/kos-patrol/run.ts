@@ -216,6 +216,30 @@ const PHASE4_STOPLIST: ReadonlySet<string> = new Set([
   // Generic UI affordances
   "see more", "show all", "click here", "learn more", "read more",
   "view all", "view more",
+  // 2026-04-29 post Path 3 sweep — Notion column headers + UI labels that
+  // re-surfaced when notion-poller resumed against the Postgres engine.
+  // Keep "Link Systems Inc" OFF this list (real company candidate) — the
+  // ≥2-kind rule below will silence it when it only appears in
+  // sources/notion/ pages.
+  "original eml", "action type", "key points", "best regards", "open threads",
+  "parent item", "what they believe", "what they", "all day", "related project",
+  "organizer email", "reply suggestion", "product engineer", "attendee count",
+  "last synced", "email inbox", "sync status", "daily log", "last modified",
+  // 2026-04-29 second pass — job-title / UI-term noise that survives ≥2-kind
+  // because the same role appears in both source and people pages, but a
+  // role isn't a wiki entity. (Specific people get their own people/<slug>
+  // pages from the enrich pipeline.)
+  "product manager", "content marketing manager", "product security",
+  "enterprise security", "global sales", "ebg marketing",
+  "order form", "remote access", "camera license",
+  // 2026-04-29 third pass — generic terms / geo / process / team labels
+  // that aren't entity-worthy by themselves.
+  "video content creator", "network service provider", "united states",
+  "alpha test", "legal review request", "mapbox commercial license agreement",
+  "link product security team",
+  // 2026-04-29 fourth pass — remaining role/geo noise.
+  "software engineer", "sales engineer", "key account manager",
+  "san francisco",
 ]);
 
 /**
@@ -224,22 +248,31 @@ const PHASE4_STOPLIST: ReadonlySet<string> = new Set([
  * aren't in the stoplist.
  * Intentionally approximate — the enrich-sweep skill does the real
  * work. This is a cheap signal for the dashboard.
+ *
+ * Per-name we also track which `kind`s (source / project / person /
+ * concept …) the mentions came from. A real entity gap shows up across
+ * ≥ 2 distinct kinds (e.g. mentioned in a project page AND a meeting
+ * source). Notion column-header noise like "Original EML" / "Sync
+ * Status" appears only in `kind=source` pages — the ≥2-kind rule
+ * silences that whole class of noise without per-term stoplist work.
  */
 function phase4(pages: Page[]): Gap[] {
-  const counts = new Map<string, { count: number; pages: Set<string> }>();
+  const counts = new Map<string, { count: number; pages: Set<string>; kinds: Set<string> }>();
   const re = /\b([A-Z][a-zA-Z]{2,}(?:\s[A-Z][a-zA-Z]{2,}){1,3})\b/g;
   for (const p of pages) {
     // skip frontmatter
     const body = p.body.replace(/^---\n[\s\S]*?\n---/, "");
+    const pageKind = String(p.kind ?? p.listed_type ?? "unknown");
     const seen = new Set<string>();
     let m: RegExpExecArray | null;
     while ((m = re.exec(body)) !== null) {
       const name = m[1].trim();
       if (seen.has(name)) continue;
       seen.add(name);
-      const slot = counts.get(name) ?? { count: 0, pages: new Set() };
+      const slot = counts.get(name) ?? { count: 0, pages: new Set(), kinds: new Set() };
       slot.count++;
       slot.pages.add(p.slug);
+      slot.kinds.add(pageKind);
       counts.set(name, slot);
     }
   }
@@ -253,8 +286,9 @@ function phase4(pages: Page[]): Gap[] {
   }
 
   const gaps: Gap[] = [];
-  for (const [name, { count, pages: ps }] of counts) {
+  for (const [name, { count, pages: ps, kinds }] of counts) {
     if (count < GAP_THRESHOLD) continue;
+    if (kinds.size < 2) continue; // single-kind hits are almost always Notion noise
     const lower = name.toLowerCase();
     if (PHASE4_STOPLIST.has(lower)) continue;
     if (knownTitles.has(lower) || knownSlugTails.has(lower)) continue;
