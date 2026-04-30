@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.gbrain-backup</string>
+    <!--
+      Daily pg_dump of the gbrain Postgres 17 database to a rolling
+      14-day window under ~/.gbrain/backups/. Replaces the PGLite
+      `cp -R brain.pglite/` strategy that was retired with Path 3
+      (2026-04-29 PGLite → local Postgres migration).
+
+      Wrapper script handles:
+        - mkdir -p ~/.gbrain/backups
+        - pg_dump -Fc (pg_restore-friendly custom format)
+        - 14d retention prune (best-effort, never fails the run)
+        - log lines with ISO-8601 timestamps to StandardOut/StandardError
+
+      Manual invocation:
+        bash scripts/jarvis-pg-backup.sh             # produce one dump now
+        bash scripts/jarvis-pg-backup.sh --dry       # plan only
+
+      Verify after install:
+        ls -lh ~/.gbrain/backups/
+        pg_restore --list ~/.gbrain/backups/gbrain-*.dump | head
+        launchctl print "gui/$(id -u)/com.jarvis.gbrain-backup"
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/scripts/jarvis-pg-backup.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/chenyuanquan</string>
+    </dict>
+    <!-- Daily 03:33 local. Off the :00 mark and 22 minutes after the
+         dream-cycle 03:11 trigger so the two never contend for the same
+         compute. Snapshot of a still brain (post-dream, pre-morning
+         notion-poller burst at 06:00ish). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>33</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/chenyuanquan/.gbrain/backups/backup.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenyuanquan/.gbrain/backups/backup.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2</string>
+</dict>
+</plist>
