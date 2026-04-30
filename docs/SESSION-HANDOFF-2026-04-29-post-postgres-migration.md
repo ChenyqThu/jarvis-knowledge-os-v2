@@ -134,7 +134,64 @@ has the full story. Summary:
 
 ## 3. Next session: what to do
 
-**No P0 mission this time.** The brain is healthy. Pick from P1/P2:
+**P0 — full system review + TODO re-prioritization** (Lucien explicitly
+asked: "很久没有系统 review 了,新 session 完整 review 下,然后结合 todo
+一起重新评估待办工作,推进系统优化")。
+
+> **Paste-ready next-session prompt** (copy this block to start the next session):
+>
+> ```
+> 开始 P0 — full system review + TODO 重排
+>
+> 入口文档:
+> - docs/SESSION-HANDOFF-2026-04-29-post-postgres-migration.md (主要)
+> - skills/kos-jarvis/TODO.md (P0 是这次 session 的目标)
+> - docs/JARVIS-ARCHITECTURE.md §6.18 (Path 3 migration 故事)
+>
+> 上次 session 已完成:
+> - PGLite → Postgres migration (commit 33c0410) — 2117 pages 迁完,
+>   notion-poller +186p/5.5min/0 zombies,/status 90ms during burst,
+>   dream-cycle 1030ms warm,所有 cron jobs back online。
+> - 8 commits ahead of origin/master,未 push。
+> - 241 stale embeddings 待 `gbrain embed --stale` 收尾。
+>
+> 本 session 任务:**完整 system review + TODO 重新评估 + 推进系统优化**。
+>
+> Phase A — System Review (~80 min,产出 ≤500 字 report):
+>  1. Brain health (15 min):gbrain doctor + stats + orphans --count;
+>     Postgres `pg_stat_activity` 看活跃连接;1 周内 dream cycle JSON
+>     一致性。
+>  2. Service mesh (15 min):9 个 launchd 各 last-run exit + log 大小;
+>     cloudflared 隧道健康;notion-poller 真实 cycle 频率。
+>  3. Query quality smoke (15 min):5-10 中文 query,手动评 top-3 相关性。
+>     现在 ~6 天 Postgres 满,可以决定 GBRAIN_SOURCE_BOOST tune-up。
+>  4. Storage + backup audit (10 min):du ~/.gbrain;pg_dump 数据规模;
+>     当前**没有 Postgres 自动备份**,评估风险。
+>  5. TODO re-evaluation (15 min):对账 P1/P2/P3,降级/归档/新增。
+>  6. 产出 ranked top-3 work items + scope estimate,等 Lucien 选。
+>
+> Phase B — Execute selected work item(s)(0-3h,depending on Lucien):
+>  - 候选(从 TODO P1):241 stale embed,Postgres backup 策略,kos-patrol
+>    stoplist,graph_coverage 解决。
+>  - 推完一个之后再问 Lucien 是否继续下一个。
+>
+> 起步命令(sandbox-aware):
+>   git log --oneline -3                         # 应见 33c0410 在 HEAD
+>   ps -axo pid,etime,command | grep gbrain | grep -v grep
+>   TOKEN=$(grep -o '[a-f0-9]\{64\}' \
+>     ~/Library/LaunchAgents/com.jarvis.kos-compat-api.plist | head -1)
+>   curl -s -H "Authorization: Bearer $TOKEN" \
+>     https://kos.chenge.ink/status | jq '.total_pages, .by_kind'
+>   gbrain doctor 2>&1 | tail -25
+>   psql -d gbrain -c "SELECT COUNT(*) FROM pages;
+>     SELECT COUNT(*) FROM content_chunks WHERE embedding IS NULL;"
+>   ls -lt ~/brain/.agent/dream-cycles/*.json | head -3
+>
+> 成功标准:
+>  - Phase A report 落地(plan 文件或 inline)。
+>  - TODO.md 更新反映 review 后的状态。
+>  - Phase B 至少推进 1 个 P1,verified+committed。
+> ```
 
 ### Step 1: production health re-check (5 min)
 

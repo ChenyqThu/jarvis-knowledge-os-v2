@@ -1,263 +1,268 @@
-# kos-jarvis — Outstanding Work (post v0.22.8 sync, 2026-04-29)
+# kos-jarvis — Outstanding Work (post Path 3 Postgres migration, 2026-04-29)
 
-> **Created**: 2026-04-29 from current pain points after upstream
-> v0.22.8 sync (commit `811c266`).
-> **Previous TODO.md** (now archived in git history at `14fff49`):
-> covered v1-wiki migration backlog, all closed.
+> **Updated**: 2026-04-29 17:30 local — refreshed after Path 3 close.
 > **Entry point for next session**:
-> [`docs/SESSION-HANDOFF-2026-04-29-post-v0.22.8-sync.md`](../../docs/SESSION-HANDOFF-2026-04-29-post-v0.22.8-sync.md)
+> [`docs/SESSION-HANDOFF-2026-04-29-post-postgres-migration.md`](../../docs/SESSION-HANDOFF-2026-04-29-post-postgres-migration.md).
+> **Pre-Path-3 TODO**: archived in git history at `7b6a409`.
 
-The brain is healthy on v0.22.8 (schema v29, 2117 pages, brain_score 85/100,
-doctor health 85/100, all 9 jarvis services running). Items below are
-ranked by blocking severity. Each has an acceptance criterion.
+The brain is healthy on Postgres 17 + pgvector 0.8.2 (schema v29,
+2303+ pages, all 9 jarvis services running). The P0 lock-deadlock
+that paused notion-poller ingestion for 2 days is closed. Items
+below are ranked by current value, not by historical severity.
 
 ---
 
-## P0 — production blocker
+## P0 — next session focus
 
-### [x] notion-poller DISABLED — closed 2026-04-29 16:50 local via Path 3 (Postgres migration)
+### [ ] Full system review + TODO re-prioritization
 
-**Resolved**: PGLite → Postgres migration. notion-poller cycle ran 152p
-in 5.5min, 0 zombies, exit 0. /status 90ms during in-flight `gbrain
-sync`. dream-cycle re-enabled (1030ms warm). See
-[`docs/JARVIS-ARCHITECTURE.md §6.18`](../../docs/JARVIS-ARCHITECTURE.md#618-pglite--本地-postgres-迁移--path-3-p0-unblock-2026-04-29-afternoon).
+**Why now**: 自 04-22 以来连续 7 天高速迭代 — v0.14 → v0.17 → v0.18.2 →
+v0.20.4 → v0.22.8 sync,filesystem-canonical Step 2.x,bug-report 闭环,
+Path 3 Postgres migration。每个 sync 各做局部决定,没系统性 review 过
+"all of it together"。 Lucien 明确要求新 session 完整 review + 结合
+TODO 重新评估待办 + 推进系统优化。
 
-**Original problem statement (kept for context)**:
-notion-poller launchd job was **bootouted + disabled** because
-re-enabling it would re-introduce the zombie sync subprocess pile-up
-(individual /ingest 2+ minutes, our 180s timeout SIGKILLs subprocess
-but lock release isn't always immediate).
+**Scope**:
+1. **Brain health audit** (15 min): `gbrain doctor`, `gbrain stats`,
+   `gbrain orphans --count`, /status 数字趋势,1 周以内的 dream
+   cycle archive 一致性,`pg_stat_activity` 看 Postgres 活动模式。
+2. **Service mesh audit** (15 min): 9 个 launchd jobs 各自 last-run
+   exit code + cron schedule 是否合理 + log 文件大小看是否在转动 + 
+   cloudflared tunnel 健康。
+3. **Query quality smoke** (15 min): 5-10 个代表性中文查询(技术、
+   人物、决策、近期事件),手动评 top-3 相关性。判断是否要触发
+   `GBRAIN_SOURCE_BOOST` 调优(P2 的 1-week soak 现在 6 天满)。
+4. **Storage + backup audit** (10 min): `du -sh ~/.gbrain` 看 PGLite
+   cold backup 的大小 + 上次 modify 时间;`pg_dump gbrain | wc -c`
+   看 Postgres 数据规模;评估当前备份策略是否充分(Postgres 后我们
+   没设 pg_dump 计划)。
+5. **TODO re-evaluation** (15 min): 把 P1/P2/P3 跟实际状态对账。
+   有些 P2 (e.g. /ingest 500 root cause) 已被 Path 3 物理消除,可以
+   归档;有些 P1 (zombie sync leak 监测) 因为 Postgres MVCC 优先级
+   下降到 P2/observation;新 P1 (e.g. pg_dump 备份策略) 需要 add。
+6. **Recommend next 3 work items** (10 min): 给 Lucien 看一个 ranked
+   list + scope 估计,等他选哪个推进。
 
-**Path explored, both abandoned**:
+**Acceptance**:
+- 一份 ≤500 字的 system review markdown(可放在 `~/.claude/plans/` 或
+  作为 inline 总结发给 Lucien),覆盖以上 5 个维度的关键数字。
+- 更新 TODO.md(降级/归档 stale 项,新增 review 中发现的项)。
+- ranked 推荐清单(top 3 work items + scope estimate),让 Lucien 选。
 
-- **Path 1** (maintenance-window full re-walk): tried 2026-04-29 03:30 local
-  for 18 min produced ZERO progress lines after `[sync.imports] start`.
-  Re-tested via dream-cycle 03:11 — same wedge, **12h 42min silent CPU
-  burn 75% R-state, stderr 0 bytes**. PGLite single-writer lock
-  topology under v0.21+ sync workload had structurally failed.
-- **Path 2** (in-process BrainDb refactor, ~150 LOC): would have
-  worked but required disabling kos-patrol/enrich-sweep/dream-cycle
-  during server uptime (PGLite same-process multi-handle conflict).
-  P1 follow-up backlog of HTTP refactors.
-- **Path 3 (chosen): PGLite → Postgres migration**, ~2.5h actual.
-  Postgres MVCC eliminates the entire lock-contention problem domain.
-  No cron disabled, no /ingest refactor needed for the unblock,
-  unlocks v0.20+ upstream features as side benefit.
-
-**Acceptance verified 2026-04-29 16:50 local**:
-- ✅ notion-poller cycle 1: 152 pages ingested in 5.5min, exit 0, **0
-  zombie `gbrain sync` subprocesses**
-- ✅ /status returned 90ms during burst with concurrent in-flight
-  `gbrain sync` subprocess
-- ✅ dream cycle 1030ms warm (vs PGLite silent wedge 12h+)
+**Scope**: ~80 min review + 0-2h 推进选定的 work item。
 
 ---
 
 ## P1 — quality, fast follow-up
 
-### [x] kos-compat-api event loop blocked by spawnSync — fixed 2026-04-29
+### [ ] 241 stale embeddings — `gbrain embed --stale`
 
-`server/kos-compat-api.ts` had 4 `spawnSync` calls (in /ingest, /query,
-gitCommitIngest) that froze the Bun HTTP event loop for the entire
-duration of every gbrain subprocess (up to 180s for sync). Replaced
-with Promise-wrapped `spawn` (commit `<pending>`). Concurrency proof:
-during in-flight /ingest's gbrain sync, 5 concurrent /status probes
-returned HTTP 200 in 138-193ms (vs pre-fix's 30+s blocks). External
-kos.chenge.ink stays responsive even when /ingest itself is slow.
-
-This is the 短期 / 方案 A from
-[`docs/bug-reports/notion-poller-pglite-lock-deadlock.md`](../../docs/bug-reports/notion-poller-pglite-lock-deadlock.md).
-The 彻底 / 方案 B (in-process BrainDb) is in P0 above as the path-2
-unblock for re-enabling notion-poller.
-
-### [ ] Zombie `gbrain sync` subprocess leak — root cause + plug
-
-**Why**: Phase C cutover surfaced 6 long-running `gbrain sync --no-pull`
-subprocesses that had been holding the PGLite lock for hours (200-700
-min CPU each, parented to PID 1, ignored SIGTERM, only released lock
-on SIGKILL). They're the **mechanical explanation** for the recurring
-kos-compat-api `/ingest` 500 timeout pattern that motivated commit
-`971b9ba` (CF 524 defense). The 6 we killed are gone; the source that
-spawned them is still active. **Now partially mitigated by spawnAsync's
-SIGKILL on timeout** (logs `spawn.timeout_kill` JSONL when fired), but
-zombies can still appear if SIGKILL doesn't propagate (D-state child).
-
-**What** (investigative steps):
-1. Monitor `pgrep -lf 'gbrain sync.*--no-pull'` over 24 h. If new
-   zombies appear, note their parent + spawn time → cron correlation.
-2. Read each launchd cron's wrapper script. Check for places that:
-   - shell out `gbrain sync` without `timeout N`
-   - shell out without `--timeout-ms` flag
-   - never SIGKILL a hung subprocess on retry
-3. Most likely culprits in order:
-   a. `com.jarvis.kos-deep-lint` (oldest cron, weekly Mon)
-   b. OpenClaw cron `~/.openclaw/workspace/skills/knowledge-os/...`
-      (calls `kos.chenge.ink` HTTP, but may also call CLI)
-   c. `workers/notion-poller/run.ts` (Path B retired the minion-wrap;
-      verify run.ts itself doesn't shell `gbrain sync`)
-
-**Acceptance**:
-- 24h watch shows zero new `gbrain sync` zombies, OR
-- offending site identified + wrapped with `timeout 600 gbrain sync` (or
-  equivalent Promise.race + AbortSignal in TS), AND
-- new test in `skills/kos-jarvis/kos-patrol/run.ts` adds a Phase 7
-  "stale-process check" that fires WARN if any `gbrain` subprocess
-  has been alive > 10 min holding the brain lock.
-
-**Scope**: 2-3 h investigative + 1 h fix.
-
-### [ ] graph_coverage 0% post-v0.21.0
-
-**Why**: doctor's new metric reports `Entity link coverage 0%, timeline 0%.
-Run: gbrain link-extract && gbrain timeline-extract` despite `gbrain stats`
-showing 8229 links + 11084 timeline entries. v0.21.0 added new `code_edges_chunk`
-+ `code_edges_symbol` tables; the metric likely re-defined what counts.
+**Why**: Path 3 migration 把 PGLite 上 NULL embedding 的 chunks 一并迁
+到 Postgres。Source side 显示 100%,migrate verify 显示 94 % (241 stale)
+— 差量是 v0.21+ 添加的 fenced-code chunks 之类没及时 embedded 的部分。
+Shim 在 :7222 健康,直接跑 `embed --stale` 能补完。
 
 **What**:
-1. Run `gbrain link-extract && gbrain timeline-extract` and re-check
-   doctor. If it still shows 0%, the metric requires the new
-   `code_edges_*` tables to be populated, which only `gbrain
-   reindex-code --yes` (CHUNKER_VERSION 3→4) does.
-2. Decision: either accept 0% as expected for markdown-heavy brains
-   (we don't have much code), or run `reindex-code --yes` after
-   verifying cost preview is reasonable.
+```bash
+gbrain embed --stale 2>&1 | tail -10
+psql -d gbrain -c "SELECT COUNT(*) FROM content_chunks WHERE embedding IS NULL;"
+# expect: 0
+```
 
-**Acceptance**: doctor's `graph_coverage` either reports a sensible
-nonzero number, OR we update fork README / handoff with "this WARN is
-expected on markdown-only brains, ignore it" so future syncs don't
-re-investigate.
+**Acceptance**: `embedding IS NULL` 计数为 0,doctor 的 `embed_coverage`
+为 100 %。
 
-**Scope**: 30 min investigation, 0-1 h reindex if we choose to.
+**Scope**: 5-15 min(取决于 shim 吞吐 + 241 chunks 大小)。
+
+### [ ] Postgres backup 策略
+
+**Why**: 切到 Postgres 后,原 PGLite 的 `cp -R ~/.gbrain/brain.pglite/`
+不再适用。当前没有自动备份。生产风险:笔记本断电/磁盘故障会丢全部 ingest。
+
+**What**:
+1. 写 `scripts/launchd/com.jarvis.gbrain-backup.plist.template`,daily
+   03:30 触发(避开 dream cycle 03:11)。
+2. 内部跑 `pg_dump -d gbrain -Fc -f ~/.gbrain/backups/gbrain-$(date +%Y%m%d).dump`,
+   保留 14 天 rolling。
+3. retention prune:删除 14 天前 dump。
+4. 跟 `~/.gbrain/brain.pglite.pre-path2-1777504487` (502MB) 一起作为
+   层级 backup(快照点+rolling)。
+
+**Acceptance**:
+- `~/.gbrain/backups/` 有最近 14 天 dump,新的每天产生。
+- `pg_restore --list <dump> | head -20` 表明 dump 完整。
+- launchd job `com.jarvis.gbrain-backup` 在 service health 列出 ✅。
+
+**Scope**: 30-45 min(写 plist + 写 wrapper script + 跑一次 verify)。
 
 ### [ ] kos-patrol Phase 4 stoplist for Notion email/UI labels
 
-**Why**: This was filed as P2 in the archived TODO (4-23) but has been
-sitting unaddressed. Today's `~/brain/.agent/dashboards/knowledge-health-2026-04-28.md`
-shows 20 entity gaps, **all of which are Notion email/UI column headers**
-("Action Type", "Original EML", "Key Points", "Best Regards", "Open Threads",
-...). Real gaps drown in noise. Now the brain is post-bulk-import and
-notion-poller is steady-state, so the stoplist will prevent regression.
+**Why**: 这条从 04-23 archived TODO 滚到现在没修。最新 patrol dashboard
+显示 20 entity gaps 全部是 Notion email/UI column headers ("Action Type",
+"Original EML", "Key Points", "Best Regards", "Open Threads", ...)。
+真实 gap 被噪声淹没。Notion 经过 Path 3 重新 ingest 之后会持续滋生。
 
 **What**:
-- Add a `STOPLIST` const in `skills/kos-jarvis/kos-patrol/run.ts` Phase 4
-  with the obvious offenders (~30 phrases from today's dashboard)
-- Or smarter: require candidate to appear in ≥2 distinct `kind` categories
-  (not just N notion-source rows)
+- Add `STOPLIST` const in `skills/kos-jarvis/kos-patrol/run.ts` Phase 4
+  用 ~30 个明显 offender。
+- 或更聪明:require candidate appears in ≥2 distinct `kind` categories
+  (not just N notion-source rows)。
 
-**Acceptance**: tomorrow's patrol dashboard shows ≤5 gaps, all
-real entities (people / companies / concepts).
+**Acceptance**: 明天的 patrol dashboard 显示 ≤5 gaps,全为真实 entity。
 
-**Scope**: 1 h.
+**Scope**: 1 h。
+
+### [ ] graph_coverage 0% 调研 + 解决
+
+**Why**: doctor 的新 metric 说 `Entity link coverage 0%, timeline 0%`,
+即使 `gbrain stats` 显示 8231 links + 11084 timeline。v0.21.0 加的
+`code_edges_chunk` + `code_edges_symbol` 表很可能 redefine 了"counts"。
+
+**What**:
+1. `gbrain doctor --json | jq .checks.graph_coverage` 看 details。
+2. 跑 `gbrain link-extract && gbrain timeline-extract` 看 metric 是否
+   变化。
+3. 若仍 0 %,跑 `gbrain reindex-code --dry-run` 看代价 — 我们 markdown-
+   only 估计 0 cost,可以直接 `--yes`。
+4. Decision:接受 0 % 作为 markdown-only brain 的预期,update README +
+   handoff "this WARN is expected" — 防止以后 sync 反复调研。
+
+**Acceptance**: doctor 的 `graph_coverage` 报合理非零数字,OR 文档
+"this WARN is expected on markdown-only" 落地。
+
+**Scope**: 30 min 调研,0-1 h reindex(若选)。
 
 ---
 
 ## P2 — observation / cosmetic
 
-### [ ] Confirm CHUNKER_VERSION 3→4 re-walk cost before next sync
+### [ ] `GBRAIN_SOURCE_BOOST` tune-up evaluation (1-week soak now ~6天满)
 
-**Why**: v0.21.0 set `CHUNKER_VERSION 4`; the `sources.chunker_version`
-gate forces a full re-walk on next `gbrain sync` regardless of git
-HEAD. We didn't run `gbrain reindex-code --dry-run` during cutover.
-Markdown bodies should cache-hit on embedding (4023 chunks already
-embedded), so cost should be tiny — but verify.
+**Why**: v0.22.0 加的 source-aware retrieval ranking。Default boost map
+不知道我们 layout(`sources/notion/` vs upstream's `wintermute/chat/`),
+所以我们 brain 在 factor=1.0 全均 — 等于无 source-aware boost。Notion-
+source 占 60 %,可能 swamp 短中文 query。
 
-**What**: `bun run src/cli.ts reindex-code --dry-run` and read the
-ConfirmationRequired envelope. If cost <$1 in embedding, just run
-`--yes` to upgrade chunks proactively. If higher, defer to a budgeted
-window.
-
-**Acceptance**: cost preview captured + decision recorded.
-
-**Scope**: 15 min preview, 0-30 min reindex.
-
-### [ ] `default` source's `local_path` not set up for v0.22.4 audit
-
-**Why**: `gbrain frontmatter audit --json` returns
-`{ok: true, total: 0, per_source: []}` because the v0.22.4 source-resolver
-walks `sources` table for rows with `local_path` set, and our `default`
-source apparently doesn't. Audit returns green anyway, but per-source
-detail is missing.
-
-**What**: `gbrain sources update default --local-path ~/brain` (CLI
-shape may differ; confirm via `gbrain sources --help`).
-
-**Acceptance**: `gbrain frontmatter audit --json` returns
-`per_source: [{source_id: "default", path: ".../brain", ...}]`.
-
-**Scope**: 15 min including investigation.
-
-### [ ] `GBRAIN_SOURCE_BOOST` tune-up evaluation (1-week soak)
-
-**Why**: v0.22.0 added source-aware retrieval ranking. Default boost
-map doesn't know our layout (`sources/notion/` vs upstream's
-`wintermute/chat/`), so our brain ranks at factor=1.0 across the board
-— effectively no source-aware boost. With ~1245 notion-source pages
-(60% of brain), they may swamp short Chinese queries.
-
-**What** (after 1 week of v0.22.8 production observation):
-1. Run 5-10 representative Chinese queries (`/query` endpoint), score
-   the top-3 results manually for relevance vs noise.
-2. If notion-sources dominate inappropriately, set in
-   `com.jarvis.kos-compat-api.plist`'s EnvironmentVariables:
+**What**(P0 review 中的 step 3 会做这个):
+1. 跑 5-10 个代表性中文查询(`/query`),手动评 top-3 相关性。
+2. 若 notion-sources 不当主导,设 plist EnvironmentVariables:
    `GBRAIN_SOURCE_BOOST="concepts/:1.5,projects/:1.3,syntheses/:1.5,sources/notion/:0.7"`
-3. Re-run the same queries. If win >5%, keep. Else revert.
+3. 重跑同样 query。win >5 % → 留;else → revert。
 
-**Acceptance**: decision recorded in `docs/JARVIS-ARCHITECTURE.md`.
+**Acceptance**: 决定记录到 `docs/JARVIS-ARCHITECTURE.md`。
 
-**Scope**: 1 h evaluation post-soak.
+**Scope**: 1 h 评估(post-soak)。
 
-### [ ] Calendar checkpoints (carried forward)
+### [ ] CHUNKER_VERSION 3→4 re-walk cost (markdown-only,大概率 cheap)
 
-| Date | Action |
-|---|---|
-| 2026-05-04 | Stage 4 v1 archive — `com.jarvis.kos-api.plist.bak` to `_archive/`, archive v1 GitHub repo |
-| 2026-05-07 | Step 2.4 commit-batching review for `~/brain` per-ingest commits |
-| 2026-05-25 | Re-evaluate Gemini 3072-dim embeddings vs current 1536-dim truncation |
-| Trigger-based | PGLite → Postgres switch (4 named conditions in `docs/UPSTREAM-PATCHES/v020-pglite-postgres-evaluation.md`) |
+**Why**: v0.21.0 设 `CHUNKER_VERSION 4`,sources.chunker_version 已被
+手动 pin 到 '4'。理论上 markdown body cache-hit on embedding(241 stale
+除外),代价应该极小,但没正式 verify。
+
+**What**: `gbrain reindex-code --dry-run` 看 ConfirmationRequired。若
+embedding cost <$1,直接 `--yes`。
+
+**Acceptance**: cost preview 抓取 + 决定记录。
+
+**Scope**: 15 min preview, 0-30 min reindex。
+
+### [ ] `default` source `local_path` 没设 (v0.22.4 audit gap)
+
+**Why**: `gbrain frontmatter audit --json` 返 `{ok: true, total: 0,
+per_source: []}`,因为 v0.22.4 source-resolver 走 sources 表的 local_path
+列,我们 default source 没设。Audit 仍 green,但 per-source 详情缺。
+
+**What**: `gbrain sources update default --local-path ~/brain`(CLI shape
+可能不同;`gbrain sources --help` 确认)。
+
+**Acceptance**: audit 返 `per_source: [{source_id: "default", path:
+".../brain", ...}]`。
+
+**Scope**: 15 min。
+
+### [ ] Zombie `gbrain sync` subprocess leak — 降级 observation
+
+**Why原 P1**: PGLite 时代发现 6 个长跑 zombie 持有 lock。Path 3 之后
+Postgres MVCC 让 zombie 不再阻塞其他 client,所以"leak 即灾难"已经不
+存在 — 但 leak 本身的 root cause(spawn 来源未识别)仍没解决。
+
+**Now**: 持续 24 h `pgrep` 监测。若 0 zombie,标记为 closed-by-Path3。
+若仍出现,追溯 spawn 来源(最可能 `com.jarvis.kos-deep-lint` 老 cron)。
+不再列为 active 调查项,只在 patrol Phase 7 加"stale-process check
+WARN"作 cheap 监测。
+
+**Acceptance**: 24 h 监测 0 zombie → 归档到 Done。或加 patrol Phase 7
+WARN check 作 cheap 持续监测。
+
+**Scope**: 0-1 h(只加 patrol check)。
+
+### [ ] Calendar checkpoints (carried forward, post-Path-3 调整)
+
+| Date | Action | 状态 |
+|---|---|---|
+| 2026-05-04 | Stage 4 v1 archive — `com.jarvis.kos-api.plist.bak` to `_archive/`,archive v1 GitHub repo | active |
+| 2026-05-07 | Step 2.4 commit-batching review for `~/brain` per-ingest commits | active |
+| 2026-05-25 | Re-evaluate Gemini 3072-dim embeddings vs current 1536-dim truncation | active |
+| ~~Trigger-based~~ | ~~PGLite → Postgres switch~~ | **CLOSED 2026-04-29 via Path 3 (§6.18)** |
 
 ---
 
 ## P3 — speculative
 
-### [ ] Push merge commit `811c266` to origin/master
+### [ ] Push to origin/master (now 8 commits ahead)
 
-**Why**: `git status` shows `Your branch is ahead of 'origin/master'
-by 7 commits.` The merge is on local master but not pushed. User
-controls when to push (allowedPrompts didn't include push during sync).
+**Why**: master 比 origin 多 8 commits(includes v0.22.8 sync, spawnAsync
+fix, Path 3 Postgres migration)。Lucien 控制 push 时机。
 
-**What**: `git push origin master` (after one final smoke confirming
-production is stable for ≥30 min on v0.22.8).
+**What**: 
+```bash
+git push origin master  # 8 commits ahead
+```
+(in next session,after smoke 30 min on Postgres + 0 zombies confirmed)
 
-**Acceptance**: GitHub `ChenyqThu/jarvis-knowledge-os-v2` master shows
-`811c266` at HEAD.
+**Acceptance**: GitHub `ChenyqThu/jarvis-knowledge-os-v2` master HEAD =
+local HEAD (currently `33c0410`)。
 
-**Scope**: 1 min.
+**Scope**: 1 min(在 next session 的系统 review 完成 + production
+stable 之后)。
 
-### [ ] kos-compat-api `/ingest` HTTP 500 root cause
+### [ ] 启用 v0.20+ 上游 features (Postgres-only)
 
-**Why**: Now that the zombie-sync hypothesis is on the table (P1
-above), the previously-mysterious 500 timeouts on `/ingest` may have
-the same root cause. After the P1 fix lands, monitor `/ingest` 500
-rate; if it disappears, this can be retired.
+**Why**: Path 3 解锁 jobs supervisor、queue_health、wedge-rescue、
+backpressure-audit。我们没跑 worker daemon 所以没立刻收益,但若以后想
+用 `gbrain agent run` durable subagent runtime(v0.16),现在能跑了。
 
-**Acceptance**: stderr log shows zero `Failed to start server`,
-zero PGLite-lock-timeout 500s, over a 7-day window.
+**What**: 评估业务价值。若有具体 use case(如自动化 dikw-compile 或
+长跑 enrichment),配置 supervisor + worker。否则不做。
 
-**Scope**: passive monitoring after P1 lands.
+**Acceptance**: 决定记录(`docs/JARVIS-ARCHITECTURE.md` 或 README)。
+
+**Scope**: 30 min 评估,2-3 h 配置(若选)。
 
 ---
 
 ## Done (most recent)
 
+- [x] **2026-04-29 Path 3 Postgres migration** (commit `33c0410`) —
+  PGLite single-writer lock topology silent-fail under v0.21+ workload.
+  Migrated to local Postgres 17 + pgvector 0.8.2 via `gbrain migrate
+  --to supabase --url postgresql://chenyuanquan@127.0.0.1:5432/gbrain`.
+  2117 pages + 8231 links + 11084 timeline transferred. BrainDb dual-
+  engine refactor (~80 LOC). 0 plist edits. notion-poller +186p/5.5min
+  /0 zombies. dream-cycle 1030ms warm. /status 90 ms during burst.
+  Trigger #3 of v020 evaluation satisfied. See [§6.18](../../docs/JARVIS-ARCHITECTURE.md#618-pglite--本地-postgres-迁移--path-3-p0-unblock-2026-04-29-afternoon).
+- [x] **2026-04-29 spawnAsync fix** (commit `093601e`) — replaced 4
+  `spawnSync` calls with Promise-wrapped `spawn` to unfreeze Bun event
+  loop. /status stayed responsive (138-193ms) during in-flight gbrain
+  sync 134s. **Made Path 3 unnecessary for the event-loop fix**, but
+  Path 3 was still needed for the lock-deadlock root cause.
 - [x] **2026-04-29 v0.22.8 upstream sync** (commit `811c266`) — merged
   9 minor releases (v0.21.0 → v0.22.8). Schema v24 → v29 via
   v0.22.6.1's `applyForwardReferenceBootstrap()`. Fork patch on
-  `pglite-schema.ts` dropped (#370 closed by upstream PR #440).
-  WAL fork patch retained. Production cutover: 2117/2117 pages
-  preserved, brain_score 85/100 stable, /status 298ms /query 11.7s.
-  Rollback tag `pre-sync-v0.22.8-1777445821`, snapshot
-  `~/.gbrain/brain.pglite.pre-sync-v0.22.8-1777447016` (550MB).
-  Story in [`docs/JARVIS-ARCHITECTURE.md §6.17`](../../docs/JARVIS-ARCHITECTURE.md#617-upstream-v0228-sync-2026-04-29-commit-811c266).
+  `pglite-schema.ts` dropped (#370 closed by upstream PR #440). WAL
+  fork patch retained for cold-backup viability. Production cutover:
+  2117/2117 pages preserved, brain_score 85/100 stable.
+  Story in [§6.17](../../docs/JARVIS-ARCHITECTURE.md#617-upstream-v0228-sync-2026-04-29-commit-811c266).
 - [x] **2026-04-27 evening Tier 1 sweep** + frontmatter-ref-fix v1+v2
   + 4 orphan-reducer rounds. Lint ERRORs 4→0, frontmatter long-tail
   refs 70→0, orphans 814→732. See archived TODO + §6.15-§6.16.
