@@ -30,6 +30,15 @@ export default worker;
 const KOS_API_BASE = process.env.KOS_API_BASE ?? "http://localhost:7225";
 const KOS_API_TOKEN = process.env.KOS_API_TOKEN ?? "";
 
+// Cloudflare Workers default fetch-subrequest timeout is ~30s; an
+// /ingest call on the kos-compat-api side normally takes 20-80s and
+// can hit ~210s under contention (gbrain sync + git commit + embed).
+// Without an explicit AbortSignal, anything past the platform default
+// surfaces as "KOS知识库超时不可达" on the Notion side even though the
+// server happily completed. 240_000 matches the Rule 1 ceiling in
+// docs/integration-clients.md.
+const KOS_FETCH_TIMEOUT_MS = 240_000;
+
 async function kosApi(
 	endpoint: string,
 	method: "GET" | "POST" = "GET",
@@ -43,18 +52,40 @@ async function kosApi(
 		headers["Authorization"] = `Bearer ${KOS_API_TOKEN}`;
 	}
 
-	const res = await fetch(url, {
-		method,
-		headers,
-		body: body ? JSON.stringify(body) : undefined,
-	});
+	const controller = new AbortController();
+	const timeoutId = setTimeout(
+		() => controller.abort(),
+		KOS_FETCH_TIMEOUT_MS,
+	);
 
-	if (!res.ok) {
-		const text = await res.text();
-		throw new Error(`KOS API error (${res.status}): ${text}`);
+	try {
+		const res = await fetch(url, {
+			method,
+			headers,
+			body: body ? JSON.stringify(body) : undefined,
+			signal: controller.signal,
+		});
+
+		if (!res.ok) {
+			const text = await res.text();
+			throw new Error(`KOS API error (${res.status}): ${text}`);
+		}
+
+		return await res.text();
+	} catch (err) {
+		// Surface AbortError as a clear timeout message so the agent UI
+		// can distinguish "server slow" from "server unreachable".
+		if (err instanceof Error && err.name === "AbortError") {
+			throw new Error(
+				`KOS API timeout after ${KOS_FETCH_TIMEOUT_MS / 1000}s on ${method} ${endpoint}. ` +
+					`The server may still complete in the background; do NOT retry the same payload — ` +
+					`probe GET /status first or wait for the background sweep to surface the result.`,
+			);
+		}
+		throw err;
+	} finally {
+		clearTimeout(timeoutId);
 	}
-
-	return res.text();
 }
 
 // ─── Tool: kosQuery ───
