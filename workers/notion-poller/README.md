@@ -2,7 +2,7 @@
 
 Local launchd cron on Lucien's Mac. Polls configured Notion databases
 every 5 minutes, detects new or updated pages, converts them to
-markdown, and pushes to `kos-compat-api` on port 7220. The brain grows
+markdown, and pushes to `kos-compat-api` on port 7225. The brain grows
 without Lucien touching anything: writing in a monitored Notion DB is
 the ingest gesture.
 

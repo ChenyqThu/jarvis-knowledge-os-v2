@@ -29,11 +29,11 @@ for the external OpenClaw skill file. Apply once during Week 3.2 cutover.
 
 | KOS v1 command | GBrain replacement |
 |----------------|--------------------|
-| `kos ingest <url>` | `curl -X POST http://127.0.0.1:7220/ingest -H 'Content-Type: application/json' -d '{"url":"<url>"}'` |
+| `kos ingest <url>` | `curl -X POST http://127.0.0.1:7225/ingest -H 'Content-Type: application/json' -d '{"url":"<url>"}'` |
 | `kos ingest <url> --confirm` | same, then re-run with `--dikw-recompile` helper (TODO: add server flag) |
-| `kos query "<q>"` | `curl -X POST http://127.0.0.1:7220/query -H 'Content-Type: application/json' -d '{"question":"<q>"}'` |
-| `kos digest --since 7` | `curl http://127.0.0.1:7220/digest?since=7` |
-| `kos status` | `curl http://127.0.0.1:7220/status` |
+| `kos query "<q>"` | `curl -X POST http://127.0.0.1:7225/query -H 'Content-Type: application/json' -d '{"question":"<q>"}'` |
+| `kos digest --since 7` | `curl http://127.0.0.1:7225/digest?since=7` |
+| `kos status` | `curl http://127.0.0.1:7225/status` |
 | `kos lint` | `bun run ~/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/kos-lint/run.ts` |
 | `kos patrol` | `bun run ~/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/kos-patrol/run.ts` (once implemented) |
 
@@ -55,11 +55,17 @@ If Stage 3.2 cutover fails, revert by pointing commands back to the v1
 `kos` CLI at `~/Projects/jarvis-knowledge-os/kos`. The v1 repo is frozen
 at the `v1-frozen` tag and still runs.
 
-## Cutover checklist (Week 3.2)
+## Cutover checklist (Week 3.2 — historical, completed)
+
+> **Current port**: kos-compat-api runs on **7225** (since 2026-04-28).
+> The original Week 3.2 cutover landed kos-compat-api on the v1 port 7220
+> for compatibility, then later moved to 7225 to free 7220 for archive.
+> The command-mapping URLs above already use 7225; the steps below are
+> historical record of the one-time migration.
 
 - [ ] Stop launchd service that runs the v1 kos-api.py (port 7220)
 - [ ] Start kos-compat-api.ts via launchd on 7220
-- [ ] Verify `curl http://127.0.0.1:7220/health` returns v2 engine marker
+- [ ] Verify `curl http://127.0.0.1:7225/health` returns v2 engine marker
 - [ ] Test Notion Knowledge Agent (no deploy needed, upstream URL unchanged)
 - [ ] Edit OpenClaw skill per mapping table above
 - [ ] Send a feishu test message containing a URL → verify ingest

@@ -22,7 +22,7 @@ const DB_IDS = (process.env.NOTION_DATABASE_IDS ?? "")
   .split(",")
   .map((s) => s.trim().replace(/-/g, ""))
   .filter(Boolean);
-const KOS_API_BASE = process.env.KOS_API_BASE ?? "http://127.0.0.1:7220";
+const KOS_API_BASE = process.env.KOS_API_BASE ?? "http://127.0.0.1:7225";
 const KOS_API_TOKEN = process.env.KOS_API_TOKEN ?? "";
 const STATE_PATH =
   process.env.POLLER_STATE_PATH ??

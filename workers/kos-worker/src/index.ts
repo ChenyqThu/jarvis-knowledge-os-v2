@@ -8,10 +8,10 @@
  * - kosStatus: Get knowledge base health metrics
  *
  * These tools call the kos-compat-api server on Lucien's Mac
- * (exposed via cloudflared at https://kos.chenge.ink, port 7220 locally).
+ * (exposed via cloudflared at https://kos.chenge.ink, port 7225 locally).
  *
  * v2 changes (2026-04-17):
- * - Default KOS_API_BASE now 7220 (v1 was 7720)
+ * - Default KOS_API_BASE now 7225 (KOS v2; early v2 used 7220, v1 used 7720)
  * - kosIngest accepts optional `markdown` / `title` / `source` / `kind` / `tags`
  *   so notion jarvis can ingest Notion-page content without re-fetching a URL.
  *   This is the companion to the /ingest markdown field added to kos-compat-api
@@ -25,8 +25,9 @@ const worker = new Worker();
 export default worker;
 
 // KOS API base URL (set via ntn workers env push).
-// Default 7220 for v2; deployed worker talks to https://kos.chenge.ink.
-const KOS_API_BASE = process.env.KOS_API_BASE ?? "http://localhost:7220";
+// Default 7225 for KOS v2; deployed worker talks to https://kos.chenge.ink
+// (set via `ntn workers env set KOS_API_BASE https://kos.chenge.ink`).
+const KOS_API_BASE = process.env.KOS_API_BASE ?? "http://localhost:7225";
 const KOS_API_TOKEN = process.env.KOS_API_TOKEN ?? "";
 
 async function kosApi(

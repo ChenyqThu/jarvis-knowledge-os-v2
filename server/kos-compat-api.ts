@@ -15,10 +15,10 @@
  *   GET  /health                     → { status, brain }
  *
  * Auth: Authorization: Bearer <token> (KOS_API_TOKEN env, optional).
- * Port: KOS_API_PORT env (default 7220 to match old kos-api.py).
+ * Port: KOS_API_PORT env (default 7225 for KOS v2; v1 kos-api.py used 7220).
  *
  * Usage:
- *   bun run server/kos-compat-api.ts --port 7220
+ *   bun run server/kos-compat-api.ts --port 7225
  *   KOS_API_TOKEN=secret bun run server/kos-compat-api.ts
  */
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
@@ -29,7 +29,7 @@ import { dirname, join } from "node:path";
 import { BrainDb } from "../skills/kos-jarvis/_lib/brain-db.ts";
 import { fetchUrl } from "../skills/kos-jarvis/url-fetcher/index.ts";
 
-const PORT = Number(process.env.KOS_API_PORT ?? readFlag("--port") ?? 7220);
+const PORT = Number(process.env.KOS_API_PORT ?? readFlag("--port") ?? 7225);
 const TOKEN = process.env.KOS_API_TOKEN ?? "";
 const BRAIN = process.env.GBRAIN_HOME ?? join(homedir(), "brain");
 const DIGEST_DIR = join(BRAIN, ".agent", "digests");
