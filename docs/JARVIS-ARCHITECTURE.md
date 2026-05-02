@@ -1964,11 +1964,63 @@ project directory which auto-loads `.env`, and our `.env` sets
   (1.48 ms) — same root cause: the test seeds `${homedir()}/.gbrain/cycle.lock`
   but `runCycle` reads `gbrainPath()/cycle.lock`, which honors GBRAIN_HOME.
 
-**Filed as TODO** for upstream contribution (worth a 1-line fix that calls
-`configDir()` instead of `homedir()` in those test fixtures). Net regression
-risk: zero — these are dev-box-only test failures; the production code paths
-they cover are exercised correctly by the kos-jarvis integration smoke
-(BrainDb test 6/6, schema migration, eval capture round-trip).
+**Resolution (post-merge cleanup)**: 3 of 5 fixed by commenting
+`GBRAIN_HOME=/Users/chenyuanquan/brain` out of `.env` + `.env.local` (it
+was a leftover from an aborted "brain config under brain repo" migration
+that never populated `~/brain/.gbrain/config.json`). Now down to 2 fails,
+both `check-resolvable resolveSkillsDir` cases that expect `r.source ===
+'repo_root'` but get `'openclaw_workspace_home_root'` because the dev
+machine has openclaw workspace marker that wins findRepoRoot precedence.
+Both are upstream-test-only; the production code path they cover works.
+
+### Post-merge actions (2026-05-02)
+
+1. **`master` updated**: `git merge --no-ff sync-v0.25.0` ⇒ commit `f6bb039`.
+   Pushed to `origin/master`. The sync work commit is `ea29354`.
+2. **Long-running services restarted** to pick up v0.25.0 src/cli.ts via
+   the `~/.bun/bin/gbrain → src/cli.ts` symlink shim:
+   - `com.jarvis.gemini-embed-shim` (PID 2502 → 63403)
+   - `com.jarvis.kos-compat-api` (PID 32389 → 63464)
+   - cron-driven services (notion-poller, dream-cycle, kos-patrol,
+     enrich-sweep) pick up new code on next scheduled fire.
+3. **`GBRAIN_HOME` scrubbed from `.env` + `.env.local`** (commented with
+   explanatory block) — local-dev fix only; **5 launchd plist templates
+   still set it** under `EnvironmentVariables`. Production state inherited
+   that plist setting.
+
+### Open: dream-cycle production breakage (root cause + path forward)
+
+`gbrain dream` (and other upstream-CLI cron callers) fail under
+production env because `connectEngine()` calls `loadConfig()` which
+reads `${GBRAIN_HOME}/.gbrain/config.json`. With `GBRAIN_HOME=~/brain`
+and no file at that path, loadConfig returns null → `console.error('No
+brain configured')` + `process.exit(1)`. Verified via
+`launchctl kickstart -k gui/$UID/com.jarvis.dream-cycle` returning
+exit=1 with that exact error.
+
+The last successful cron run was `2026-05-01T10-11-02Z` (yesterday
+03:11 PT), captured at `~/brain/.agent/dream-cycles/2026-05-01T10-11-02Z.json`.
+Why it worked then but not now is unexplained — `loadConfig()` /
+`configDir()` were unchanged between v0.22.9 and v0.25.0 per `git diff`.
+Either Bun's `.env` auto-load semantics shifted between releases, or
+something transient in yesterday's process env was different. The
+mechanism that yields today's failure is robustly reproducible.
+
+**Two fix paths** (filed as TODO P0 for next session, both unblock
+dream-cycle and align local + production on the same config home):
+
+- **Path A (recommended)**: edit all 5 plist templates under
+  `scripts/launchd/*.template` to remove the `<key>GBRAIN_HOME</key>` /
+  `<string>/Users/chenyuanquan/brain</string>` block, then bootout +
+  bootstrap each service. Net: every component reads from `~/.gbrain/`
+  uniformly. Migrate orphaned `~/brain/.gbrain/audit/*` and
+  `sync-failures.jsonl` to `~/.gbrain/` (cat-merge or move).
+- **Path B (band-aid)**: symlink `~/brain/.gbrain/config.json` →
+  `~/.gbrain/config.json`. Keeps GBRAIN_HOME redirection but satisfies
+  the loadConfig path. Less clean but zero plist surgery.
+
+Until then: dream-cycle daily 03:11 cron is broken. Local dev `bun run
+src/cli.ts dream` works (because `.env` no longer sets GBRAIN_HOME).
 
 ### Rollback matrix
 
