@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.kos-deep-lint</string>
+    <!--
+      Monthly v1 deep lint via Minions shell job.
+      Triggered on day 1 of each month at 09:00.
+
+      The wrap script (scripts/minions-wrap/kos-deep-lint.sh) shells out to
+      v1 repo's `./kos lint --deep` which has a `#!/usr/bin/env bun`
+      shebang. Without PATH containing ~/.bun/bin, the spawned shell hits
+      `env: bun: No such file or directory` (exit 127). The PATH env block
+      below mirrors the other 5 jarvis services so launchd has a working
+      bun + homebrew + system PATH.
+
+      Manual invocation:
+        bash scripts/minions-wrap/kos-deep-lint.sh
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/scripts/minions-wrap/kos-deep-lint.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/chenyuanquan/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Day</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/kos-lint/deep-lint.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/skills/kos-jarvis/kos-lint/deep-lint.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2</string>
+</dict>
+</plist>

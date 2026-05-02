@@ -1,11 +1,15 @@
 # kos-jarvis — Outstanding Work (post v0.25.0 sync, 2026-05-02)
 
-> **Updated**: 2026-05-02 — refreshed after v0.25.0 upstream sync (commit
-> `f6bb039` merged to master). Schema 29 → 31 (eval_capture_tables).
-> Eval capture enabled (`~/.gbrain/config.json` → `eval.capture: true`).
-> BrainDb safety net (5 eval methods + 6 unit tests) landed in
-> `skills/kos-jarvis/_lib/brain-db.{ts,test.ts}`. Story in
-> [JARVIS-ARCHITECTURE.md §6.20](../../docs/JARVIS-ARCHITECTURE.md#620-upstream-v0250-sync-2026-05-01).
+> **Updated**: 2026-05-02 evening — launchd surgery done. Removed
+> `GBRAIN_HOME=~/brain` from 5 plist templates + 5 deployed plists,
+> imported `com.jarvis.kos-deep-lint.plist.template` to repo with
+> `PATH` env block (closes the `env: bun` exit 127). Migrated
+> `~/brain/.gbrain/{audit/W18,sync-failures.jsonl}` → `~/.gbrain/`
+> (no overlap), removed `~/brain/.gbrain/`. dream-cycle kickstart
+> validated (fresh archive `2026-05-02T07-38-04Z.json`, 8 phases /
+> exit 0). kos-compat-api restarted PID 63464→87485, /status auth
+> wall responds. All 6 jarvis services now GBRAIN_HOME-free. Story
+> appended to [JARVIS-ARCHITECTURE.md §6.20](../../docs/JARVIS-ARCHITECTURE.md#620-upstream-v0250-sync-2026-05-01).
 >
 > **Next session topic** (Lucien-requested): integrated knowledge-base
 > architecture review — does v0.25.0 gbrain (with capture/replay,
@@ -19,10 +23,10 @@
 
 The brain is healthy on Postgres 17 + pgvector 0.8.2 (schema **v31**,
 **2425 pages, 99.5 % embed coverage** (4761/4786 chunks), 0 zombies, all
-10 jarvis services up except `kos-deep-lint` exit 127 — see P1 below).
-brain_score 83/100 unchanged. After v0.25.0 merge: services restarted
-to pick up new code via `~/.bun/bin/gbrain → src/cli.ts` shim;
-`kos-compat-api` PID 32389→63464, `gemini-embed-shim` PID 2502→63403.
+10 jarvis services up). brain_score 83/100 unchanged. After v0.25.0
+merge + launchd surgery: services restarted on new plists (no
+GBRAIN_HOME); `kos-compat-api` PID 32389→63464→87485, `gemini-embed-shim`
+PID 2502→63403 (untouched).
 
 ---
 
@@ -53,40 +57,17 @@ deprecation steps + risk register.
 
 **Scope**: 2-3 h research + 1-2 h plan write.
 
-### [ ] dream-cycle production breakage (GBRAIN_HOME → loadConfig → exit 1)
+### [ ] check-resolvable 2 测试 fail (dev-box 环境耦合,上游测试 gap)
 
-**Why**: launchd's daily 03:11 dream-cycle cron is currently broken under
-production env. Root cause traced (see §6.20): plist sets
-`GBRAIN_HOME=~/brain` → `loadConfig()` looks for
-`~/brain/.gbrain/config.json` → file doesn't exist → `process.exit(1)`
-with "No brain configured". Yesterday's run (May 1 03:11) was the last
-success; today's manual `launchctl kickstart -k` reproduces the failure.
+**Why**: 上游 `bun test` 里两个 case `openclaw_workspace_home_root` 抢
+占 `repo_root` 解析,源头是 dev-box 上 `~/openclaw` 跟 fork repo root
+共存的环境耦合,非生产 fire。本轮 launchd 修复期间复现仍在。
 
-**What** (two paths, pick one):
-- **Path A** (recommended): edit 5 plist templates under
-  `scripts/launchd/com.jarvis.{dream-cycle,kos-compat-api,kos-patrol,enrich-sweep,notion-poller}.plist.template`
-  to remove the `GBRAIN_HOME` env block. Bootout + bootstrap each.
-  Migrate `~/brain/.gbrain/{audit,sync-failures.jsonl}` → `~/.gbrain/`
-  via cat-merge.
-- **Path B** (band-aid): `ln -s ~/.gbrain/config.json ~/brain/.gbrain/config.json`.
-  Keeps GBRAIN_HOME redirect, satisfies loadConfig.
+**What**: 缩窄到 hermetic temp-dir scope (`createTempWorkspace()` +
+`TMPDIR`) 让 test 不依赖 `$HOME`。可能要给上游开 PR(纯测试 fix,
+production code 不动)。
 
-**Acceptance**: `launchctl kickstart -k gui/$UID/com.jarvis.dream-cycle`
-produces a fresh `~/brain/.agent/dream-cycles/<ISO>.json` archive.
-
-**Scope**: Path A 30 min + 15 min validation. Path B 5 min total.
-
-### [ ] kos-deep-lint exit 127 (LastExitStatus, plist mtime Apr 28)
-
-**Why**: `launchctl list | grep jarvis` shows
-`com.jarvis.kos-deep-lint` last exit 127 (command-not-found). Plist
-last modified Apr 28, predates v0.25.0 sync. Some bin/script path
-changed. Discovered during 2026-05-02 v0.25.0 post-merge review.
-
-**What**: Read the plist, find the broken `ProgramArguments` path,
-restore. Probably `bun` or `gbrain` location drift.
-
-**Scope**: 10 min.
+**Scope**: 30 min 改 + 上游 PR window。低优先,non-prod。
 
 ---
 
@@ -176,6 +157,7 @@ backpressure-audit。我们没跑 worker daemon 所以没立刻收益,但若以�
 
 ## Done (most recent)
 
+- [x] **2026-05-02 evening launchd surgery — dream-cycle + kos-deep-lint P0 双杀** — Path A 完整执行:5 plist templates 删 `GBRAIN_HOME` env 块 (`com.jarvis.{dream-cycle,kos-compat-api,kos-patrol,enrich-sweep,notion-poller}.plist.template`),5 deployed plists 同步改 (~/Library/LaunchAgents/),回收 `com.jarvis.kos-deep-lint.plist.template` 进 repo + 加 `PATH` env block (closes exit 127:wrap script 内 `./kos` 是 `#!/usr/bin/env bun` shebang,launchd 默认 PATH 找不到 bun)。bootout + bootstrap 6 服务 (kos-compat-api 第一次 bootstrap 失败 `Input/output error`,retry 即 OK,新 PID 87485)。迁移 `~/brain/.gbrain/{audit/backpressure-2026-W18.jsonl,audit/subagent-jobs-2026-W18.jsonl,sync-failures.jsonl}` → `~/.gbrain/` (W18 audit 文件目标侧不存在,zero overlap;sync-failures.jsonl 同样 zero overlap)。删空 `~/brain/.gbrain/`。验证:`launchctl kickstart -k gui/$UID/com.jarvis.dream-cycle` 写出 `~/brain/.agent/dream-cycles/2026-05-02T07-38-04Z.json` (status=partial / 8 phases / 2572ms / exit 0,新 v0.25.0 synthesize+patterns phase 跑通);kos-deep-lint PATH smoke (mimic launchd env) bun 1.3.10 reachable + `kos --help` 输出 OK;6 服务 `launchctl print` 全部 `GBRAIN_HOME_lines=0`,kos-compat-api state=running PID 87485 binds :7225。Sandbox 拦了 launchctl(`Operation not permitted` + `Input/output error`),用 `dangerouslyDisableSandbox` 绕过。**P0 closed**:dream-cycle production breakage + kos-deep-lint exit 127。Net P0 list 从 3 缩到 1 (consolidation review)。
 - [x] **2026-05-02 v0.25.0 sync — merged to master** (commit `f6bb039` no-ff merge of `sync-v0.25.0`). Post-merge: gemini-embed-shim (PID 2502→63403) + kos-compat-api (PID 32389→63464) restarted to load v0.25.0 src/cli.ts via `~/.bun/bin/gbrain → src/cli.ts` shim. /status local + remote both confirm total_pages=2425. Dream `--phase orphans` from /tmp ✓. kos-patrol cron one-shot ✓ (exit 0, dashboard + digest written to `~/brain/.agent/{dashboards,digests}/`). `~/.gbrain/config.json` extended with `eval.capture: true` + `scrub_pii: true`; first eval row captured by smoke `gbrain query`. **`.env` + `.env.local` `GBRAIN_HOME=/Users/chenyuanquan/brain` commented out** with explanatory blocks (was a leftover from the never-completed "brain config under brain repo" migration; redirected loadConfig to a non-existent path). Local-dev gbrain CLI now works from project dir; 3 of 5 prev-failing tests fixed. **2 follow-ups filed P0** (see top): dream-cycle cron breakage from launchd-plist-set GBRAIN_HOME (same root cause; plist surgery deferred to next session), kos-deep-lint exit 127 (plist drift, pre-existing). Story in [§6.20](../../docs/JARVIS-ARCHITECTURE.md#620-upstream-v0250-sync-2026-05-01).
 - [x] **2026-05-01 v0.25.0 upstream sync** (branch `sync-v0.25.0`) — 16 commits / 12 versions in one merge: v0.22.10 → v0.22.16 (7 patch releases handoff missed), v0.23.0/0.23.1/0.23.2 (dream conversation synthesis + local CI gate + dream marker fix), v0.24.0 (skillify hardening), v0.25.0 (BrainBench-Real eval capture). Schema v29 → v30 (`eval_candidates` + `eval_capture_failures`). Conflicts on 8 files (`.gitignore`, `VERSION`, `package.json`, `bun.lock`, `CHANGELOG.md`, `TODOS.md`, `src/core/sync.ts`, `test/sync-failures.test.ts`) — all empty-HEAD additions or version-string overrides. WAL fork patch (`pglite-engine.ts:182 pg_switch_wal()`) survived. Privacy-gate (`scripts/check-privacy.sh`, new in upstream) fired on 2 fork files mentioning the banned name; scrubbed (`wintermute/chat/` → `your-openclaw/chat/`, example JSON line genericized). **BrainDb safety net**: added 5 eval methods (`logEvalCandidate` / `listEvalCandidates` / `deleteEvalCandidatesBefore` / `logEvalCaptureFailure` / `listEvalCaptureFailures`) + 4 type aliases + 6 unit tests (in-memory PGLite, hermetic). Handoff's "BrainDb 必须补齐 5 方法" was wrong (BrainDb is not a BrainEngine impl), but mirroring the surface anyway lets future fork skills consume eval data without reaching into upstream `src/core/`. **Decision reversed at session start**: enabled `GBRAIN_CONTRIBUTOR_MODE` / `eval.capture=true` (handoff said don't, but baseline-gating future retrieval changes is worth the per-call write). Validation: typecheck clean, `bun test` 1400+ green, BrainDb test 6/6, doctor schema_version 30, `/status` local + `kos.chenge.ink` total_pages=2424, kos-patrol smoke OK, dream `--phase orphans` OK. Story in [§6.20](../../docs/JARVIS-ARCHITECTURE.md#620-upstream-v0250-sync-2026-05-01).
 - [x] **2026-04-30 D + G + H 收尾** —

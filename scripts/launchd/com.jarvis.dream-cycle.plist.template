@@ -31,8 +31,6 @@
     <dict>
         <key>PATH</key>
         <string>/Users/chenyuanquan/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
-        <key>GBRAIN_HOME</key>
-        <string>/Users/chenyuanquan/brain</string>
     </dict>
     <!-- Daily 03:11 local. Off the :00 mark to avoid thundering herd
          with other personal cron jobs. Comfortably outside Notion
