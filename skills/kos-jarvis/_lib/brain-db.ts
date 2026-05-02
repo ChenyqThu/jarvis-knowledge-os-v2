@@ -66,6 +66,48 @@ export type PageRow = {
 
 export type BackrefCount = { to_slug: string; inbound: number };
 
+// Eval capture (v0.25.0 — BrainBench-Real). Mirrored locally so BrainDb
+// stays self-contained with no upstream type import dependency. Shape
+// must match `src/core/types.ts:EvalCandidateInput` and friends; the
+// schema lives in src/core/pglite-schema.ts and src/schema.sql.
+export type EvalToolName = 'query' | 'search';
+export type EvalDetailLevel = 'low' | 'medium' | 'high';
+export type EvalCaptureFailureReason =
+  | 'db_down'
+  | 'rls_reject'
+  | 'check_violation'
+  | 'scrubber_exception'
+  | 'other';
+
+export interface EvalCandidateInput {
+  tool_name: EvalToolName;
+  /** Caller's responsibility to scrub PII before passing in. */
+  query: string;
+  retrieved_slugs: string[];
+  retrieved_chunk_ids: number[];
+  source_ids: string[];
+  expand_enabled: boolean | null;
+  detail: EvalDetailLevel | null;
+  detail_resolved: EvalDetailLevel | null;
+  vector_enabled: boolean;
+  expansion_applied: boolean;
+  latency_ms: number;
+  remote: boolean;
+  job_id: number | null;
+  subagent_id: number | null;
+}
+
+export interface EvalCandidate extends EvalCandidateInput {
+  id: number;
+  created_at: Date;
+}
+
+export interface EvalCaptureFailure {
+  id: number;
+  ts: Date;
+  reason: EvalCaptureFailureReason;
+}
+
 export class BrainDb {
   private engineKind: EngineKind = "pglite";
   private pglite: PGlite | null = null;
@@ -342,5 +384,110 @@ export class BrainDb {
     const m = new Map<string, number>();
     for (const r of rows) m.set(r.slug, Number(r.n) || 0);
     return m;
+  }
+
+  // ───────── Eval capture (v0.25.0 BrainBench-Real safety net) ─────────
+  //
+  // Upstream's BrainEngine grew 5 methods in v0.25.0; BrainDb is NOT a
+  // BrainEngine implementation, so the schema migration alone is enough
+  // to keep production healthy. We mirror the surface here as a safety
+  // net so any future kos-jarvis skill that wants to read `gbrain eval
+  // export` data (e.g. retrieval regression dashboards) can stay on the
+  // fork-local DB layer instead of reaching into upstream code.
+  //
+  // Implementation notes:
+  // - Engine-portable SQL via the shared _q adapter ($1, $2 placeholders
+  //   work on both PGLite and postgres.js).
+  // - listEvalCandidates uses `ORDER BY created_at DESC, id DESC` to match
+  //   upstream's deterministic-pagination contract (same-millisecond rows
+  //   stay ordered across windowed exports).
+  // - logEvalCaptureFailure is intentionally not best-effort here — the
+  //   caller decides whether to swallow errors. BrainDb is a thin DB
+  //   wrapper, not the policy layer.
+
+  /** Insert a captured candidate row. Returns the new row id. */
+  async logEvalCandidate(input: EvalCandidateInput): Promise<number> {
+    const rows = await this._q<{ id: number }>(
+      `INSERT INTO eval_candidates (
+         tool_name, query, retrieved_slugs, retrieved_chunk_ids, source_ids,
+         expand_enabled, detail, detail_resolved, vector_enabled, expansion_applied,
+         latency_ms, remote, job_id, subagent_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING id`,
+      [
+        input.tool_name,
+        input.query,
+        input.retrieved_slugs,
+        input.retrieved_chunk_ids,
+        input.source_ids,
+        input.expand_enabled,
+        input.detail,
+        input.detail_resolved,
+        input.vector_enabled,
+        input.expansion_applied,
+        input.latency_ms,
+        input.remote,
+        input.job_id,
+        input.subagent_id,
+      ]
+    );
+    return rows[0]!.id;
+  }
+
+  /** Read candidates by time window / limit / tool filter. */
+  async listEvalCandidates(filter?: {
+    since?: Date;
+    limit?: number;
+    tool?: EvalToolName;
+  }): Promise<EvalCandidate[]> {
+    const raw = filter?.limit;
+    const limit =
+      raw === undefined || raw === null || !Number.isFinite(raw) || raw <= 0
+        ? 1000
+        : Math.min(Math.floor(raw), 100000);
+    const since = filter?.since ?? new Date(0);
+    const tool = filter?.tool ?? null;
+    const rows = tool
+      ? await this._q<EvalCandidate>(
+          `SELECT * FROM eval_candidates
+           WHERE created_at >= $1 AND tool_name = $2
+           ORDER BY created_at DESC, id DESC LIMIT $3`,
+          [since, tool, limit]
+        )
+      : await this._q<EvalCandidate>(
+          `SELECT * FROM eval_candidates
+           WHERE created_at >= $1
+           ORDER BY created_at DESC, id DESC LIMIT $2`,
+          [since, limit]
+        );
+    return rows;
+  }
+
+  /** Delete candidates created before `date`. Returns rows deleted. */
+  async deleteEvalCandidatesBefore(date: Date): Promise<number> {
+    const rows = await this._q<{ id: number }>(
+      `DELETE FROM eval_candidates WHERE created_at < $1 RETURNING id`,
+      [date]
+    );
+    return rows.length;
+  }
+
+  /** Log a capture failure. Used by `gbrain doctor` cross-process visibility. */
+  async logEvalCaptureFailure(reason: EvalCaptureFailureReason): Promise<void> {
+    await this._q(
+      `INSERT INTO eval_capture_failures (reason) VALUES ($1)`,
+      [reason]
+    );
+  }
+
+  /** Read capture failures within an optional time window. */
+  async listEvalCaptureFailures(filter?: { since?: Date }): Promise<EvalCaptureFailure[]> {
+    const since = filter?.since ?? new Date(0);
+    return await this._q<EvalCaptureFailure>(
+      `SELECT * FROM eval_capture_failures
+       WHERE ts >= $1
+       ORDER BY ts DESC`,
+      [since]
+    );
   }
 }

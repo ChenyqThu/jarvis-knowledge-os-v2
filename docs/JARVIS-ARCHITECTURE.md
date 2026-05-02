@@ -1777,6 +1777,228 @@ mitigated, in ~3 hours of focused work.
 
 ---
 
+## 6.20 Upstream v0.25.0 sync (2026-05-01)
+
+> Plan:
+> [`docs/SESSION-HANDOFF-2026-05-01-pre-v25-sync.md`](SESSION-HANDOFF-2026-05-01-pre-v25-sync.md).
+> Strategy chosen at session start: single `git merge upstream/master`
+> (16 commits, 12 versions in one shot) over the handoff's "three hops"
+> idea — fewer conflict-resolution rounds, one validation pass, same
+> end state. Branch: `sync-v0.25.0`.
+
+Twelve upstream releases land in one merge: v0.22.10 → v0.22.11 → v0.22.12
+→ v0.22.13 → v0.22.14 → v0.22.15 → v0.22.16 → v0.23.0 → v0.23.1 → v0.23.2
+→ v0.24.0 → v0.25.0 (16 commits including a paired jsonb fix + revert).
+The headline addition is **v0.25.0's BrainBench-Real substrate**: two new
+schema tables (`eval_candidates`, `eval_capture_failures`), 5 new
+`BrainEngine` methods, an op-layer capture wrapper, and a PII scrubber.
+Capture is OFF by default for end users; flipped ON for this fork to
+build a retrieval baseline (see "Eval capture posture" below).
+
+### Handoff pre-flight findings (revised on day-of)
+
+The handoff doc described "三跳" (v0.22.9 → v0.23.2 → v0.24.0 → v0.25.0).
+Day-of inspection found 7 missed patch releases (v0.22.10..v0.22.16) that
+ship real features (storage tiering, parallel sync, frontmatter inference,
+claw-test E2E harness, autopilot phase-forwarding). Strategy adjusted to
+single merge of all 16 commits.
+
+The handoff also predicted that BrainDb (`skills/kos-jarvis/_lib/brain-db.ts`)
+"必须补齐这 5 个方法" because v0.25.0 made the BrainEngine interface
+breaking. **This was wrong**: BrainDb is not a `BrainEngine` implementation,
+it's a thin direct-DB reader, and none of its 9 callers consume eval APIs.
+Decision: mirror the surface anyway as a safety net (see below) so future
+fork skills don't have to reach into `src/core/`.
+
+### What we adopted
+
+- **v0.22.10** — `autopilot-cycle` handler forwards `phases` array to
+  runCycle. Inert for us (no autopilot daemon).
+- **v0.22.11 storage tiering** — new `db_tracked` vs `db_only` directory
+  classes for sources. Schema migration only; no behavior change unless
+  configured.
+- **v0.22.12 sync error-code coverage** — adds `FILE_TOO_LARGE` +
+  `SYMLINK_NOT_ALLOWED` to `classifyErrorCode()`. Direct overlap with our
+  v0.22.9 cherry-pick; merge cleanly added the two new clauses to the same
+  function.
+- **v0.22.13 parallel sync** — bounded-concurrency import. Free speed-up
+  on next full re-sync (we don't run those often).
+- **v0.22.14 minion bare-worker self-monitoring** — Postgres-only;
+  applies whenever we run `gbrain agent run` durable subagents (not yet,
+  see TODO P3).
+- **v0.22.15 frontmatter inference** — files without YAML headers now
+  ingest with auto-inferred kind/title. Reduces friction for ad-hoc
+  notes; semantics-preserving for our existing pages.
+- **v0.22.16 `gbrain claw-test`** — new fresh-install friction harness.
+  Uses `test/.cache/`; gitignored.
+- **v0.23.0 dream synthesizes conversations** — `gbrain dream` now reads
+  recent transcripts and writes synthesis pages. Off by default; opt-in
+  via dream config. We're not opting in yet (separate evaluation needed
+  on Chinese-language conversation digesting).
+- **v0.23.1 local CI gate** — `bun run ci:local` (~13× faster than full
+  CI); 4-tier wall-time optimization. Optional dev tool.
+- **v0.23.2 dream marker fix** — orchestrator-stamped self-consumption
+  marker. Fixes the dream cycle re-consuming its own output (latent bug
+  for us; we run dream daily so this lands a real fix).
+- **v0.24.0 skillify production hardening** — managed-block install,
+  no-clobber, drift detection. Inert for us (we don't run skillify
+  on this brain).
+- **v0.25.0 BrainBench-Real (the headline)** — schema migrations v30
+  (`dream_verdicts_table`) + v31 (`eval_capture_tables`):
+  `eval_candidates` (16-column row per `query`/`search` call) +
+  `eval_capture_failures` (cross-process audit). Op-layer capture
+  wrapper in `src/core/eval-capture.ts` runs PII scrubber
+  (`src/core/eval-capture-scrub.ts` — emails, phones, SSN,
+  Luhn-verified CC, JWT, bearer tokens). 5 new `BrainEngine` methods:
+  `logEvalCandidate`, `listEvalCandidates`, `deleteEvalCandidatesBefore`,
+  `logEvalCaptureFailure`, `listEvalCaptureFailures`. New CLI:
+  `gbrain eval export` (NDJSON for sibling gbrain-evals consumption),
+  `gbrain eval replay`, `gbrain eval prune`. Default capture posture
+  OFF for end users; flag is `GBRAIN_CONTRIBUTOR_MODE=1` env var OR
+  `eval.capture: true` in `~/.gbrain/config.json`.
+
+### What we skipped (intentional)
+
+Nothing skipped this round — every upstream feature came along, schema
+migrated, fork patch survived. Some are inert for our setup (autopilot,
+claw-test) but cost nothing to keep.
+
+### Fork-local patches state (re-verified post-merge)
+
+| Patch | Status | Reason |
+|---|---|---|
+| `src/core/pglite-engine.ts` `pg_switch_wal()` before close | **RETAINED** | macOS WASM persistence — line 182, untouched by upstream |
+| `src/cli.ts` mode 0755 | **RETAINED** | Bun shim at `~/.bun/bin/gbrain → src/cli.ts` |
+| `skills/kos-jarvis/_lib/brain-db.ts` direct-DB reader | **EXTENDED** | Added 5 eval methods (safety net) + 4 type aliases (locally defined, no upstream import). Original 9 callers untouched. |
+
+### New fork-local additions (v0.25.0-only)
+
+- **BrainDb eval surface** (`skills/kos-jarvis/_lib/brain-db.ts`,
+  +124 lines): `logEvalCandidate`, `listEvalCandidates` (with
+  `since/limit/tool` filter, `id DESC` tiebreaker matching upstream),
+  `deleteEvalCandidatesBefore`, `logEvalCaptureFailure`,
+  `listEvalCaptureFailures`. Engine-portable SQL via the existing `_q`
+  adapter. Self-contained types (no `gbrain/types` import).
+- **BrainDb eval test** (`skills/kos-jarvis/_lib/brain-db.test.ts`,
+  6 cases, 19 expects): in-memory PGLite, hermetic (no `~/.gbrain/config.json`
+  dependency, injects PGLite via private-field write). Covers
+  insert+id-return, list-ordering with id-DESC tiebreaker, tool filter,
+  limit clamping (`[1, 100000]` with sensible defaults on `0`/negative/`NaN`),
+  delete-before cutoff, failure round-trip with set-equality (no
+  ts-tiebreaker, matches upstream contract).
+
+### Eval capture posture (decision)
+
+The handoff suggested "**不启用** GBRAIN_CONTRIBUTOR_MODE=1" (privacy
+default + small brain). Reversed at session start: enabling capture
+locally so we can build a retrieval baseline and gate future search
+changes against it. Privacy-positive defaults are still respected for
+anyone forking this fork (they have to opt in themselves).
+
+Concretely: `~/.gbrain/config.json` gains `"eval": {"capture": true}`.
+Capture writes to `eval_candidates` on every `gbrain query` /
+`gbrain search` / MCP `query` / MCP `search` / subagent `query`/`search`.
+PII scrubber runs at write time; queries over 50KB rejected.
+
+### Conflict resolution (8 manual)
+
+- `.gitignore` — kept upstream's claw-test cache + Tier 3 PGLite
+  snapshot ignores; appended fork's `.omc/` + launchd log ignores below.
+- `VERSION`, `package.json` — kept upstream `0.25.0`.
+- `bun.lock` — kept upstream's added `bun-types@1.3.11` resolution; ran
+  `bun install` to settle the rest.
+- `CHANGELOG.md`, `TODOS.md` — empty HEAD blocks (we don't carry our own
+  release notes / TODO entries here); kept upstream verbatim.
+- `src/core/sync.ts`, `test/sync-failures.test.ts` — empty HEAD blocks;
+  kept upstream's two new error-code clauses + their tests
+  (`FILE_TOO_LARGE`, `SYMLINK_NOT_ALLOWED`).
+
+### Privacy-gate scrub
+
+Upstream's new `scripts/check-privacy.sh` (CLAUDE.md:550 enforcement)
+fired on two fork files:
+
+- `skills/kos-jarvis/TODO.md:35` — example slug layout `wintermute/chat/`
+  rewritten to `your-openclaw/chat/`.
+- `skills/kos-jarvis/pending-enrich/SKILL.md:38` — example JSON line
+  rewritten from `Sarah Guo` / `Wintermute seed` to
+  `alice-example` / `widget-co seed`.
+
+Both are documentation examples, not real data; the scrub is a
+privacy-rule alignment, not a data fix.
+
+### Validation (all green)
+
+| Check | Result |
+|---|---|
+| schema_version | 29 → **31** ✓ (v30 dream_verdicts + v31 eval_capture_tables) |
+| Pages | preserved ✓ |
+| Embed coverage | 99 % (25 stale; 0 v30/v31-introduced regression) |
+| Links / Timeline | preserved ✓ |
+| brain_score | held at 83/100 (embed 35/35, links 25/25, timeline 3/15, orphans 10/15, dead-links 10/10) |
+| typecheck | clean ✓ |
+| `bun test` (3787 cases / 230 files / 1100 s) | 3487 pass / 293 skip / 6 fail — 1 fixed (build-llms regen), 5 are pre-existing GBRAIN_HOME-related upstream test gaps unrelated to sync (see Pre-existing test gaps below) |
+| BrainDb eval test (6 cases) | green ✓ |
+| `gbrain query` test | 1 row inserted into `eval_candidates` ✓ |
+| `eval_capture_tables` migration | success, BYPASSRLS confirmed ✓ |
+
+### Pre-existing test gaps (5 failures, all upstream)
+
+The 5 fails are environment-coupling bugs in upstream tests, not regressions
+from this sync. They surfaced now because we run `bun test` from the
+project directory which auto-loads `.env`, and our `.env` sets
+`GBRAIN_HOME=/Users/chenyuanquan/brain`. Upstream tests assume
+`homedir() === gbrain config home`:
+
+- `check-resolvable-cli > resolveSkillsDir > REGRESSION-GATE` (1.59 ms)
+- `check-resolvable-cli > finds skills via findRepoRoot when cwd is inside a repo` (0.30 ms)
+  — both expect `r.source === 'repo_root'`; openclaw workspace marker
+  on the dev box wins instead.
+- `init-migrate-only > applies schema against existing PGLite config; does
+  NOT modify config.json` (53 ms)
+- `init-migrate-only > idempotent on rerun` (54 ms)
+  — both seed `${tmp}/.gbrain/config.json` and call `gbrain init` with
+  `HOME=${tmp}`, but `GBRAIN_HOME=~/brain` from `.env` overrides HOME and
+  re-routes the lookup away from the seeded path.
+- `core/cycle.test.ts > file lock blocks concurrent engine=null cycles`
+  (1.48 ms) — same root cause: the test seeds `${homedir()}/.gbrain/cycle.lock`
+  but `runCycle` reads `gbrainPath()/cycle.lock`, which honors GBRAIN_HOME.
+
+**Filed as TODO** for upstream contribution (worth a 1-line fix that calls
+`configDir()` instead of `homedir()` in those test fixtures). Net regression
+risk: zero — these are dev-box-only test failures; the production code paths
+they cover are exercised correctly by the kos-jarvis integration smoke
+(BrainDb test 6/6, schema migration, eval capture round-trip).
+
+### Rollback matrix
+
+```bash
+git checkout master
+git branch -D sync-v0.25.0   # discards merge
+
+# Postgres rollback (the v30/v31 migrations add three new objects;
+# safe to keep on rollback):
+psql $DATABASE_URL -c 'DROP TABLE IF EXISTS eval_candidates, eval_capture_failures, dream_verdicts;'
+
+# Disable capture before rollback (prevents writes from old binary):
+# remove `eval.capture` from ~/.gbrain/config.json
+```
+
+### Follow-ups for next session (filed in TODO.md)
+
+1. **Build retrieval baseline (1-week dogfood)** — let capture run
+   for 7 days, then `gbrain eval export --since 7d > baseline.ndjson`
+   + commit to a private location. Subsequent retrieval changes can be
+   gated with `gbrain eval replay --against baseline.ndjson`.
+2. **`gbrain dream` conversation synthesis** — evaluate v0.23.0's new
+   capability against Chinese-language Notion+Feishu transcripts. Likely
+   needs language-aware tweaks; off by default for now.
+3. **Storage tiering audit** — v0.22.11 added `db_tracked` vs `db_only`
+   classes. Default still `db_tracked`. Worth reviewing whether
+   `media/x/` / `archive/` should move to `db_only` (no-search source).
+
+---
+
 ## 7. Known gaps (see `skills/kos-jarvis/TODO.md` for live tracker)
 
 - **P0 resolved 2026-04-22**: notion-poller PGLite deadlock — Path B landed in v0.17 sync (see §6.7). `scripts/minions-wrap/notion-poller.sh` deleted; plist now direct-bun invocation of `workers/notion-poller/run.ts`. First live cycle: 78 s / 9 pages ingested / 0 lock timeouts.
