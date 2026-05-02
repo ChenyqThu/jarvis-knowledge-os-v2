@@ -33,9 +33,9 @@ only rotated (move + truncate) by the consumer after a successful sweep.
 ```json
 {
   "ts": "2026-04-17T10:32:14Z",
-  "name": "Sarah Guo",
+  "name": "alice-example",
   "kind": "person",
-  "context": "VC who invested in Wintermute seed; mentioned by Lucien on Feishu",
+  "context": "VC who invested in widget-co seed; mentioned by you on Feishu",
   "source": "feishu:oc_abc123#msg_456",
   "confidence": 0.7
 }
