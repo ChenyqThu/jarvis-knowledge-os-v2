@@ -4745,6 +4745,104 @@ v116 `code_edges` 索引(含 `idx_code_edges_symbol_resolver`)落库、page coun
 
 ---
 
+## 6.36 Upstream v0.42.44.0 sync (2026-06-16)
+
+§6.35 之后 2 天的小型跟进 sync —— 上游 master **2 个 commit**(v0.42.42.0 →
+**v0.42.44.0**),merge-base `4ee530f3` 即 §6.35 合并点,纯 follow-on。上游净
+delta **50 文件 / +3,237 / −103 LoC**(merge commit 连同 CLAUDE-UPSTREAM 刷新
+共 +3,994 / −415)。主题:
+
+- **v0.42.43.0** —— push-based context(#2095)+ teardown-exit hardening
+  (#2084)。新增 `volunteer_context` op + `gbrain watch` 命令 + retrieval-reflex
+  反馈日志(`context_volunteer_events` 表记录每次大脑"主动志愿"的页面,用过
+  与否后续 join `pages.last_retrieved_at > volunteered_at` 推导;rationale 为
+  确定性模板串,从不存原始对话文;90 天 dream purge 清理)。teardown 侧把
+  `gbrain query` 退出时的 10s force-exit 税干掉(bounded teardown + 显式 exit,
+  CI 加 PgBouncer txn-mode pooler e2e)。
+- **v0.42.44.0** —— docs(tutorial):个人大脑教程 step 4 的 AlphaClaw 部署链接
+  指向官方站(纯文档 + version bump)。
+
+Schema 自动 **v116 → v117**(单 migration [117] `context_volunteer_events_table`
+—— 空表 + pkey + 2 索引 `src_time_idx`/`src_slug_idx`,幂等 CREATE IF NOT EXISTS,
+RLS 由 v35 event-trigger 覆盖)。生产 `kos.chenge.ink` 部署完成,**24,439 live
+pages**(较 §6.35 的 24,298 高出 +141 系其间 2 天 mailagent + omada 日增,与本
+sync 正交;additive migration 不改 page count)。
+
+### Conflict resolution(2 个,沿 §6.35 教训用 `git merge-tree --write-tree` 实核)
+
+| File | Decision | Rationale |
+|---|---|---|
+| `CLAUDE.md` | `git checkout --ours`(整文件保 fork) | fork CLAUDE.md 是 fork-only 文件,上游本批的 +3/−1(`operations.ts` "~47"→"~90"、加 `volunteer_context` + push-context.md 行)属上游 dev-guide 内容,镜像进 `docs/CLAUDE-UPSTREAM.md` 即可 |
+| `llms-full.txt` | 清 marker + `bun run build:llms` 重生成(192,516 B) | 重生成反映 fork 完整 skill+doc catalog,而非上游 merge 单侧;`llms.txt` 重生成与 merge 后一致(无额外 diff)|
+
+**`docs/CLAUDE-UPSTREAM.md` 本轮重刷**:§6.34/§6.35 上游 CLAUDE.md 未变故停在
+v0.42.37.0 镜像,本批上游动了 CLAUDE.md → 从 `upstream/master:CLAUDE.md` 重生成
+(保 fork wrapper header 21 行 + scrub `banned-name` → `openclaw-reference` ×5,
+`check-privacy.sh` 绿)。镜像现含 v0.42.43.0 的 `operations.ts ~90 ops` +
+push-context.md 行。
+
+**Fork patch / territory**:本批上游 2 commit 对 fork-protected 区域
+(`skills/kos-jarvis/`、`server/`、`workers/`、`scripts/launchd/`、`RESOLVER.md`)
+**零侵入**(merge 结果 vs 旧 master `git diff` 为空)。无 fork src/ 适配需求
+(§6.34 的 `embedTransportWithRetry`、§6.35 的 WAL patch 均未被本批触碰,继续存活)。
+
+### 绿门
+
+`bun install` 干净(285 installs / 0 dep 变更);`bun run build` → `gbrain
+0.42.44.0`;typecheck 0 错;`check:all` 全 22 gate 绿(check-privacy 验证
+banned-name scrub、skill_brain_first、gateway-routed-no-direct-Anthropic、
+key-files-current-state "CLAUDE.md within cap" 等全 OK);`bun test test/ai/`
+**315 pass / 0 fail / 997 expect()**。
+
+### 生产部署 + smoke
+
+> **过程教训**:`bun install` 的 postinstall 钩子会跑 `gbrain apply-migrations
+> --yes --non-interactive`,本次它打印了 "Schema version 116 is behind latest
+> 117" 的告警 —— 但**并未真的迁移生产**(随后 `psql` 实查 `config.version=116`、
+> `context_volunteer_events` 表不存在,确认 postinstall 只告警未写库)。故
+> "备份在迁移之前" 的次序未被破坏。今后见此告警勿慌,以受控的
+> `init --migrate-only` 为准。
+
+备份 `pg_dump` **669,060,621 B(~638MB)**(`/tmp/pg-pre-sync-v0.42.44.0-2026-06-16.dump.gz`,
+`gzip -t` OK)+ config 副本(`/tmp/gbrain-config.before-sync-v0.42.44.0.json`)。
+受控 `bin/gbrain init --migrate-only` → `Schema version 116 → 117 (1 pending)` →
+`[117] ✓ context_volunteer_events_table` → `1 migration applied`。实查:
+`config.version=117`、`context_volunteer_events` 表 + pkey + `src_time_idx` +
+`src_slug_idx` 落库、page count **24,439 不变**(additive)。daemon
+`launchctl bootout`+`bootstrap`(pid 1391 → 38974)后本地 +
+`https://kos.chenge.ink/health` 均报 **0.42.44.0 / postgres**。查询 smoke:
+
+- ZH 复合 CJK `知识管理`(vector 路径,本库 modal query)→ **0.9366
+  people/karpathy / 0.8986 concepts/knowledge-compilation / 0.8949
+  people/andrej-karpathy** ✓(§6.35 报 0.924,略升)
+- EN 关键词 `Karpathy`(body-fragment containment)→ **1.1716 / 0.5884 /
+  0.5237** ✓(§6.35 报 1.124)
+
+### 部署后健康快照(均为既有结构常态,非回归)
+
+1. **embedding 满覆盖**:`content_chunks` **53,291 / 0 NULL**(§6.35 收于
+   52,529/0,2 天增 +762 全嵌)、doctor `embedding_width_consistency` 1536d 匹配、
+   `facts_embedding_width_consistency` halfvec(1536) 匹配、`ze_embedding_health`
+   跳过(模型非 ZeroEntropy)、`embed_staleness` 无 stale —— §6.32 收敛持续健康。
+2. **doctor brain 5/100、3 个 FAIL = `sync_freshness` / `cycle_freshness` /
+   `orphan_ratio`(91%,22179/24434)**:完全沿 §6.35 既定 —— 四源(default /
+   mailagent-emails / omada / gbrain-docs)经 MCP 写入而非 git-sync、邮件语料天然
+   少入链,结构性常态;orphan 91% 与 §6.35 的 91%(22038/24293)一致。WARN
+   (oversized `docs/claude-upstream` 549,884B 镜像页 —— 注:本页正是本 sync 刷新的
+   gbrain-docs 源镜像,自动 `embed_skip`;另 extract lag 100%、salience、
+   stub_guard 等)均既有。
+
+> 沿 §6.33–§6.35 P3 教训:本节全文仅用 "banned-name" 占位词,写毕已 re-run
+> check-privacy 确认 clean。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-06-16)
+- [`docs/CLAUDE-UPSTREAM.md`](CLAUDE-UPSTREAM.md) — 本轮上游 CLAUDE.md 有变,已重刷至 v0.42.43.0 镜像(banned-name → openclaw-reference ×5)
+- Sync plan + verification trail: this conversation's transcript
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |
