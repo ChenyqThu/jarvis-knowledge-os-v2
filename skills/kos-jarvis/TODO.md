@@ -1,11 +1,16 @@
-# kos-jarvis — Outstanding Work (post v0.42.44.0 sync, 2026-06-16)
+# kos-jarvis — Outstanding Work (post v0.42.51.0 sync, 2026-06-20)
 
-> **Sync 2026-06-16** (§6.36, v0.42.42.0 → v0.42.44.0, 2 commits): additive
-> schema only (v116 → v117, `context_volunteer_events_table` — push-based
-> context #2095). Fork territory zero-invasion; no new fork src/ adaptation.
-> Production at **24,439 pages** / `content_chunks` 53,291 / 0 NULL. No new
-> outstanding work introduced; items below carry over from the 2026-06-15
-> maintenance review.
+> **Sync 2026-06-20** (§6.37, v0.42.44.0 → v0.42.51.0, 7 commits): additive
+> schema only (v117 → v119, `page_generation_clock_sequence_swap` +
+> `op_checkpoints_completed_keys_array_check` — contention-free page-gen clock
+> + checkpoint integrity). Fork territory zero-invasion; no new fork src/
+> adaptation (gateway.ts untouched upstream; §6.35 WAL patch + §6.34 embed-retry
+> both auto-merged). Upstream #2200 (federated read reaches by-slug) benefits
+> mailagent's cross-source `federated_read = {default, mailagent-emails, omada}`.
+> Production at **24,736 pages** / `content_chunks` 54,360 / 0 NULL /
+> single-model te3@1536 (4 ingest-drift chunks cosmetic-relabeled per §6.32
+> papercut). No new outstanding work introduced; items below carry over from
+> the 2026-06-15 maintenance review.
 
 > **Maintenance 2026-06-15** (KB health review, no sync): brain at **24,330
 > pages** (mailagent-emails 11,088 / default 9,991 / omada 3,099 / gbrain-docs
