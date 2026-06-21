@@ -16,16 +16,17 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.36 v0.42.44.0
-   upstream sync (2026-06-16, 2 commits / v0.42.42.0 → v0.42.44.0 / 50
-   files; schema v116 → v117 — single migration `context_volunteer_events_table`;
-   2 conflicts — CLAUDE.md `--ours`, llms-full.txt regen; CLAUDE-UPSTREAM.md
-   refreshed to v0.42.43.0 mirror; fork territory zero-invasion)**. Previous:
-   §6.35 v0.42.42.0 sync (2026-06-14, 5 commits, schema v115 → v116, 3
-   conflicts — gateway.ts retry-wrapper composed inside `__embedInputTypeStore`);
-   §6.34 v0.42.37.0 sync (2026-06-09, 35 commits, schema v111 → v115,
-   first fork src/ runtime patch `fork(ai-gateway)` embed transport
-   retry). Note §6.32 (2026-05-31) was the embedding convergence, not a sync.
+   operates ↔ OpenClaw executes). Latest sync story: **§6.37 v0.42.51.0
+   upstream sync (2026-06-20, 7 commits / v0.42.44.0 → v0.42.51.0 / 110
+   files; schema v117 → v119 — migrations `page_generation_clock_sequence_swap`
+   + `op_checkpoints_completed_keys_array_check`; 3 conflicts — CLAUDE.md
+   `--ours`, test.yml keep-deleted, llms-full.txt regen; CLAUDE-UPSTREAM.md
+   refreshed to v0.42.51.0 mirror; fork territory zero-invasion; federated
+   read #2200 reaches by-slug — fork mailagent benefit)**. Previous: §6.36
+   v0.42.44.0 sync (2026-06-16, 2 commits, schema v116 → v117,
+   `context_volunteer_events_table`); §6.35 v0.42.42.0 sync (2026-06-14, 5
+   commits, schema v115 → v116, gateway.ts retry-wrapper). Note §6.32
+   (2026-05-31) was the embedding convergence, not a sync.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"
