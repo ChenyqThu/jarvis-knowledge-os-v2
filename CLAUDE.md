@@ -16,17 +16,18 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.37 v0.42.51.0
-   upstream sync (2026-06-20, 7 commits / v0.42.44.0 → v0.42.51.0 / 110
-   files; schema v117 → v119 — migrations `page_generation_clock_sequence_swap`
-   + `op_checkpoints_completed_keys_array_check`; 3 conflicts — CLAUDE.md
-   `--ours`, test.yml keep-deleted, llms-full.txt regen; CLAUDE-UPSTREAM.md
-   refreshed to v0.42.51.0 mirror; fork territory zero-invasion; federated
-   read #2200 reaches by-slug — fork mailagent benefit)**. Previous: §6.36
-   v0.42.44.0 sync (2026-06-16, 2 commits, schema v116 → v117,
-   `context_volunteer_events_table`); §6.35 v0.42.42.0 sync (2026-06-14, 5
-   commits, schema v115 → v116, gateway.ts retry-wrapper). Note §6.32
-   (2026-05-31) was the embedding convergence, not a sync.
+   operates ↔ OpenClaw executes). Latest sync story: **§6.38 v0.42.53.0
+   upstream sync (2026-06-26, 2 commits / v0.42.51.0 → v0.42.53.0 / 61
+   files; schema unchanged (v119) — zero migration; 2 conflicts — CLAUDE.md
+   `--ours`, llms-full.txt regen; package.json auto-merged (fork pglite 0.4.4
+   + upstream version); CLAUDE-UPSTREAM.md refreshed to v0.42.53.0 mirror;
+   fork territory zero-invasion; v0.42.53.0 op_checkpoints jsonb double-encode
+   #2339 fix + v0.42.52.0 autopilot/supervisor reliability)**. Previous: §6.37
+   v0.42.51.0 sync (2026-06-20, 7 commits, schema v117 → v119,
+   `page_generation_clock_sequence_swap` + `op_checkpoints_completed_keys_array_check`);
+   §6.36 v0.42.44.0 sync (2026-06-16, 2 commits, schema v116 → v117,
+   `context_volunteer_events_table`). Note §6.32 (2026-05-31) was the
+   embedding convergence, not a sync.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"

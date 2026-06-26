@@ -1,4 +1,18 @@
-# kos-jarvis — Outstanding Work (post v0.42.51.0 sync, 2026-06-20)
+# kos-jarvis — Outstanding Work (post v0.42.53.0 sync, 2026-06-26)
+
+> **Sync 2026-06-26** (§6.38, v0.42.51.0 → v0.42.53.0, 2 commits): zero-migration
+> (schema stays v119) reliability + DB-correctness sync. v0.42.53.0 fixes the
+> `op_checkpoints` jsonb double-encode (#2339, the positional `$N::jsonb` +
+> `JSON.stringify` class) + adds `scripts/check-jsonb-params.mjs`; v0.42.52.0
+> hardens autopilot/supervisor/sync reliability (new
+> `GBRAIN_SYNC_STALL_ABORT_SECONDS` stall watchdog). Fork territory
+> zero-invasion; no new fork src/ adaptation (gateway.ts untouched upstream;
+> §6.34 embed-retry + §6.35 WAL patches auto-merged). Production at **25,138
+> pages** / `content_chunks` 56,828 / 0 NULL / single-model te3@1536 (324
+> ingest-drift chunks cosmetic-relabeled per §6.32 papercut, L2 norm 1.0000
+> verified). Deploy lesson: space out `launchctl bootstrap` retries — a rapid
+> 3× retry burned the bootout teardown race → ~60–90s downtime. No new
+> outstanding work introduced; items below carry over.
 
 > **Sync 2026-06-20** (§6.37, v0.42.44.0 → v0.42.51.0, 7 commits): additive
 > schema only (v117 → v119, `page_generation_clock_sequence_swap` +
