@@ -111,7 +111,9 @@ working on this codebase, before touching anything else:
   - `omada-sentiment` — the Omada 舆情/竞品 sentiment system's daily writer
     (write+read `omada`, `client_credentials`; created 2026-06-02; secret in
     `~/.gbrain/oauth-clients/omada-sentiment.secret.txt`, mode 600).
-  - `feishu` — dormant since 2026-05-05.
+  - `feishu` — **active** article-ingest client: ingests articles Lucien
+    surfaces into KOS (~daily ~08:00; 365 calls/14d, last 2026-06-25). The
+    earlier "dormant since 2026-05-05" note was wrong — corrected §6.38 closure pass.
 - **MCP skill publishing is ENABLED** (`mcp.publish_skills = true`,
   `mcp.skills_dir = <repo>/skills`, both in the DB config plane; 2026-06-02). The
   MCP server publishes all 56 skills (upstream + fork, fork under `kos-jarvis/…`

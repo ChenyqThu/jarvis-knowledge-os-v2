@@ -14,6 +14,48 @@
 > 3× retry burned the bootout teardown race → ~60–90s downtime. No new
 > outstanding work introduced; items below carry over.
 
+> **Closure pass 2026-06-26** (post-§6.38 KOS health + backlog audit). Runtime:
+> daemon 0.42.53.0 healthy (pid 820), 25,138 pages / 56,828 chunks / 0 NULL /
+> single-model te3@1536; KOS crons green (dream-cycle nightly `partial`/exit0,
+> kos-patrol, gbrain-backup ~680MB/day, **embedding-label-normalize auto-relabels
+> zembed mislabels daily** — did 1158 on 6-25, so the §6.32 papercut is
+> self-healing now). **CLOSED this pass**:
+> - bug `notion-poller-pglite-lock-deadlock` → `docs/_archived/` (resolved §6.18
+>   Postgres migration; notion-poller itself already archived).
+> - upstream-issue `v041-dream-cycle-engine-lifecycle` (#1515) → `docs/_archived/`:
+>   fixed upstream (`_ownsModuleSingleton`, CHANGELOG closes #1404/#1471/#1619/#1678),
+>   live since §6.34; dream-cycle runs nightly exit 0 and graph coverage 0%→**81%**
+>   proves the extract phase writes links again.
+> - (P2) graph_coverage 0% → RESOLVED (doctor: entity link 81% / timeline 100%).
+> - (P2) sync_freshness → won't-fix (structural false-alarm for DB-canonical fork,
+>   decided 2026-05-22; re-confirmed).
+> - (P3) reranker_health WARN → benign (doctor now [OK], failures below threshold).
+> - stale observations (dream LLM-spend / dream-24h-backfill / embedding_columns
+>   declare) → no action (auto-healthy 5+ wks later; embedding_column_registry [OK]).
+> - removed 1.7MB stale `_archived/gemini-embed-shim/` logs.
+> **CORRECTED**: `feishu` is NOT dormant — active article-ingest client (365 calls/14d,
+>   last 6-25 08:00). CLAUDE.md fixed; the "(P1) feishu phantom traffic — caller
+>   unknown" item below is RESOLVED (caller = legit feishu article ingestion).
+> **DIAGNOSED — still open**:
+> - (P1) Notion agent (kos-worker) stalled (2 calls/14d, last 6-21). **Brain side is
+>   READY**: OAuth client valid + non-expiring + scope `read write`, and every
+>   kos-worker call in the log SUCCEEDS — the gap is **Notion-side** (the agent isn't
+>   triggering ingests). Revival = Notion-side (Lucien): confirm the Notion Knowledge
+>   Agent targets `kos.chenge.ink/mcp` with kos-worker creds and its automation is on.
+>   See `docs/NOTION-JARVIS-WORKER-USAGE.md`.
+> - (P1) frontmatter provenance (L746) → RE-SCOPED: largely mooted. Provenance now
+>   lives in dedicated columns `ingested_via` + `source_kind` (8,489 pages tagged
+>   `mcp:put_page`), and source_id is itself top-level provenance. Real residual gap =
+>   older/bulk pages in `default` (only ~248/10,121 column-tagged) + omada bulk
+>   (26/3,112). `frontmatter->>'source'` is redundant with the columns; a 25k-page
+>   frontmatter backfill is NOT worth it. Minimal forward fix = make omada-sentiment +
+>   kos-worker writers populate the columns (mailagent already does). Awaiting Lucien OK.
+> - (P2) enrich-sweep last ran 6-21, hit the 1h per-job timeout (exit 1), ~5d no
+>   successful run. No shim bug (run.ts refs are comments only). Needs a focused look:
+>   the slow job, raise the per-job cap, or smaller per-source batches.
+> **NEEDS LUCIEN**: image-ingest still scaffold-only — fill Voyage API key + image dir
+>   to bootstrap, or decide to shelve.
+
 > **Sync 2026-06-20** (§6.37, v0.42.44.0 → v0.42.51.0, 7 commits): additive
 > schema only (v117 → v119, `page_generation_clock_sequence_swap` +
 > `op_checkpoints_completed_keys_array_check` — contention-free page-gen clock
