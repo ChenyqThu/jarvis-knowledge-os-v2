@@ -451,6 +451,9 @@ confidence: low
 source_of_truth: raw
 source_refs:
   - ${sourceRef}
+source: ${sourceRef}${notion_id ? `\nnotion_id: '${notion_id}'` : ""}
+ingested_via: kos-worker
+ingested_at: '${today}'
 tags: [${tagList.join(", ")}]
 ---
 

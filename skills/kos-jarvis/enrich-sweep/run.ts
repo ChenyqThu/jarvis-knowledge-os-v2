@@ -13,7 +13,7 @@
  * Exit: 0 clean | 1 fatal pre-flight failure | 2 partial success
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import Anthropic from "@anthropic-ai/sdk";
@@ -116,9 +116,31 @@ async function preflight(flags: Flags): Promise<string[]> {
     console.warn("⚠ TAVILY_API_KEY not set — Tier 2 candidates will degrade to Tier 3 (brain-only)");
   }
 
-  // Lock
+  // Lock — PID-liveness stale takeover. A timed-out/crashed run leaves an
+  // orphaned lock (releaseLock's finally never fires on SIGKILL/timeout);
+  // without this every later run wedges on it. The 2026-06-21 timeout blocked
+  // enrich-sweep for days until the §6.38 closure pass — hence this hardening.
   if (existsSync(LOCK_PATH)) {
-    errors.push(`lock exists at ${LOCK_PATH} (another sweep running or crashed — delete to retry)`);
+    const holderPid = Number((readFileSync(LOCK_PATH, "utf8").split("\n")[0] || "").trim());
+    let holderAlive = false;
+    if (Number.isInteger(holderPid) && holderPid > 0) {
+      try {
+        process.kill(holderPid, 0); // signal 0 = liveness probe, no-op if alive
+        holderAlive = true;
+      } catch {
+        holderAlive = false; // ESRCH (dead) or EPERM (recycled/other-user) → treat as stale
+      }
+    }
+    if (holderAlive) {
+      errors.push(`lock held by live pid ${holderPid} at ${LOCK_PATH} (another sweep running)`);
+    } else {
+      console.warn(`⚠ clearing stale enrich-sweep lock (dead pid ${holderPid || "?"}) at ${LOCK_PATH}`);
+      try {
+        unlinkSync(LOCK_PATH);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   return errors;
