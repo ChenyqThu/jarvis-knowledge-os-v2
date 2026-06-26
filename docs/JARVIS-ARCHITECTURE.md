@@ -4976,6 +4976,125 @@ op_checkpoints_completed_keys_array_check` → `2 migration(s) applied`。实查
 
 ---
 
+## 6.38 Upstream v0.42.53.0 sync (2026-06-26)
+
+§6.37 之后 6 天的常规 sync —— 上游 master **2 个 commit**(v0.42.51.0 →
+**v0.42.53.0**),merge-base `9bf96db8` 即 §6.37 合并点。上游 delta **61 文件 /
++2,691 / −158 LoC**(`CLAUDE.md` 取 `--ours`、`llms-full.txt` 重生成,故不计入
+merge diff)。本批是上游 reliability + DB 正确性双修,零功能面新增。主题:
+
+- **v0.42.52.0** —— reliability 加固:autopilot dead-job storm 抑制 + supervisor
+  wedge 解除 + sync/status/minion 可靠性(#2194 #2227 #1994 #1737 #1738 #1950
+  #1984)。其中 #1950 即新增 `GBRAIN_SYNC_STALL_ABORT_SECONDS`(默认 900s)进度
+  感知 stall watchdog —— sync drain 以 file-import 进度(而非 lock 心跳)为准,
+  无前进 N 秒即 abort 释放 per-source 锁,下次 `gbrain sync` 从 checkpoint 续。
+- **v0.42.53.0** —— `op_checkpoints` jsonb double-encode 修复(#2339)+ bug-class
+  清扫 + CI guard:positional `$N::jsonb` + `JSON.stringify`(template grep 漏掉
+  的那一类、曾 abort 每次 sync)经 `$N::text::jsonb` 修正;新增
+  `scripts/check-jsonb-params.mjs`(positional AST 扫描器),真正 backstop 是
+  DATABASE_URL-gated 的 `op-checkpoint-jsonb-parity` e2e(PGLite 掩盖此 bug)。
+
+Schema **不变(仍 v119)** —— 本批零 migration。`bin/gbrain init --migrate-only`
+报 **"Schema up to date"**,`bun install` postinstall 亦 "All migrations up to
+date"。op_checkpoints jsonb 修复属序列化层(写入形态)修正,非 schema 变更。
+
+生产 `kos.chenge.ink` 部署完成,**25,138 pages**(default 10,121 /
+mailagent-emails 11,758 / omada 3,112 / gbrain-docs 147;较 §6.37 的 24,736 高出
++402 系其间 6 天 mailagent + omada 日增,与本 sync 正交;零 migration 不改 page
+count)。
+
+### Conflict resolution(file-level 3,实 2 需手解,1 自动合)
+
+| File | Decision | Rationale |
+|---|---|---|
+| `CLAUDE.md` | `git checkout --ours`(整文件保 fork) | fork CLAUDE.md 是 fork-only;上游本批 +10/−4(JSONB 规则扩写 + `GBRAIN_SYNC_STALL_ABORT_SECONDS` 旋钮)镜像进 `docs/CLAUDE-UPSTREAM.md` 即可 |
+| `llms-full.txt` | `--ours` 占位 + `bun run build:llms` 重生成(194,953 B) | 重生成反映 fork 完整 skill+doc catalog,并补回自 §6.37 起一拍 stale 的 CLAUDE.md 头 + 上游新 `ENGINES.md` JSONB 段 |
+
+**自动合干净(1)**:`package.json` —— fork pglite **0.4.4** pin 在行 ~106、上游
+version bump 在行 ~143,不同 hunk → 取并集(pin 留、version=0.42.53.0)。
+`bun install` **285 installs / 0 dep 变更**(bun.lock 已含 0.4.4、上游零新依赖)。
+
+**`docs/CLAUDE-UPSTREAM.md` 本轮重刷**:上游本批动了 CLAUDE.md(+10/−4)→ 从
+`upstream/master:CLAUDE.md` 重生成(保 fork wrapper header 21 行 + scrub
+banned-name → openclaw-reference ×5,`check-privacy.sh` 绿)。
+
+**Fork patch / territory**:本批上游 2 commit 对 fork-protected 区域
+(`skills/kos-jarvis/`、`server/`、`workers/`、`scripts/launchd/`、
+`skills/RESOLVER.md`)**零侵入**(`git diff master <merge>` 受限于这些目录为空)。
+`src/core/ai/gateway.ts` 本批上游未碰 → §6.34 embed-retry patch 继续存活;§6.35
+WAL patch 自动保留。
+
+### 绿门
+
+`bun install` 干净(285 installs / 0 dep 变更);`bun run build` → `gbrain
+0.42.53.0`;typecheck 0 错;`check:all` 全 22 gate 绿(含本批新进的
+`check-jsonb-params` positional 扫描器、check-privacy 验 banned-name scrub、
+`jsonb_integrity` 等);`bun test test/ai/` **315 pass / 0 fail / 994 expect()**。
+
+### 生产部署 + smoke
+
+> **过程教训 ①(新,代价较大)**:daemon 重启 `launchctl bootout` + `bootstrap`,
+> 若把 3 次 bootstrap 重试紧贴循环跑(毫秒级、无间隔),会全部撞上 bootout 的
+> 异步 teardown 报 `Bootstrap failed: 5: Input/output error`;而此刻 bootout 已
+> 杀旧 daemon(pid 85465)→ :7225 真空、生产 **down ~60–90s**(远超 §6.37 的
+> ~5s)。teardown 完成后(`launchctl print` 查无、pid 消失)单次 bootstrap 即成
+> (新 pid 820);且 daemon 自身启动 sweep(content-sanity + 过期 token 清扫)要
+> 数十秒才 bind :7225,须轮询 health 而非定时。今后:bootout 后先确认离开 domain
+> 再 bootstrap,health 用轮询。
+>
+> **过程教训 ②**:启动 sweep 期间出现一次 `[ai.gateway] embed transport gave up
+> after 3 attempts ... UNABLE_TO_VERIFY_LEAF_SIGNATURE`(avman relay TLS 叶证书
+> 瞬时校验失败,被 §6.34 embed-retry patch 记录)。**瞬时故障** —— 重启后 CLI
+> `知识管理` 复合 CJK 向量查询即刻成功嵌入返回,doctor `embedding_provider`
+> 554ms/1536d 健康,确认非持久。
+
+备份 `pg_dump` **717,305,369 B(~684MB)**(`/tmp/pg-pre-sync-v0.42.53.0-2026-06-26.dump.gz`,
+`gzip -t` OK)+ config 副本(`/tmp/gbrain-config.before-sync-v0.42.53.0.json`)。
+`bin/gbrain init --migrate-only` → **"Schema up to date"**(零 pending、schema 仍
+v119)、`~/.gbrain/config.json` 未被 clobber(diff vs 备份一致)。daemon
+`launchctl bootout`+`bootstrap`(pid 85465 → 820,见教训 ①)后本地 +
+`https://kos.chenge.ink/health` 均报 **0.42.53.0 / postgres**。查询 smoke:
+
+- ZH 复合 CJK `知识管理`(vector 路径,本库 modal query)→ **0.8761
+  sources/2026-04-06-jarvis-dual-platform-architecture / 0.8310
+  anthropic-academy/.../456452 / 0.8167 .../383393 / 0.7826
+  projects/knowledge-agent** ✓(命中均切题;较 §6.37 的 people/karpathy 头部随 6
+  天新增内容自然漂移,向量路径功能正常)
+- EN 关键词 `Karpathy`(body-fragment containment)→ **1.1716 people/karpathy /
+  0.7989 entities/lucien-chen / 0.7974 projects/karpathy-autoresearch** ✓(top
+  与 §6.37 持平)
+
+### 部署后健康快照(均为既有结构常态,非回归)
+
+1. **embedding 满覆盖 + 单模型**:`content_chunks` **56,828 / 0 NULL**(§6.37 收于
+   54,360/0,6 天增 +2,468 全嵌)。部署后 324 chunk 被 ingest 漂移 cosmetic-误标
+   `zeroentropyai:zembed-1`(§6.32 papercut);psql 实测其 L2 norm **avg 1.0000 /
+   min 0.9995 / max 1.0005**(与 te3 2k 抽样逐位一致;真 ZE 应 ~0.70),确认为
+   avman te3 误标,按 CLAUDE.md sanctioned `UPDATE content_chunks SET
+   model='openai:text-embedding-3-large'`(324 行,只动标签不动向量),brain 回
+   单模型 te3@1536(**56,828/56,828**)。doctor `embedding_provider` openai te3
+   ✓ 554ms/1536d DB-aligned、`embedding_width_consistency` 1536d 匹配、
+   `embed_staleness` 无 stale、`ze_embedding_health` 跳过(模型非 ZE)——§6.32
+   收敛持续健康。
+2. **doctor overall 0/100、brain_score 79/100(= §6.37)、3 个 FAIL =
+   `orphan_ratio`(91%,22878/25133)/ `sync_freshness` / `cycle_freshness`**:
+   完全沿 §6.35–§6.37 既定 —— 四源经 MCP 写入而非 git-sync、邮件语料天然少入链,
+   结构性常态;orphan 91% 与 §6.37 的 91% 一致,无新增 FAIL。WARN(oversized
+   `docs/claude-upstream` 549,884B 镜像页 auto-embed_skip、`links_extraction_lag`
+   100%、`graph_signals_coverage` 9%、salience、whoknows fixture 等)均既有。
+   `jsonb_integrity` OK(本批 #2339 修复正中此域)。
+
+> 沿 §6.33–§6.37 P3 教训:本节全文仅用 "banned-name" 占位词,写毕已 re-run
+> check-privacy 确认 clean。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-06-26)
+- [`docs/CLAUDE-UPSTREAM.md`](CLAUDE-UPSTREAM.md) — 本轮上游 CLAUDE.md +10/−4,已重刷至 v0.42.53.0 镜像(banned-name → openclaw-reference ×5)
+- Sync plan + verification trail: this conversation's transcript
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |

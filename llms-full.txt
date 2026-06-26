@@ -165,16 +165,18 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.36 v0.42.44.0
-   upstream sync (2026-06-16, 2 commits / v0.42.42.0 → v0.42.44.0 / 50
-   files; schema v116 → v117 — single migration `context_volunteer_events_table`;
-   2 conflicts — CLAUDE.md `--ours`, llms-full.txt regen; CLAUDE-UPSTREAM.md
-   refreshed to v0.42.43.0 mirror; fork territory zero-invasion)**. Previous:
-   §6.35 v0.42.42.0 sync (2026-06-14, 5 commits, schema v115 → v116, 3
-   conflicts — gateway.ts retry-wrapper composed inside `__embedInputTypeStore`);
-   §6.34 v0.42.37.0 sync (2026-06-09, 35 commits, schema v111 → v115,
-   first fork src/ runtime patch `fork(ai-gateway)` embed transport
-   retry). Note §6.32 (2026-05-31) was the embedding convergence, not a sync.
+   operates ↔ OpenClaw executes). Latest sync story: **§6.38 v0.42.53.0
+   upstream sync (2026-06-26, 2 commits / v0.42.51.0 → v0.42.53.0 / 61
+   files; schema unchanged (v119) — zero migration; 2 conflicts — CLAUDE.md
+   `--ours`, llms-full.txt regen; package.json auto-merged (fork pglite 0.4.4
+   + upstream version); CLAUDE-UPSTREAM.md refreshed to v0.42.53.0 mirror;
+   fork territory zero-invasion; v0.42.53.0 op_checkpoints jsonb double-encode
+   #2339 fix + v0.42.52.0 autopilot/supervisor reliability)**. Previous: §6.37
+   v0.42.51.0 sync (2026-06-20, 7 commits, schema v117 → v119,
+   `page_generation_clock_sequence_swap` + `op_checkpoints_completed_keys_array_check`);
+   §6.36 v0.42.44.0 sync (2026-06-16, 2 commits, schema v116 → v117,
+   `context_volunteer_events_table`). Note §6.32 (2026-05-31) was the
+   embedding convergence, not a sync.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"
@@ -1610,6 +1612,39 @@ RRF fusion, multi-query expansion, and 4-layer dedup are engine-agnostic. They o
 | Backups | Manual (file copy) | Managed by Supabase |
 
 **Migration:** `gbrain migrate --to supabase` exports everything (pages, chunks, embeddings, links, tags, timeline) and imports into Supabase. `gbrain migrate --to pglite` goes the other direction. Bidirectional, lossless.
+
+## JSONB writes: never double-encode (the #2339 trap)
+
+Writing a JS value into a `jsonb` column has exactly two correct forms. Get this
+wrong and the write succeeds on PGLite but stores a **jsonb string scalar** on
+real Postgres — `col ->> 'k'` returns NULL, `jsonb_array_elements` throws, and a
+`jsonb_typeof = 'array'` CHECK rejects the row (this aborted every sync in #2339).
+
+| Form | Verdict |
+|---|---|
+| Template tag: `` sql`... ${sql.json(obj)}` `` (postgres-engine only) | ✅ native jsonb serialization |
+| Positional raw call, raw object: `executeRawJsonb(engine, sql, scalars, [obj])` | ✅ object reaches the wire as jsonb |
+| Positional raw call, stringified: `executeRaw(\`... $N::text::jsonb\`, [JSON.stringify(x)])` | ✅ binds as text, the cast parses it |
+| Positional raw call, BARE cast: `executeRaw(\`... $N::jsonb\`, [JSON.stringify(x)])` | ❌ **double-encodes** under postgres.js `.unsafe()` |
+| Template literal interpolation: `` `... ${JSON.stringify(x)}::jsonb` `` | ❌ double-encodes |
+
+**Why:** postgres.js `.unsafe(sql, params)` (the path behind `executeRaw` /
+`executeRawDirect`) binds a JS **string** as a text param. A bare `$N::jsonb`
+cast then wraps that already-JSON string into a jsonb scalar string instead of
+parsing it. Casting through `$N::text::jsonb` forces a text→jsonb parse.
+**PGLite's `db.query` parses text→jsonb natively, so it hides the bug** — which is
+why a regression only shows up on Postgres (and why the parity test must run there).
+
+**Two CI guards enforce this, both wired into `scripts/check-jsonb-pattern.sh`:**
+- the template-tag grep (`${JSON.stringify(x)}::jsonb`), and
+- `scripts/check-jsonb-params.mjs`, an AST-lite scanner for the positional
+  `$N::jsonb` + `JSON.stringify` form the grep misses. Sanctioned escapes:
+  `$N::text::jsonb`, `$N::text[]`, `executeRawJsonb`, `sql.json`, or an inline
+  `jsonb-guard-ok` comment.
+
+The real backstop is `test/e2e/op-checkpoint-jsonb-parity.test.ts` +
+`test/e2e/jsonb-roundtrip.test.ts`, which round-trip writes through real Postgres
+and assert `jsonb_typeof` — the assertion PGLite cannot make.
 
 ## Adding a new engine
 
