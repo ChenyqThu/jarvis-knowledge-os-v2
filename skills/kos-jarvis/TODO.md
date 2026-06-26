@@ -36,25 +36,28 @@
 > **CORRECTED**: `feishu` is NOT dormant — active article-ingest client (365 calls/14d,
 >   last 6-25 08:00). CLAUDE.md fixed; the "(P1) feishu phantom traffic — caller
 >   unknown" item below is RESOLVED (caller = legit feishu article ingestion).
-> **DIAGNOSED — still open**:
-> - (P1) Notion agent (kos-worker) stalled (2 calls/14d, last 6-21). **Brain side is
->   READY**: OAuth client valid + non-expiring + scope `read write`, and every
->   kos-worker call in the log SUCCEEDS — the gap is **Notion-side** (the agent isn't
->   triggering ingests). Revival = Notion-side (Lucien): confirm the Notion Knowledge
->   Agent targets `kos.chenge.ink/mcp` with kos-worker creds and its automation is on.
->   See `docs/NOTION-JARVIS-WORKER-USAGE.md`.
-> - (P1) frontmatter provenance (L746) → RE-SCOPED: largely mooted. Provenance now
->   lives in dedicated columns `ingested_via` + `source_kind` (8,489 pages tagged
->   `mcp:put_page`), and source_id is itself top-level provenance. Real residual gap =
->   older/bulk pages in `default` (only ~248/10,121 column-tagged) + omada bulk
->   (26/3,112). `frontmatter->>'source'` is redundant with the columns; a 25k-page
->   frontmatter backfill is NOT worth it. Minimal forward fix = make omada-sentiment +
->   kos-worker writers populate the columns (mailagent already does). Awaiting Lucien OK.
-> - (P2) enrich-sweep last ran 6-21, hit the 1h per-job timeout (exit 1), ~5d no
->   successful run. No shim bug (run.ts refs are comments only). Needs a focused look:
->   the slow job, raise the per-job cap, or smaller per-source batches.
-> **NEEDS LUCIEN**: image-ingest still scaffold-only — fill Voyage API key + image dir
->   to bootstrap, or decide to shelve.
+> **RESOLVED later in this same pass**:
+> - (P1) Notion agent (kos-worker): **link CONFIRMED working** 2026-06-26 — `ntn` shows
+>   the worker deployed (3 tools: kosQuery/kosIngest/kosStatus) and live
+>   `ntn workers exec kosStatus`/`kosQuery` both succeeded + landed in `mcp_request_log`
+>   (06-26 02:34). OAuth valid, daemon 0.42.53.0. The low call volume is **expected
+>   (Notion-side is used infrequently by design)** — Lucien confirmed, NOT a broken pipe,
+>   no infra action. Refreshed `docs/NOTION-JARVIS-WORKER-USAGE.md` to the current
+>   OAuth+MCP wire (commit 2c1533e8; kosDigest dropped — code+deploy only have 3 tools).
+>   To raise usage later: re-feed that guide to the Notion agent's instructions.
+> - (P1) frontmatter provenance (L746) → DONE (small fix): kos-worker frontmatter now
+>   stamps queryable `source` / `notion_id` / `ingested_via` / `ingested_at` (commit
+>   5579a443; tsc clean). **omada-sentiment is external code** — Lucien adds the same
+>   fields there. No 25k-page backfill (mooted by source_id + the dedicated
+>   `ingested_via`/`source_kind` columns; 8,489 pages already tagged).
+> - (P2) enrich-sweep timeout → DONE: root cause was an **orphaned lock** (the 6-21
+>   timeout left `enrich-sweep.lock`; the dumb existsSync check then wedged every run
+>   since 6-16). Added PID-liveness stale-takeover (commit 5579a443); verified `--dry`
+>   auto-clears a dead-holder lock + passes pre-flight. Self-healing now.
+> - (P3) fork-boundary guard over-broad `*/src/*` (TODO L384) → fixed to allow
+>   `workers/`+`server/` fork territory, but **local-only** (`.claude/hooks` is gitignored).
+> **NEEDS LUCIEN (shelved 2026-06-26)**: image-ingest still scaffold-only — fill Voyage
+>   API key + image dir to bootstrap, or leave shelved (Lucien: leave it for now).
 
 > **Sync 2026-06-20** (§6.37, v0.42.44.0 → v0.42.51.0, 7 commits): additive
 > schema only (v117 → v119, `page_generation_clock_sequence_swap` +
