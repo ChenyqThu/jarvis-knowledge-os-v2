@@ -5165,7 +5165,7 @@ search_path)OK;`bun test test/ai/` exit 0。llms-full.txt 重生成(+3/−1,补�
 > rolled-back 事务验证)。**但 daemon 的 initSchema 迁移路径成功了**(schema 干净到
 > v122,所有对象齐备)—— 即 CLI `--migrate-only` 路径坏、daemon 路径好。复现 + 根因 +
 > 修复建议见 `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`,
-> 待报 garrytan/gbrain。
+> 已报 garrytan/gbrain#2667。
 >
 > **③ daemon 直跑 repo 二进制时,生产 schema 会脱离 CLI 动作独立前进。** 本批
 > daemon(v57)自行把 schema 从 119 迁到 122,而我早先几次 CLI 检查还是 119 → 一度

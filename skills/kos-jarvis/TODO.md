@@ -18,8 +18,7 @@
 > upstream missed it). The daemon's initSchema path succeeded; schema
 > self-advanced to v122 when launchd KeepAlive relaunched the daemon onto the
 > mid-build `bin/gbrain`. Repro+root-cause+fix in
-> `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`; report
-> to garrytan/gbrain pending. Deploy lesson: `bin/gbrain` IS the launchd
+> `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`; reported garrytan/gbrain#2667. Deploy lesson: `bin/gbrain` IS the launchd
 > daemon `program` — `bun run build` mid-sync self-deploys via KeepAlive. See
 > §6.39 教训①②③. No other outstanding work introduced; items below carry over.
 
