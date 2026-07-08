@@ -1,18 +1,27 @@
-# kos-jarvis — Outstanding Work (post v0.42.53.0 sync, 2026-06-26)
+# kos-jarvis — Outstanding Work (post v0.42.57.0 sync, 2026-07-07)
 
-> **Sync 2026-06-26** (§6.38, v0.42.51.0 → v0.42.53.0, 2 commits): zero-migration
-> (schema stays v119) reliability + DB-correctness sync. v0.42.53.0 fixes the
-> `op_checkpoints` jsonb double-encode (#2339, the positional `$N::jsonb` +
-> `JSON.stringify` class) + adds `scripts/check-jsonb-params.mjs`; v0.42.52.0
-> hardens autopilot/supervisor/sync reliability (new
-> `GBRAIN_SYNC_STALL_ABORT_SECONDS` stall watchdog). Fork territory
-> zero-invasion; no new fork src/ adaptation (gateway.ts untouched upstream;
-> §6.34 embed-retry + §6.35 WAL patches auto-merged). Production at **25,138
-> pages** / `content_chunks` 56,828 / 0 NULL / single-model te3@1536 (324
-> ingest-drift chunks cosmetic-relabeled per §6.32 papercut, L2 norm 1.0000
-> verified). Deploy lesson: space out `launchctl bootstrap` retries — a rapid
-> 3× retry burned the bootout teardown race → ~60–90s downtime. No new
-> outstanding work introduced; items below carry over.
+> **Sync 2026-07-07** (§6.39, v0.42.53.0 → v0.42.57.0, 3 commits): schema
+> **v119 → v122** 3-step. v0.42.55.0 security-hardening (dotfile/skills/slug
+> confinement + DCR consent default + v120 schema-lint: page_links
+> security_invoker + trigger-fn search_path); v0.42.56.0 Life Chronicle
+> (timeline + thought-diary + bi-temporal facts ontology, v121/v122);
+> v0.42.57.0 pglite live-lock fix. Merge **zero-conflict** (upstream didn't
+> touch CLAUDE.md/llms-full.txt); fork territory zero-invasion; 5 fork src/
+> patches survived (`gateway.ts` §6.34 untouched; **WAL `pg_switch_wal`
+> auto-merged clean despite +289 to `pglite-engine.ts`**). Production **27,019
+> pages / 59,896 chunks / 0 NULL / single-model te3@1536** (no cosmetic relabel
+> needed this batch); `brain_score` 78/100 (−1 = new chronicle `timeline 1/15`
+> dim, unpopulated). **INCIDENT + new P0** (`upstream-issue`
+> `migrate-only-multistatement-ddl`): `gbrain init --migrate-only` is broken on
+> real Postgres for ADD-COLUMN-then-CREATE-INDEX multi-statement migrations
+> (postgres.js `conn.unsafe` batch parse-time validation; PGLite tolerates →
+> upstream missed it). The daemon's initSchema path succeeded; schema
+> self-advanced to v122 when launchd KeepAlive relaunched the daemon onto the
+> mid-build `bin/gbrain`. Repro+root-cause+fix in
+> `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`; report
+> to garrytan/gbrain pending. Deploy lesson: `bin/gbrain` IS the launchd
+> daemon `program` — `bun run build` mid-sync self-deploys via KeepAlive. See
+> §6.39 教训①②③. No other outstanding work introduced; items below carry over.
 
 > **Closure pass 2026-06-26** (post-§6.38 KOS health + backlog audit). Runtime:
 > daemon 0.42.53.0 healthy (pid 820), 25,138 pages / 56,828 chunks / 0 NULL /

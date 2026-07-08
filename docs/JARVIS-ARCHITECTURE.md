@@ -5095,6 +5095,152 @@ v119)、`~/.gbrain/config.json` 未被 clobber(diff vs 备份一致)。daemon
 
 ---
 
+## 6.39 Upstream v0.42.57.0 sync (2026-07-07)
+
+§6.38 之后 11 天的常规 sync,但过程出了一段 **真 Postgres migrator bug + daemon
+意外自部署** 的插曲(见"过程教训")。上游 master **3 个 commit**(上游跳过
+v0.42.54.0),merge-base `814258dd` = §6.38 合并点。Merge **干净零冲突**(76 文件 /
++3,867 / −164)—— 本批上游 **没碰 `CLAUDE.md` 也没碰 `llms-full.txt`**,故往常那两个
+手解冲突这次不存在;`package.json` 自动合(fork pglite 0.4.4 pin + 上游 version)。
+
+- **v0.42.55.0** `fix(security)` —— dotfile/skills/slug 限域 + DCR consent 默认值 +
+  **schema-lint 迁移 (v120)**(#418 #419 #245 #1353 #1647 #171 #1385)。新
+  `src/core/path-confine.ts`(realpath 限域 + `isTrustedDotfile` +
+  `isWriteTargetContained`);`.gbrain-source`/`.gbrain-mount` walk-up dotfile 现经
+  lstat 信任门(symlink/异主/world-writable 在多用户机上拒绝);skills-dir 各 tier
+  经 realpath 限域;`validateSlug` 拒 NUL/控制符/bidi/反斜杠/URL 编码分隔符;DCR
+  自注册 client 默认 `authorization_code`(显式 `client_credentials` 除非
+  `--enable-dcr-insecure` 否则拒)。**对 fork 零影响**:`skills/kos-jarvis/` 是仓库
+  内真实子目录(放行);源 slug 均合法;6 个 OAuth client 全 CLI 注册 =
+  operator-trusted 不变,且生产 daemon **DCR disabled**。
+- **v0.42.56.0** `feat(chronicle)` —— Life Chronicle:时间线 + 思考日记 + 双时态
+  per-entity 本体(#2390 #2533)。新 `src/core/chronicle/*` + `eval-chronicle` CLI +
+  doctor chronicle 分类 + **schema v121/v122**。纯加性上游代码(53 文件 / +2,758)。
+- **v0.42.57.0** `fix(pglite)` —— 不抢活跃 data-dir 锁 + 损坏存储恢复提示
+  (#2348 #2400)。`pglite-lock.ts` 重写 + `pglite-engine.ts` +22。
+
+Schema **v119 → v122**(三步真迁移):v120 `schema_lint_hardening`(`page_links` 视图
+`security_invoker=on` + 6 个 trigger/event 函数 `SET search_path=pg_catalog,public`,
+ALTER FUNCTION 函数体不动 + 放宽 BYPASSRLS 预检);v121 `timeline_entries_event_page_id`
+(event→timeline 投影:新 `event_page_id` FK + 2 partial index);v122
+`facts_ontology_dimension`(per-entity 本体骑在 `facts` 表:`dimension`/`value`/
+`value_hash`/`dim_status` + 2 index)。
+
+**Fork territory 零侵入**(逐 commit 核对:3 commit 完全不碰 `skills/kos-jarvis/`、
+`server/`、`workers/`、`scripts/launchd/`、`skills/RESOLVER.md`)。**5 个 fork src/
+patch 全存活**:`gateway.ts`(§6.34 embed-retry,172L,上游未碰)、`recipes/google.ts`、
+`cycle/extract-atoms{,-drain}.ts` 逐字保留;**`pglite-engine.ts` §6.35 WAL
+`pg_switch_wal` patch(21L)自动合干净**(尽管上游本批对该文件 +289 chronicle/pglite
+改动,落在不同块;post-merge grep 确认 `pg_switch_wal()` 于行 348–356 完整,含
+`docs/UPSTREAM-PATCHES/v018-pglite-wal-durability-fix.md` 注释块)。
+`docs/CLAUDE-UPSTREAM.md` **本批无需重刷**(上游 CLAUDE.md 自 v0.42.53.0 起未变)。
+
+### 绿门
+
+`bun install` 干净(285 installs / 277 packages / **零 dep 变更**,pglite 0.4.4 pin
+存活);`bun run build` → `gbrain 0.42.57.0`;`typecheck` 0 错;`check:all` 全绿
+(privacy/jsonb/source-id-projection/exports-count=20/admin-build vite/skill-brain-first/
+gateway-routed/worker-pool-atomicity/key-files-current-state 等);**新 gate
+`check:search-path`**(本批上游新增,验 schema base 文件 trigger 函数都 pin
+search_path)OK;`bun test test/ai/` exit 0。llms-full.txt 重生成(+3/−1,补回
+§6.38 的 feishu dormant→active 头,`chore:` daa3eb6e)。
+
+### 过程教训(本批代价较大,三条)
+
+> **① `bin/gbrain` 就是 launchd daemon 的 `program`(KeepAlive)—— 重编译 = 触发
+> 部署。** 生产 daemon 经 `com.jarvis.gbrain-serve-http.plist` 直跑
+> `<repo>/bin/gbrain serve`。repo 侧 `bun run build` 覆写了这个活二进制 → launchd
+> KeepAlive 把 daemon 重启到 **v0.42.57.0**(pid 81908 @ 21:14),**在受控
+> migrate+restart 步骤之前**。今后:视 `bun run build` 为影响生产的操作 —— 要么先
+> bootout daemon 再 build,要么明确 build 已翻新 daemon 并据此排序。
+>
+> **② `gbrain init --migrate-only` 在真 Postgres 上对"ADD COLUMN 后 CREATE INDEX
+> 同一 migration"的多语句迁移必炸。** v121/v122 报 `column "event_page_id" does not
+> exist`(两次确定性失败)。根因:`runMigrationSQL`(migrate.ts:5637)→
+> `conn.unsafe(整块多语句 sql)`(postgres-engine.ts:5355,postgres.js),真 PG 在执行
+> 前对 **整批 parse-analyze**,故 v121 的 `CREATE INDEX (event_page_id)` 在自身
+> `ALTER TABLE ADD COLUMN event_page_id` 执行前就被校验 → 报列不存在。**PGLite 逐句
+> 执行故容忍 → 上游 chronicle 测试(PGLite)没接住。** `GBRAIN_PREPARE=false`(simple
+> 协议)**不能修**(问题不在 prepare 缓存);psql simple 协议跑同样 SQL 完全 OK(已用
+> rolled-back 事务验证)。**但 daemon 的 initSchema 迁移路径成功了**(schema 干净到
+> v122,所有对象齐备)—— 即 CLI `--migrate-only` 路径坏、daemon 路径好。复现 + 根因 +
+> 修复建议见 `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`,
+> 待报 garrytan/gbrain。
+>
+> **③ daemon 直跑 repo 二进制时,生产 schema 会脱离 CLI 动作独立前进。** 本批
+> daemon(v57)自行把 schema 从 119 迁到 122,而我早先几次 CLI 检查还是 119 → 一度
+> 误判"生产安全停在 v119、bug 卡死迁移",据此选了"暂缓+回滚 repo"(master reset 回
+> v0.42.53.0 + rebuild bin/gbrain→v53)。随后发现生产其实已健康跑在 v122/v57(58min),
+> 回滚反而造成 **disk(v53) vs 运行态(v57/v122) 不一致**。改选 **重新推进**:master
+> 复位到 merge、rebuild bin/gbrain→v57,与已部署的健康生产对齐(未回滚 DB —— 生产
+> v122 健康,回滚会丢 ~1h 日入)。教训:daemon 直跑二进制时,断言"生产在 vN"前必须现查
+> live 态(`config.version` + daemon pid/version)。
+
+### 生产部署 + smoke
+
+备份 `pg_dump` **770,326,555 B(~770MB)**(`/tmp/pg-pre-sync-v0.42.57.0-2026-07-07.dump.gz`,
+`gzip -t` OK)+ config 副本(`/tmp/gbrain-config.before-sync-v0.42.57.0.json`,
+engine=postgres / te3@1536 完好)。迁移由 daemon initSchema 路径完成(见教训②),
+`config.version` 达 **122**,`~/.gbrain/config.json` 未被 clobber(diff vs 备份一致)。
+daemon pid 81908(v0.42.57.0,KeepAlive 自启,DCR disabled / 6 clients / skills
+published,68min 零错健康),本地 + `https://kos.chenge.ink/health` 均报
+**0.42.57.0 / postgres**。**未做额外受控重启**(daemon 已在目标版本健康运行,重启
+只增风险无收益)。
+
+Schema 完整性(psql 逐项验):v120 `page_links` `security_invoker=on` +
+`auto_enable_rls`/`update_page_search_vector` 等函数 `search_path=pg_catalog,public`
+✓;v121 `timeline_entries.event_page_id` + `idx_timeline_event_page`/
+`idx_timeline_event_dedup` ✓;v122 `facts.{dimension,value,value_hash,dim_status}` +
+`idx_facts_dimension`/`idx_facts_ontology_dedup` ✓。查询 smoke:
+
+- ZH 复合 CJK `知识管理`(vector 路径,本库 modal query)→
+  **`sources/2026-04-06-jarvis-dual-platform-architecture`**(连跑 3/3 一致命中、零嵌入
+  错误,证 avman 嵌入稳定 + 向量路径活)✓
+- EN 关键词 `Karpathy`(body-fragment / hybrid)→ **people/karpathy 头名 +
+  persistent-wiki / knowledge-compilation / dual-platform-architecture /
+  agent-computer-interface**(与 §6.38 头部持平)✓
+
+### 部署后健康快照(均既有常态,非回归)
+
+1. **embedding 满覆盖 + 单模型**:`content_chunks` **59,896 / 0 NULL / 100%
+   `openai:text-embedding-3-large`**(§6.38 收于 56,828,11 天增 +3,068 全嵌)。
+   **本批无 cosmetic 误标漂移**(§6.38 有 324 个 zembed 误标需 relabel,本批 0 ——
+   embedding-label-normalize 日 cron 自愈中,§6.32 收敛持续健康)。doctor `embeddings`
+   100%/0 missing、`embedding_width_consistency` 1536d 匹配、
+   `facts_embedding_width_consistency` halfvec(1536) 匹配(chronicle facts 嵌入列健康)、
+   `embed_staleness` 无 stale、`ze_embedding_health` 跳过(非 ZE)、
+   `embedding_env_override` env 与 DB config 一致。
+2. **pages 27,019**(mailagent-emails 12,181 / default 11,567 / omada 3,124 /
+   gbrain-docs 147)—— 较 §6.38 的 25,138 **+1,881** 系 11 天四源日入,与本 sync 正交;
+   迁移零丢页。
+3. **doctor `schema_version` 122(latest 122)、`brain_score` 78/100**(§6.38 79)——
+   −1 全在 **`timeline 1/15`**(chronicle 新计分维,本库尚未跑 chronicle capture 故
+   时间线未填,属新特性预期非回归);其余 embed 35/35、links 25/25、orphans 7/15、
+   dead-links 10/10。3 个 FAIL = `orphan_ratio`(92%,24831/27014)/ `sync_freshness` /
+   `cycle_freshness` —— 完全沿 §6.35–§6.38 既定(四源 MCP 写入非 git-sync、邮件语料
+   少入链),无新增 FAIL。
+4. **`embedding_provider` WARN**(doctor 探针一次性 `分组 *** 下模型
+   text-embedding-3-large 无可用渠道`)—— **瞬时 avman relay 容量 blip**(同 §6.38
+   瞬时探针失败一类):同刻 CJK 向量查询嵌入成功、连跑 3/3 复现无错、59,896/59,896
+   全嵌 0 NULL,确认非持久。
+
+> 沿 §6.33–§6.38 P3 教训:本节全文仅用 "banned-name" 占位词,写毕已 re-run
+> check-privacy 确认 clean。
+
+### Conflict resolution
+
+**本批零冲突**(merge-tree exit=0)。上游 3 commit 未碰 `CLAUDE.md`/`llms-full.txt`,
+`package.json` 自动合(pglite 0.4.4 pin + version 不同 hunk)。故无 file-level 手解;
+`docs/CLAUDE-UPSTREAM.md` 亦无需重刷(上游 CLAUDE.md 自 v0.42.53.0 未变)。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-07-07)+ 新 P0 上游 migrator bug
+- [`docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`](UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md) — `gbrain init --migrate-only` real-PG 多语句迁移 bug 的复现 + 根因 + 修复建议(daemon initSchema 路径不受影响)
+- Sync plan + verification trail: this conversation's transcript
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |
