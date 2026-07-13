@@ -287,6 +287,33 @@ export class BrainDb {
     return Number(result[0].xmax) === 0;
   }
 
+  /**
+   * Insert a link by globally-unique page ids. Source-safe: unlike addLink()
+   * / `gbrain link` (which resolve slugs in the default source only and fail
+   * for pages living in mailagent-emails/omada/etc.), this targets the exact
+   * pages. Default link_source='orphan-reducer' so these programmatic edges
+   * are self-identifying and cleanly reversible
+   * (`DELETE FROM links WHERE link_source='orphan-reducer'`). Idempotent via
+   * ON CONFLICT. Returns true on fresh insert, false on conflict no-op.
+   */
+  async addLinkByIds(
+    fromId: number,
+    toId: number,
+    opts: { linkType?: string; context?: string; linkSource?: string } = {}
+  ): Promise<boolean> {
+    const src = opts.linkSource ?? "orphan-reducer";
+    const result = await this._q<{ id: number; xmax: number | string }>(
+      `INSERT INTO links (from_page_id, to_page_id, link_type, context, link_source)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (from_page_id, to_page_id, link_type, link_source, origin_page_id) DO UPDATE SET
+         context = EXCLUDED.context
+       RETURNING id, xmax::text::int AS xmax`,
+      [fromId, toId, opts.linkType ?? "", opts.context ?? "", src]
+    );
+    if (result.length === 0) return false;
+    return Number(result[0].xmax) === 0;
+  }
+
   /** Count rows in the links table (fast, used by tests/validation). */
   async countLinks(filter?: { linkType?: string; linkSource?: string }): Promise<number> {
     const clauses: string[] = [];
@@ -320,15 +347,33 @@ export class BrainDb {
    * (src/core/pglite-engine.ts:685). Returns raw unfiltered rows; caller
    * applies pseudo/domain filters (see src/commands/orphans.ts:shouldExclude).
    */
-  async listOrphans(): Promise<Array<{ slug: string; title: string; domain: string | null }>> {
-    return await this._q<{ slug: string; title: string; domain: string | null }>(
-      `SELECT p.slug,
+  async listOrphans(): Promise<Array<{ id: number; slug: string; title: string; domain: string | null }>> {
+    return await this._q<{ id: number; slug: string; title: string; domain: string | null }>(
+      `SELECT p.id,
+              p.slug,
               COALESCE(p.title, p.slug) AS title,
               p.frontmatter->>'domain' AS domain
        FROM pages p
        WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
        ORDER BY p.slug`
     );
+  }
+
+  /** Fetch one page by its globally-unique id (source-unambiguous, unlike
+   * getPage(slug) which can match the same slug across sources). */
+  async getPageById(id: number): Promise<PageRow | null> {
+    const rows = await this._q<PageRow>(
+      `SELECT id, slug, type, title, compiled_truth, timeline, frontmatter,
+              content_hash, created_at, updated_at
+       FROM pages WHERE id = $1`,
+      [id]
+    );
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      ...r,
+      frontmatter: this.normalizeFrontmatter(r.frontmatter),
+    };
   }
 
   /**
@@ -370,6 +415,49 @@ export class BrainDb {
        ORDER BY distance ASC
        LIMIT $2`,
       [slug, limit]
+    );
+    return rows.map((r) => ({ ...r, distance: Number(r.distance) }));
+  }
+
+  /**
+   * Like findSimilar but anchors on a page id (source-unambiguous) and
+   * returns each candidate page's id. Groups by p.id so distinct pages that
+   * share a slug across sources stay separate rows — the caller can then
+   * write a link to the exact page, not whatever the default source resolves.
+   */
+  async findSimilarByPageId(
+    pageId: number,
+    limit: number
+  ): Promise<
+    Array<{ id: number; slug: string; title: string; compiled_truth: string; distance: number }>
+  > {
+    const rows = await this._q<{
+      id: number;
+      slug: string;
+      title: string;
+      compiled_truth: string;
+      distance: number | string;
+    }>(
+      `WITH target AS (
+         SELECT c.embedding
+         FROM content_chunks c
+         WHERE c.page_id = $1 AND c.embedding IS NOT NULL
+         ORDER BY c.chunk_index ASC
+         LIMIT 1
+       )
+       SELECT p.id,
+              p.slug,
+              COALESCE(p.title, p.slug) AS title,
+              p.compiled_truth,
+              MIN(c.embedding <=> t.embedding)::float AS distance
+       FROM content_chunks c
+       JOIN pages p ON p.id = c.page_id
+       CROSS JOIN target t
+       WHERE p.id != $1 AND c.embedding IS NOT NULL
+       GROUP BY p.id, p.slug, p.title, p.compiled_truth
+       ORDER BY distance ASC
+       LIMIT $2`,
+      [pageId, limit]
     );
     return rows.map((r) => ({ ...r, distance: Number(r.distance) }));
   }

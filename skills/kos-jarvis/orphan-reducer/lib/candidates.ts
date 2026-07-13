@@ -9,12 +9,14 @@
 import type { BrainDb } from "../../_lib/brain-db.ts";
 
 export type OrphanCandidate = {
+  id: number;
   slug: string;
   title: string;
   domain: string;
 };
 
 export type CandidateMatch = {
+  id: number;
   slug: string;
   title: string;
   compiled_truth: string;
@@ -85,7 +87,7 @@ export async function loadOrphans(
     if (shouldExclude(r.slug)) continue;
     const domain = deriveDomain(r.domain, r.slug);
     if (opts.domain && domain !== opts.domain) continue;
-    filtered.push({ slug: r.slug, title: r.title, domain });
+    filtered.push({ id: r.id, slug: r.slug, title: r.title, domain });
     if (opts.limit && filtered.length >= opts.limit) break;
   }
   return filtered;
@@ -93,17 +95,30 @@ export async function loadOrphans(
 
 export async function fetchCandidates(
   db: BrainDb,
-  slug: string,
+  orphanId: number,
   k: number
 ): Promise<CandidateMatch[]> {
-  const rows = await db.findSimilar(slug, k);
-  return rows
-    .filter((r) => !shouldExclude(r.slug))
-    .map((r) => ({
+  // Anchor on the orphan's page id (source-unambiguous). Over-fetch, then
+  // dedup by slug keeping the nearest page per slug — rows are distance-
+  // ordered, so the first occurrence is closest. This keeps candidate slugs
+  // unique within the set (the classifier maps its output back by slug) while
+  // preserving each candidate's exact page id for a source-safe write.
+  const rows = await db.findSimilarByPageId(orphanId, Math.max(k * 2, k));
+  const seen = new Set<string>();
+  const out: CandidateMatch[] = [];
+  for (const r of rows) {
+    if (shouldExclude(r.slug)) continue;
+    if (seen.has(r.slug)) continue;
+    seen.add(r.slug);
+    out.push({
+      id: r.id,
       slug: r.slug,
       title: r.title,
       compiled_truth: r.compiled_truth ?? "",
       distance: r.distance,
       similarity: 1 - r.distance,
-    }));
+    });
+    if (out.length >= k) break;
+  }
+  return out;
 }
