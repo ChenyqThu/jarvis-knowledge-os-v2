@@ -303,6 +303,11 @@
       "name": "kos-jarvis/atom-concepts-backfill",
       "path": "kos-jarvis/atom-concepts-backfill/SKILL.md",
       "description": "Batch-label page-derived atoms with shared-vocabulary concept refs (sonnet) and stamp frontmatter.concepts, bridging the upstream extract_atoms→synthesize_concepts gap. Idempotent; rerun after each atoms drain; retires when upstream fix lands."
+    },
+    {
+      "name": "kos-jarvis/entity-dedup",
+      "path": "kos-jarvis/entity-dedup/SKILL.md",
+      "description": "Merge WITHIN-SOURCE duplicate entity-variant pages into one canonical node: repoint links + facts + display-name aliases, register a slug redirect, soft-delete the alias pages. LLM disambiguates each cluster (merge/ambiguous/distinct); ambiguous first-name-vs-multiple-full-names cases quarantined. Default --dry (simulate + report, zero writes). Cross-source pages never touched (two-axis design). KOS-Jarvis fork extension."
     }
   ],
   "dependencies": {

@@ -151,6 +151,7 @@ upstream sections above; KOS extensions are append-only by policy.
 | "corpus ingest", "bulk ingest pipeline", "一键入脑", "ingest a knowledge base" — one-command D→I→K→W pipeline for one isolated source (register→ingest→embed→enrich→graph→[entity-synth]→corpus-synth), idempotent/incremental, --from/--to-stage | `skills/kos-jarvis/corpus-ingest/SKILL.md` |
 | Ingest images from IMAGE_SOURCE_DIR via Voyage multimodal-3 (cross-modal v0.36.6.0); scaffolded — awaits VOYAGE_API_KEY + IMAGE_SOURCE_DIR | `skills/kos-jarvis/image-ingest/SKILL.md` |
 | "atom concepts backfill", "concepts backfill" — stamp `frontmatter.concepts` onto page-derived atoms (bridges the upstream extract_atoms → synthesize_concepts gap; idempotent, retires when the upstream fix lands) | `skills/kos-jarvis/atom-concepts-backfill/SKILL.md` |
+| "entity dedup", "deduplicate entities", "merge duplicate entities", "canonicalize entity" — merge WITHIN-SOURCE duplicate entity-variant pages (e.g. `people/lucien` + `people/lucien-chen`) into one canonical node: repoint links/facts/aliases + slug redirect + soft-delete alias. LLM sorts each cluster into merge/ambiguous/distinct (ambiguous quarantined, never merged); default `--dry`. Cross-source same-slug pages are NEVER touched (two-axis design; slug_aliases is source-scoped). | `skills/kos-jarvis/entity-dedup/SKILL.md` |
 
 These chain into upstream skills: digest-to-memory reads patrol output;
 enrich-sweep wraps upstream `skills/enrich/` in bulk mode; synthesis-sweep is
