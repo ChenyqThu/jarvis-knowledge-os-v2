@@ -165,18 +165,26 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.38 v0.42.53.0
-   upstream sync (2026-06-26, 2 commits / v0.42.51.0 → v0.42.53.0 / 61
-   files; schema unchanged (v119) — zero migration; 2 conflicts — CLAUDE.md
-   `--ours`, llms-full.txt regen; package.json auto-merged (fork pglite 0.4.4
-   + upstream version); CLAUDE-UPSTREAM.md refreshed to v0.42.53.0 mirror;
-   fork territory zero-invasion; v0.42.53.0 op_checkpoints jsonb double-encode
-   #2339 fix + v0.42.52.0 autopilot/supervisor reliability)**. Previous: §6.37
-   v0.42.51.0 sync (2026-06-20, 7 commits, schema v117 → v119,
-   `page_generation_clock_sequence_swap` + `op_checkpoints_completed_keys_array_check`);
-   §6.36 v0.42.44.0 sync (2026-06-16, 2 commits, schema v116 → v117,
-   `context_volunteer_events_table`). Note §6.32 (2026-05-31) was the
-   embedding convergence, not a sync.
+   operates ↔ OpenClaw executes). Latest sync story: **§6.39 v0.42.57.0
+   upstream sync (2026-07-07, 3 commits / v0.42.53.0 → v0.42.57.0 / 76 files;
+   schema v119 → v122 3-step — v120 schema-lint (page_links security_invoker +
+   trigger-fn search_path), v121 chronicle timeline event_page_id, v122 facts
+   ontology dimension; merge zero-conflict (upstream didn't touch
+   CLAUDE.md/llms-full.txt); package.json auto-merged (fork pglite 0.4.4 +
+   version); fork territory zero-invasion, 5 fork src/ patches survived (WAL
+   pg_switch_wal auto-merged clean despite +289 to pglite-engine.ts);
+   v0.42.55.0 security-hardening + v0.42.56.0 Life Chronicle + v0.42.57.0
+   pglite live-lock fix. INCIDENT: `gbrain init --migrate-only` is broken on
+   real Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations
+   (postgres.js conn.unsafe batch parse-time validation; PGLite tolerates so
+   upstream missed it) — the daemon's initSchema path DID succeed, and the
+   daemon self-migrated to v122 when launchd KeepAlive relaunched it onto the
+   mid-build bin/gbrain; see §6.39 教训①②③ +
+   docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md)**.
+   Previous: §6.38 v0.42.53.0 sync (2026-06-26, 2 commits, zero-migration
+   schema v119, op_checkpoints jsonb #2339); §6.37 v0.42.51.0 sync (2026-06-20,
+   7 commits, schema v117 → v119). Note §6.32 (2026-05-31) was the embedding
+   convergence, not a sync.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"
