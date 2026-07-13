@@ -370,6 +370,68 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 ---
 
+## P1 — entity-dedup skill built (2026-07-13, Lucien D: Z-class only)
+
+Graph audit flagged "same entity as multiple graph nodes" (Lucien 裂成 3 节点
+≈12.1K 入链;Omada/TP-Link 类似)。**排查纠正了前提**:512 个 entity-vs-
+person/company 重叠 bare-slug **= 511 跨源 + 1 同源**。slug 不含 type 前缀
+(`type=entity` + `slug=people/lucien-chen`);`entity` vs `person` 差异**跟着
+source 走**(mailagent 用 entity,default/enrich 用 person/company)。跨源同 slug
+是两轴设计的预期行为 + `REFINEMENT-BACKLOG.md` R1/R2 已 RETRACT + `slug_aliases`
+`(source_id,…)` 结构上做不到跨源 → **不合并跨源**。
+
+**Lucien D (2026-07-13)**: 只做 **Z 类同源变体合并**(不做 Y retype、不立 X 跨源
+解析层)。新建 `skills/kos-jarvis/entity-dedup/`(run.ts + lib/{candidates,
+classifier,merge,report}.ts + SKILL.md)。primitive:同源事务内 repoint inbound/
+outbound `links`(先删 unique-约束碰撞 + 自环再 UPDATE)→ 迁 `facts.entity_slug`
+→ copy `page_aliases` → insert `slug_aliases` 读时重定向 → 删 alias `content_chunks`
+→ soft-delete。LLM 分类 merge/ambiguous/distinct(歧义 quarantine,#2723 场景)。
+默认 `--dry`(事务内跑完 ROLLBACK)。
+
+- [x] **验证**:①手写 SQL BEGIN…ROLLBACK 样本(tp-link-system(s)-inc)②merge.ts
+  代码路径 dry-run 复现同算术(indeg 465→559,inbound 96/collision 54,outbound
+  26/collision 13/selfloop 1,slug_aliases +2,soft-delete 2,dangling=0,POST-
+  ROLLBACK 逐项=BEFORE)③loadClusters 对真库产 10 簇(tp-link/eden/edward 三元
+  聚齐)。typecheck 0 / check:resolver OK(61 skills)/ brain-first OK / newlines ok。
+  零生产写入。样本导出 + 方案 doc 在 scratchpad `entity-dedup/`。
+- [x] **(P1) LLM classify 冒烟 + 首批 --apply 落地 2026-07-13**:crs Bearer 跑通
+  (`ANTHROPIC_AUTH_TOKEN` 经 `makeClient` authToken 路径;`.env.local` 在主 repo,
+  worktree 需 `bun --env-file`)。default 前 10 簇分类质量优:tp-link/shon/eden/
+  edward/lucien merge,gavin/edward-wu/siyi-li 正确判 distinct(读真实内容:邮箱/
+  中文名/职位),eden-xu/walter/chang-liu/jackson quarantine。Lucien 确认 6 组
+  (含 override eden-xu=eden-x、walter-luo=walter-l)。备份 `/tmp/pre-dedup-2026-07-13.dump.gz`
+  (744M 验证)。落地:**7 页合并进 6 主页,lucien-chen 2534→2697、tp-link-systems-inc
+  →559、eden-x→473、edward-rui→477、shon-y→343;7 条 slug_aliases 读时跳转生效;
+  悬空链接 0**。unify 未动 mailagent/omada/gbrain-docs 源、未动跨源。
+- [x] **(P1) BUG 修复:multi-alias 互撞**。首轮 eden(2 个 alias:eden+eden-xu)报
+  `links_from_to_type_source_origin_unique` 违反 —— repoint 只查了 alias-vs-canonical
+  碰撞,漏了 **alias 之间**互撞(同一 origin 同时链两个 alias)。事务回滚干净、eden
+  未损。`merge.ts` inbound/outbound 各加一步 inter-alias dedup(同 key 保最小 id),
+  eden 重跑成功。单 alias 的 5 组不受影响(已先落地)。
+- [x] **(P1) 第二批 mailagent-emails + omada 落地 2026-07-13**:mailagent 扫 75 簇
+  → 27 merge / 22 ambiguous / 33 distinct(distinct 判得准:5 个不同 Kevin、
+  crystal-cao≠crystal-he、brad-waugh≠brad-lee、2 个不同邮箱 lynn-wang)。omada 4 簇
+  → 1 merge(tp-link-support←tp-link-technical-support)、google≠google-play。
+  Lucien 定:名字变体用**全名**当 canonical(7 组翻转:jeffrey-zhao/marvin-liu/
+  dawning-zhao/gary-wen/philips-zhang/shuo-han/bingqian-zhao);**公司 vs 产品/子部门
+  一律不合**(verizon/fios、nokia/bng、ebg-saas/bu、product-security-us/team、
+  google/google-play 保持分开)。落地 **24 组**(mailagent 23 + omada 1),备份
+  `/tmp/pre-dedup-batch2-2026-07-13.dump.gz`。**全 session 累计 33 页合并、33 条
+  slug_aliases、全局悬空链接 0**。
+- [ ] **(P2) 剩余候选**:default 的 gavin-gao/xavier 等含歧义(22+ ambiguous 已入报告);
+  **跨目录同名**(mailagent 34 对:多为 `concepts/X` 内容孤儿 shadow 真实 `companies/X`
+  —— 与孤儿 subagent 领域重叠,本轮未碰,留协调后处理)。工具目前只聚同目录 fuzzy 变体;
+  cross-dir exact-bare 聚簇是候选增强。下次 `bun --env-file=<main>/.env.local
+  skills/kos-jarvis/entity-dedup/run.ts --source <s> --limit N --dry` review 后 apply。
+- [ ] **(P2) 再生成防护**:`putPage`/`import-file` 建页不查 `slug_aliases` +
+  唯一约束含 soft-deleted 行 → 活跃管线会复活合并页。持久修复在**管线约定对齐**
+  (mailagent/enrich 的 type/slug 选择)或给 upstream 提 issue(putPage 走
+  `resolveSlugWithAlias`)。缓解:kos-patrol 加低频 re-merge 巡检。
+- [ ] **(P3) X 跨源图层统一**:federated_read 下同实体多节点是真问题,但正解是
+  跨源实体身份映射(query/图层 union),非物理合并。Lucien 未立项,单列备忘。
+
+---
+
 ## P1 — dream-cycle 夜间回归 RESOLVED + KB 编译 enablement (added 2026-06-09)
 
 ### [x] (P1) dream sync/synthesize 自 06-02 起每晚 fail — RESOLVED 2026-06-09 (双根因)
