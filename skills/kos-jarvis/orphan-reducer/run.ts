@@ -284,7 +284,7 @@ async function main(): Promise<number> {
     });
 
     for (const orphan of orphans) {
-      const candidates = await fetchCandidates(db, orphan.slug, flags.candidates);
+      const candidates = await fetchCandidates(db, orphan.id, flags.candidates);
       if (candidates.length === 0) {
         records.push({
           orphan,
@@ -328,27 +328,27 @@ async function main(): Promise<number> {
         reason: reasonDropped ?? "ok",
       });
     }
-  } finally {
-    await db.close().catch(() => {});
-  }
 
-  // ============================================================
-  // Phase B: write (BrainDb closed). Each `gbrain link` subprocess
-  // acquires the upstream .gbrain-lock, writes, releases — plays nice
-  // with kos-compat-api's concurrent subprocess ingests.
-  // ============================================================
-  try {
+    // ============================================================
+    // Phase B: write (BrainDb still open — Postgres MVCC allows concurrent
+    // clients; the old PGLite close-before-write dance is obsolete). Links
+    // are written by page id (source-safe) via BrainDb.addLinkByIds.
+    // ============================================================
     if (flags.apply) {
       for (const rec of records) {
         for (const k of rec.kept) {
+          const cand = rec.candidates.find((c) => c.slug === k.candidate_slug);
+          if (!cand) continue; // classifyOne already filters to in-set slugs
           const tuple: WriteTuple = {
             from: k.candidate_slug,
             to: rec.orphan.slug,
+            fromId: cand.id,
+            toId: rec.orphan.id,
             relation: k.relation as Relation,
             confidence: k.confidence,
             excerpt: k.excerpt,
           };
-          const result = applyTuple(tuple);
+          const result = await applyTuple(db, tuple);
           writes.push(result);
           emit(flags.json, "edge.written", {
             from: tuple.from,
@@ -381,6 +381,7 @@ async function main(): Promise<number> {
       }
     }
   } finally {
+    await db.close().catch(() => {});
     releaseLock();
   }
 
@@ -446,7 +447,7 @@ async function loadOrphanInput(
   db: BrainDb,
   orphan: OrphanCandidate
 ): Promise<{ slug: string; title: string; compiled_truth: string }> {
-  const page = await db.getPage(orphan.slug);
+  const page = await db.getPageById(orphan.id);
   return {
     slug: orphan.slug,
     title: orphan.title,

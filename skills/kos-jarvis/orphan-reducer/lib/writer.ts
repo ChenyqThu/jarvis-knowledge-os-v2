@@ -1,40 +1,36 @@
 /**
- * writer.ts — DB link inserts via `gbrain link` subprocess (so the
- * upstream PGLite lock owns the write), plus markdown-sentinel upsert
- * on candidate files that exist on disk.
+ * writer.ts — source-safe DB link inserts by page id (via BrainDb.
+ * addLinkByIds), plus markdown-sentinel upsert on candidate files that
+ * exist on disk.
  *
- * Concurrency model (confirmed 2026-04-23):
- * - `kos-compat-api` runs a long-lived bun process that opens a BrainDb
- *   handle on the same PGLite data dir. It does NOT hold the upstream
- *   `.gbrain-lock` continuously — it shells out to `gbrain ...` for each
- *   ingest and those subprocesses acquire the lock briefly.
- * - If this process keeps its own BrainDb handle open alongside, any
- *   write we attempt (via spawnSync OR in-process INSERT) races with
- *   kos-compat-api's in-memory snapshot flush — writes silently get
- *   overwritten on disk, OR land with kos-compat-api's `link_source`
- *   defaults instead of ours.
+ * Why by-id (2026-07-13 fix): the previous design shelled out to
+ * `gbrain link <from-slug> <to-slug>`, which resolves both slugs in the
+ * DEFAULT source only. On this multi-source brain (default / mailagent-
+ * emails / omada / gbrain-docs) ~75% of writes failed with
+ * `page "…"(source=default) not found` because the real orphan/candidate
+ * lives in a non-default source. We now thread each page's globally-unique
+ * id through the pipeline (candidates.ts) and write the edge directly by
+ * (from_page_id, to_page_id) — no slug resolution, source-agnostic.
  *
- * The safe pattern: close OUR BrainDb before calling `gbrain link`,
- * acquire the upstream lock via subprocess, release, reopen if needed.
- * run.ts enforces this by running classification in Phase A (BrainDb
- * open) and writes in Phase B (BrainDb closed).
+ * Concurrency: production is Postgres (post-Path-3), which allows multiple
+ * concurrent clients via MVCC — the old PGLite single-writer-lock dance
+ * (close BrainDb before writing) is obsolete, so run.ts keeps one BrainDb
+ * handle open across classify + write. See _lib/brain-db.ts header.
  *
- * link_source defaults to 'markdown' via upstream `gbrain link` — we
- * don't set it. Reconciliation by put_page on the FROM page can prune
- * these; since most candidates are v1-wiki imports that never get
- * re-put, that's a non-issue in practice. See plan
- * toasty-dancing-quasar.md for the full rationale.
+ * link_source='orphan-reducer' (set in addLinkByIds) so these programmatic
+ * edges are self-identifying and reversible; they are not put_page
+ * reconciliation-managed, so they persist.
  *
  * Filesystem-canonical reality: only ~95 pages live as .md files under
- * ~/brain/; the other 1800+ are PGLite-only v1-wiki imports. For those,
- * we fall through to DB-only writes (per user decision). markdown_written
- * is recorded in the sidecar so a future backfill can reach them.
+ * ~/brain/; the rest are DB-only. For those we fall through to DB-only
+ * writes; markdown_written is recorded in the sidecar for a future backfill.
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import type { BrainDb } from "../../_lib/brain-db.ts";
 import type { Relation } from "./haiku-classifier.ts";
 
 const BRAIN_ROOT = process.env.KOS_BRAIN_ROOT ?? join(homedir(), "brain");
@@ -42,8 +38,10 @@ const SENTINEL_OPEN = "<!-- orphan-reducer-inbound -->";
 const SENTINEL_CLOSE = "<!-- /orphan-reducer-inbound -->";
 
 export type WriteTuple = {
-  from: string; // candidate slug (source of reference)
-  to: string; // orphan slug (target)
+  from: string; // candidate slug (source of reference) — for markdown + reporting
+  to: string; // orphan slug (target) — for markdown + reporting
+  fromId: number; // candidate page id — the source-safe write key
+  toId: number; // orphan page id — the source-safe write key
   relation: Relation;
   confidence: number;
   excerpt: string;
@@ -69,41 +67,25 @@ function linkContext(relation: Relation, excerpt: string): string {
   return `${prefix}: ${trimmedExcerpt}`;
 }
 
-const GBRAIN_LINK_TIMEOUT_MS = 60_000;
-
-function dbLink(tuple: WriteTuple): { ok: boolean; error: string | null } {
-  const args = [
-    "link",
-    tuple.from,
-    tuple.to,
-    "--link-type",
-    "related",
-    "--context",
-    linkContext(tuple.relation, tuple.excerpt),
-  ];
-  const result = spawnSync("gbrain", args, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: GBRAIN_LINK_TIMEOUT_MS,
-  });
-  if (result.error) {
-    // node attaches signal='SIGTERM' when `timeout:` fires.
-    const signal = (result as unknown as { signal?: string }).signal ?? "";
-    const prefix = signal ? `${signal}: ` : "";
-    return { ok: false, error: `${prefix}${String(result.error)}`.slice(0, 500) };
+/**
+ * Write the inbound edge candidate→orphan by page id (source-safe). ON
+ * CONFLICT in addLinkByIds makes this idempotent, so a re-run is a no-op
+ * rather than an error.
+ */
+async function dbLink(
+  db: BrainDb,
+  tuple: WriteTuple
+): Promise<{ ok: boolean; error: string | null }> {
+  try {
+    await db.addLinkByIds(tuple.fromId, tuple.toId, {
+      linkType: "related",
+      context: linkContext(tuple.relation, tuple.excerpt),
+      linkSource: "orphan-reducer",
+    });
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: String(e).slice(0, 500) };
   }
-  if (result.status !== 0) {
-    const stderr = (result.stderr ?? "").toString().trim();
-    const stdout = (result.stdout ?? "").toString().trim();
-    const tail = stderr || stdout || `exit ${result.status}`;
-    if (/UNIQUE|already exists|duplicate/i.test(tail)) {
-      return { ok: true, error: null };
-    }
-    return { ok: false, error: tail.slice(0, 500) };
-  }
-  // upstream `gbrain link` returns {"status":"ok"} on stdout; treat any
-  // non-"ok"-shaped response as success only if exit was 0.
-  return { ok: true, error: null };
 }
 
 const ISO_DATE = () => new Date().toISOString().slice(0, 10);
@@ -164,9 +146,12 @@ function upsertMarkdown(
   }
 }
 
-export function applyTuple(tuple: WriteTuple): WriteResult {
+export async function applyTuple(
+  db: BrainDb,
+  tuple: WriteTuple
+): Promise<WriteResult> {
   const filePath = candidateFilePath(tuple.from);
-  const link = dbLink(tuple);
+  const link = await dbLink(db, tuple);
 
   const result: WriteResult = {
     tuple,

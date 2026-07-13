@@ -151,6 +151,21 @@ export class ClassifierCallStats {
   outputTokens = 0;
 }
 
+/**
+ * Build an Anthropic client with a normalized base URL. The SDK always
+ * appends `/v1/messages` to `baseURL`, so an `ANTHROPIC_BASE_URL` that already
+ * ends in `/v1` (e.g. the CRS relay `https://crs.chenge.ink/api/v1` set in
+ * `.env.local`) produces `…/api/v1/v1/messages` → 404. Strip a trailing `/v1`
+ * (and slashes) so the skill works whether the env carries `…/api` or
+ * `…/api/v1`; an unset base URL falls back to the SDK default.
+ */
+export function makeClient(): Anthropic {
+  const raw = process.env.ANTHROPIC_BASE_URL?.trim();
+  if (!raw) return new Anthropic();
+  const baseURL = raw.replace(/\/+$/, "").replace(/\/v1$/, "");
+  return new Anthropic({ baseURL });
+}
+
 export async function classifyOne(
   orphan: OrphanInput,
   candidates: CandidateMatch[],
@@ -158,7 +173,7 @@ export async function classifyOne(
   client?: Anthropic
 ): Promise<Classification[]> {
   if (candidates.length === 0) return [];
-  const api = client ?? new Anthropic();
+  const api = client ?? makeClient();
   const user = buildUserMessage(orphan, candidates);
 
   const resp = await api.messages.create({
