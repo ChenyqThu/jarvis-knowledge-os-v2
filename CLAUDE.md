@@ -16,26 +16,31 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.39 v0.42.57.0
-   upstream sync (2026-07-07, 3 commits / v0.42.53.0 → v0.42.57.0 / 76 files;
-   schema v119 → v122 3-step — v120 schema-lint (page_links security_invoker +
-   trigger-fn search_path), v121 chronicle timeline event_page_id, v122 facts
-   ontology dimension; merge zero-conflict (upstream didn't touch
-   CLAUDE.md/llms-full.txt); package.json auto-merged (fork pglite 0.4.4 +
-   version); fork territory zero-invasion, 5 fork src/ patches survived (WAL
-   pg_switch_wal auto-merged clean despite +289 to pglite-engine.ts);
-   v0.42.55.0 security-hardening + v0.42.56.0 Life Chronicle + v0.42.57.0
-   pglite live-lock fix. INCIDENT: `gbrain init --migrate-only` is broken on
-   real Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations
-   (postgres.js conn.unsafe batch parse-time validation; PGLite tolerates so
-   upstream missed it) — the daemon's initSchema path DID succeed, and the
-   daemon self-migrated to v122 when launchd KeepAlive relaunched it onto the
-   mid-build bin/gbrain; see §6.39 教训①②③ +
-   docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md)**.
-   Previous: §6.38 v0.42.53.0 sync (2026-06-26, 2 commits, zero-migration
-   schema v119, op_checkpoints jsonb #2339); §6.37 v0.42.51.0 sync (2026-06-20,
-   7 commits, schema v117 → v119). Note §6.32 (2026-05-31) was the embedding
-   convergence, not a sync.
+   operates ↔ OpenClaw executes). Latest sync story: **§6.40 v0.42.59.0
+   upstream sync (2026-07-13, 7 commits / v0.42.57.0 → v0.42.59.0 / 42 files;
+   **zero-conflict merge + no-op deploy**. v0.42.58.0 provider-agnostic gateway
+   (#1249/#1250/#1292/#2271 — empty-env clobber, native baseURL /v1 normalize,
+   dims-presence guard, trust_custom_dims) + v0.42.59.0 five community fixes
+   (#2724 pre-v121 replay / #2677 migrate preserve-sources / #2726 facts
+   pipe-escape / #2723 entity-ambiguity quarantine / #2200 think source-scope).
+   Schema ZERO new migrations (stays v122) → migrate-only clean no-op, §6.39's
+   multi-statement-DDL bug NOT triggered. **§6.32 re-verified**: upstream's new
+   `resolveNativeBaseUrl` idempotent for our `…/v1` avman URL (no /v1/v1); doctor
+   embedding_provider ✓ real 1536d. **The §6.32 "litellm recipe unusable
+   (gateway.ts:670)" caveat is now OUTDATED** — upstream #1292 replaced that
+   guard; we still use the native openai recipe. Fork territory zero-invasion,
+   5 fork src/ patches survived (gateway.ts embed-retry block disjoint from
+   upstream's +77). Prod 27,115 pages / 60,523 chunks / 0 NULL / te3@1536;
+   brain_score 80/100 (+2); both /health → 0.42.59.0)**.
+   Previous: §6.39 v0.42.57.0 sync (2026-07-07, 3 commits, schema v119→v122
+   3-step; **OPEN P0 INCIDENT** — `gbrain init --migrate-only` broken on real
+   Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations (postgres.js
+   conn.unsafe batch parse-time validation; PGLite tolerates so upstream missed
+   it), reported garrytan/gbrain#2667, see
+   docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md; v0.42.59.0
+   #2724 may address the root but UNVERIFIED — no migration ran this batch);
+   §6.38 v0.42.53.0 sync (2026-06-26, zero-migration schema v119). Note §6.32
+   (2026-05-31) was the embedding convergence, not a sync.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"
