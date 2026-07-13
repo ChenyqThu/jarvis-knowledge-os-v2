@@ -1,4 +1,30 @@
-# kos-jarvis — Outstanding Work (post v0.42.57.0 sync, 2026-07-07)
+# kos-jarvis — Outstanding Work (post v0.42.59.0 sync, 2026-07-13)
+
+> **Sync 2026-07-13** (§6.40, v0.42.57.0 → v0.42.59.0, 7 commits): **clean
+> zero-conflict merge + no-op production deploy**. v0.42.58.0 provider-agnostic
+> gateway (#1249 empty-env clobber / #1250 native baseURL `/v1` normalize /
+> #1292 dims-presence guard replacing the structurally-dead litellm-reject /
+> #2271 trust_custom_dims for local recipes); v0.42.59.0 five community fixes
+> (#2724 pre-v121 schema replay / #2677 migrate preserve-sources + target-aware
+> resume / #2726 facts pipe-escape round-trip / #2723 entity-ambiguity
+> quarantine / #2200 think source-scope). **Schema zero new migrations** (stays
+> v122) → `init --migrate-only` clean no-op; **§6.39's multi-statement-DDL
+> migrator bug did NOT trigger** (no migration to run). Note #2724 (bootstrap
+> adds the forward-referenced `event_page_id` column first) plausibly addresses
+> the §6.39 root cause, but UNVERIFIED this batch — the P0 stays open until a
+> future real multi-statement migration validates it. Fork territory
+> zero-invasion; 5 fork src/ patches survived (gateway.ts embed-retry block
+> 1604–1745 disjoint from upstream's +77 at hunks 389/704/1200/2123; WAL patch
+> intact). **§6.32 convergence re-verified**: upstream's new `resolveNativeBaseUrl`
+> is idempotent for our `.../v1` avman URL (regex short-circuit, no `/v1/v1`);
+> doctor `embedding_provider ✓` real 1536d avman call, DB-aligned. **The §6.32
+> "litellm recipe unusable (gateway.ts:670)" caveat is now OUTDATED** — upstream
+> #1292 replaced that guard; we still use the native openai recipe so no behavior
+> change. Production **27,115 pages / 60,523 chunks / 0 NULL / te3@1536** (48
+> cosmetic zembed-mislabels, all 1536d, healing via daily embedding-label-normalize
+> cron); `brain_score` **80/100** (+2 vs §6.39). Both /health → 0.42.59.0; CJK
+> modal query 3/3 stable; EN Karpathy head intact. See §6.40. No new outstanding
+> work; items below carry over.
 
 > **Sync 2026-07-07** (§6.39, v0.42.53.0 → v0.42.57.0, 3 commits): schema
 > **v119 → v122** 3-step. v0.42.55.0 security-hardening (dotfile/skills/slug

@@ -5241,6 +5241,127 @@ Schema 完整性(psql 逐项验):v120 `page_links` `security_invoker=on` +
 
 ---
 
+## 6.40 Upstream v0.42.59.0 sync (2026-07-13)
+
+§6.39 之后 6 天的常规 sync,**过程干净零冲突、生产 no-op 部署** —— 与 §6.39 的真
+Postgres migrator incident 形成对比(本批无 schema 迁移故不触发那条 bug)。上游 master
+**7 个 commit** 横跨两个 release,merge-base `058f448b` = §6.39 合并点(= v0.42.57.0)。
+Merge **干净零冲突**(42 文件 / +1,189 / −89)。
+
+- **v0.42.58.0** `fix(ai)` —— **provider-agnostic gateway**(#1249 #1250 #1292 #2271
+  #2209)。正中 §6.32 embedding 腹地但**对 fork 收敛零破坏**(见下"§6.32 收敛复核")。
+  四点:①空串 env 不再 clobber config key(Claude Code 注入 `ANTHROPIC_API_KEY=''` 曾
+  覆盖真 key);②新 `resolveNativeBaseUrl` 给 anthropic/openai native 站点归一化
+  baseURL 补 `/v1`(bare host 不再 404);③`diagnoseEmbedding` 的
+  `user_provided_model_unset` guard(结构性不可达 + 只误伤 litellm)换成真 dims-presence
+  check —— **§6.32 记的"litellm recipe 不可用(gateway.ts:670 无条件拒)"被上游修掉了**
+  (我们仍用原生 openai recipe 故不受影响,该 caveat 现过时);④新 `trust_custom_dims`
+  让 ollama/llama-server/litellm 收本地自声明维度(openai/voyage/ze 仍 fail-closed 严校)。
+- **v0.42.59.0** `fix` —— 5 个社区修复(@time-attack,双引擎复现):①pre-v121 schema
+  replay 解锁(#2724,bootstrap 先补 `event_page_id` 前向列,已 wedge 的旧库下次命令自
+  愈);②`migrate --to` 多源保源(先拷 source catalog)+ target-aware resume checkpoint
+  (#2677);③facts fence 管道符 render→parse 对称(#2726,含 `|` 的 fact 不再于下次
+  extract-facts 被静默删);④歧义实体名**隔离不猜**(#2723,裸名仅唯一 canonical 才解析,
+  低区分度 fuzzy 落 holding);⑤`think` 全内部检索(hybrid page/takes keyword+vector/
+  graph)honor caller scalar+federated source scope(#2200 security)。
+
+**Schema 零新迁移**(CHANGELOG:"No new schema migrations ship in this release" —— v121/
+v122 随 v0.42.56.0 已并入)。生产库已在 **v122**,故 `init --migrate-only` 是**干净 no-op**
+(报 `Schema up to date (engine: postgres)`),**§6.39 的多语句 DDL migrator bug 本批不
+触发**(无可迁移项)。
+
+**Fork territory 零侵入**(`git diff master <merge> -- skills/kos-jarvis/ server/ workers/
+scripts/launchd/ skills/RESOLVER.md` 空)。**5 个 fork src/ patch 全存活**:`gateway.ts`
+§6.34 embed-transport-retry 块(`embedTransportWithRetry`/`isRetryableEmbedTransportError`,
+行 1604–1745)—— 尽管上游本批对 `gateway.ts` +77 改动,**落在不同块**(上游 hunk
+389/704/1200/2123,fork 块 1544/1558,完全错开)故 git 三方合零冲突;`recipes/google.ts`、
+`cycle/extract-atoms{,-drain}.ts`、`pglite-engine.ts` WAL `pg_switch_wal` patch(行 345+,
+上游改 518+ 错开)逐字保留。`docs/CLAUDE-UPSTREAM.md` **本批无需重刷**(上游 CLAUDE.md
+自 v0.42.53.0 起未变;body 逐行 diff 仅差私有 fork 名→`openclaw-reference` 的 scrub);
+`CLAUDE.md` 经递归合虚拟 base 自动收敛到 fork 版(`git diff master HEAD -- CLAUDE.md`
+空,零字节上游内容渗入);`package.json` 自动合(fork pglite 0.4.4 pin + 上游 version
+0.42.59.0 不同 hunk)。
+
+### §6.32 收敛复核(本批重点 —— 上游动了 gateway)
+
+- **`resolveNativeBaseUrl` 对已带 `/v1` 幂等**:`raw.trim().replace(/\/+$/,'')` 后
+  `/\/v1$/.test()` 命中即原样返回。生产 `OPENAI_BASE_URL=https://api.avman.ai/v1` →
+  不变,**不会 `/v1/v1`**(单测 `resolve-native-base-url.test.ts` 显式覆盖 `.../v1`→
+  `.../v1`)。唯一行为变化:baseURL 现**显式**传入 `createOpenAI()`,值不变 → endpoint
+  `https://api.avman.ai/v1/embeddings` 不变。
+- **fork embed-retry 块存活** + 仍 wire 于 embed 路径(grep 行 1604–1745)。
+- **te3@1536 仍被接受**:openai 是 dims_options/Matryoshka provider,非
+  `trust_custom_dims` 本地路径,`diagnose-embedding-dims.test.ts` pass;doctor 实测
+  `embedding_provider ✓ 1536 dims DB aligned`。
+- **无直连 SDK 绕 gateway**:`check-gateway-routed-no-direct-anthropic` 绿。
+- config 仍 `postgres` + `openai:text-embedding-3-large`@1536,env==DB config。
+
+### 绿门
+
+`bun install` 零 dep 变更(pglite 0.4.4 pin 存活);`bun run build` → `gbrain 0.42.59.0`;
+`typecheck` 0 错;`check:all` 全绿(privacy / skill-brain-first 60/60 /
+gateway-routed-no-direct-anthropic / key-files-current-state(CLAUDE.md within cap)/
+exports-count=20 / admin-build vite 等);`bun test test/ai/` **328 pass / 0 fail**(含上游
+新增 `resolve-native-base-url` / `build-gateway-config` / `diagnose-embedding-dims`)。
+llms-full.txt 重生成(+20/−12,auto-merge 版有漂移,`chore:` 提交)。
+
+### 生产部署 + smoke
+
+> **沿 §6.39 教训①:`bin/gbrain` 就是 launchd daemon 的 KeepAlive program。** 本批
+> `bun run build` 覆写活二进制,但 daemon(pid 81908,v0.42.57.0,up 5d16h)未自触发
+> relaunch(health 仍报 57),故重启窗口受控。**受控 bootout+bootstrap 明确执行**(非等
+> KeepAlive)。migrate + restart 两步均被 auto-mode classifier 单独拦下,经用户显式确认
+> 后执行。
+
+备份 `pg_dump` **743MB**(`/tmp/pg-pre-sync-v0.42.59.0-2026-07-13.dump.gz`,`gzip -t`
+OK)+ config 副本(`~/.gbrain/config.json.before-sync-v0.42.59.0`,engine=postgres /
+te3@1536,== live)。`init --migrate-only` → `Schema up to date`(no-op,v122)。
+`launchctl bootout`+`bootstrap` gui/501/com.jarvis.gbrain-serve-http → **新 pid 82159**。
+两个 `/health`(本地 + `https://kos.chenge.ink`)均报 **0.42.59.0 / postgres** ✓。查询
+smoke(`bin/gbrain search`,纯检索隔离 embed+vector):
+
+- ZH 复合 CJK `知识管理`(vector 路径,本库 modal query)→
+  **`sources/2026-04-06-jarvis-dual-platform-architecture`** [0.2734],**连跑 3/3 分数
+  一致**(证 avman 嵌入确定 + 向量路径活 + §6.32 gateway 合并零破坏)✓
+- EN 关键词 `Karpathy`(hybrid)→ **people/karpathy [0.6801] 头名** + persistent-wiki /
+  knowledge-compilation / dual-platform-architecture / agent-computer-interface(与
+  §6.38–§6.39 头部持平)✓
+
+### 部署后健康快照(均既有常态,非回归)
+
+1. **embedding 满覆盖**:`content_chunks` **60,523 / 0 NULL**。doctor
+   `embedding_provider ✓ 11848ms 1536 dims DB aligned`(实调 avman,**较 §6.39 的瞬时
+   WARN 更健康**)、`embeddings 100%/0 missing`、`embedding_width_consistency` /
+   `facts_embedding_width_consistency` 1536 匹配、`embedding_env_override` env==DB。
+   **cosmetic 误标 48**(`zeroentropyai:zembed-1` 标签,但全 **1536d = te3 宽**,即
+   avman 嵌入的一致向量、仅标签漂移非坏向量;§6.39 本批为 0,§6.38 曾 324)——
+   `embedding-label-normalize` 日 cron 自愈中,§6.32 收敛持续健康。
+2. **pages 27,115**(psql `deleted_at IS NULL`;doctor connection 27,114,±1 系查询时点
+   差)—— vs §6.39 的 27,019 **+96**,6 天四源日入与本 sync 正交;**迁移零丢页**。
+3. **doctor `schema_version` 122(latest 122)、`brain_score` 80/100**(§6.39 78,**+2**:
+   orphans 9/15↑ vs 7/15)—— embed 35/35、links 25/25、timeline 1/15(chronicle 未
+   capture,新维预期)、dead-links 10/10。**3 个 FAIL = `sync_freshness` /
+   `cycle_freshness` / `orphan_ratio`(92%,24863/27109)完全沿 §6.35–§6.39 既定**(四源
+   MCP 写入非 git-sync、邮件语料少入链),**无新增 FAIL**。RLS 61/61、pgvector
+   installed、resolver 60 skills all reachable、skill_brain_first 60/60。
+
+> 沿 §6.33–§6.39 P3 教训:本节全文仅用占位词 / scrub 名,写毕 re-run check-privacy 确认
+> clean。
+
+### Conflict resolution
+
+**本批零冲突**(merge exit=0,无 conflicted files)。`gateway.ts` / `pglite-engine.ts`
+虽 fork+上游同改但**落在不同 hunk 区**故三方合干净;`CLAUDE.md` 递归合虚拟 base 自动
+收敛 fork 版(零渗入,等效 `--ours`);`llms-full.txt` / `package.json` 自动合。故无
+file-level 手解。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-07-13)
+- Sync plan + verification trail: this conversation's transcript
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |
