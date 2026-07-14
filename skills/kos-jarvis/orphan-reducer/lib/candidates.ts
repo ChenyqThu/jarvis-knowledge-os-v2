@@ -79,12 +79,18 @@ export function deriveDomain(
 
 export async function loadOrphans(
   db: BrainDb,
-  opts: { domain?: string; limit?: number } = {}
+  opts: { domain?: string; limit?: number; excludePrefix?: string } = {}
 ): Promise<OrphanCandidate[]> {
   const raw = await db.listOrphans();
   const filtered: OrphanCandidate[] = [];
   for (const r of raw) {
     if (shouldExclude(r.slug)) continue;
+    // Run-scoped skip, distinct from shouldExclude's permanent DENY_PREFIXES
+    // (which mirror upstream orphans.ts and must not drift). listOrphans is
+    // ORDER BY slug, so a large same-prefix block (e.g. sources/email/*, 78%
+    // of the sources domain) otherwise consumes --limit before any later
+    // prefix is reached.
+    if (opts.excludePrefix && r.slug.startsWith(opts.excludePrefix)) continue;
     const domain = deriveDomain(r.domain, r.slug);
     if (opts.domain && domain !== opts.domain) continue;
     filtered.push({ id: r.id, slug: r.slug, title: r.title, domain });

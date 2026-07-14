@@ -56,6 +56,7 @@ type Flags = {
   candidates: number;
   minConfidence: number;
   domain: string | null;
+  excludePrefix: string | null;
   noCommit: boolean;
   iKnow: boolean;
   json: boolean;
@@ -71,6 +72,7 @@ function parseFlags(argv: string[]): Flags {
     candidates: 5,
     minConfidence: 0.7,
     domain: null,
+    excludePrefix: null,
     noCommit: false,
     iKnow: false,
     json: false,
@@ -115,6 +117,9 @@ function parseFlags(argv: string[]): Flags {
       case "--domain":
         f.domain = argv[++i] ?? null;
         break;
+      case "--exclude-prefix":
+        f.excludePrefix = argv[++i] ?? null;
+        break;
       default:
         if (a.startsWith("--")) {
           console.error(`unknown flag: ${a}`);
@@ -143,6 +148,9 @@ Flags:
   --candidates N         vector candidates per orphan to classify (default 5)
   --min-confidence F     drop classifier outputs below F         (default 0.70)
   --domain D             filter orphans to one domain (companies, concepts, ...)
+  --exclude-prefix P     skip orphans whose slug starts with P (e.g.
+                         sources/email/ — orphans load ORDER BY slug, so a
+                         large same-prefix block eats --limit first)
   --no-commit            --apply without git commit (testing)
   --i-know               required when --limit > 500
   --json                 JSONL progress events to stdout
@@ -276,10 +284,12 @@ async function main(): Promise<number> {
     const orphans = await loadOrphans(db, {
       domain: flags.domain ?? undefined,
       limit: flags.limit,
+      excludePrefix: flags.excludePrefix ?? undefined,
     });
     emit(flags.json, "orphans.loaded", {
       count: orphans.length,
       domain: flags.domain ?? "any",
+      exclude_prefix: flags.excludePrefix ?? null,
       limit: flags.limit,
     });
 
@@ -413,6 +423,7 @@ async function main(): Promise<number> {
       candidates: flags.candidates,
       min_confidence: flags.minConfidence,
       domain: flags.domain,
+      exclude_prefix: flags.excludePrefix,
       apply: flags.apply,
       no_commit: flags.noCommit,
     },
