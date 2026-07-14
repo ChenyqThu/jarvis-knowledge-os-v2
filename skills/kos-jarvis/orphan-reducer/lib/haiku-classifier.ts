@@ -68,6 +68,20 @@ Output EXACTLY one entry per input candidate, preserving order. Confidence
 is a self-assessment: 0.9+ = obvious, 0.7-0.9 = confident, 0.5-0.7 = shaky,
 <0.5 = guess (you should usually have emitted "none" at that point).`;
 
+/**
+ * Replace unpaired UTF-16 surrogates with U+FFFD. Anthropic's server rejects a
+ * request body containing a lone surrogate (400 invalid_request_error "The
+ * request body is not valid JSON: no low surrogate") — email-ingested pages
+ * occasionally carry a broken half-emoji / truncated codepoint. JS JSON.stringify
+ * emits these as bare \uD800 escapes that the server's stricter parser refuses.
+ */
+function stripLoneSurrogates(s: string): string {
+  return s.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    "�"
+  );
+}
+
 function stripJsonFence(s: string): string {
   return s
     .replace(/^\s*```(?:json)?\s*\n?/i, "")
@@ -142,7 +156,9 @@ function buildUserMessage(
     })
     .join("\n\n");
 
-  return `${orphanBlock}\n\n<candidates>\n${candidateBlocks}\n</candidates>\n\nReturn classifications JSON.`;
+  return stripLoneSurrogates(
+    `${orphanBlock}\n\n<candidates>\n${candidateBlocks}\n</candidates>\n\nReturn classifications JSON.`
+  );
 }
 
 export class ClassifierCallStats {

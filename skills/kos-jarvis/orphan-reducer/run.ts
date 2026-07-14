@@ -284,49 +284,67 @@ async function main(): Promise<number> {
     });
 
     for (const orphan of orphans) {
-      const candidates = await fetchCandidates(db, orphan.id, flags.candidates);
-      if (candidates.length === 0) {
+      try {
+        const candidates = await fetchCandidates(db, orphan.id, flags.candidates);
+        if (candidates.length === 0) {
+          records.push({
+            orphan,
+            candidates: [],
+            classifications: [],
+            kept: [],
+            reason_dropped: "no vector-similar candidates",
+          });
+          emit(flags.json, "orphan.skipped", {
+            slug: orphan.slug,
+            reason: "no candidates",
+          });
+          continue;
+        }
+
+        const orphanInput = await loadOrphanInput(db, orphan);
+        const classifications = await classifyWithRetry(
+          orphanInput,
+          candidates,
+          stats
+        );
+        const { kept, reasonDropped } = pickKept(
+          classifications,
+          flags.minConfidence,
+          flags.perOrphan
+        );
+
+        records.push({
+          orphan,
+          candidates,
+          classifications,
+          kept,
+          reason_dropped: reasonDropped,
+        });
+
+        emit(flags.json, "orphan.classified", {
+          slug: orphan.slug,
+          candidates: candidates.length,
+          emitted: classifications.length,
+          kept: kept.length,
+          reason: reasonDropped ?? "ok",
+        });
+      } catch (err) {
+        // Isolate per-orphan failures. A 400 from a lone-surrogate page, a
+        // transient API error past retries, etc. must NOT kill the whole run
+        // and discard all buffered classifications (that lost 2,865 sources
+        // orphans + 4.5h on 2026-07-13). Record as skipped and continue.
         records.push({
           orphan,
           candidates: [],
           classifications: [],
           kept: [],
-          reason_dropped: "no vector-similar candidates",
+          reason_dropped: `error: ${String(err).slice(0, 160)}`,
         });
-        emit(flags.json, "orphan.skipped", {
+        emit(flags.json, "orphan.error", {
           slug: orphan.slug,
-          reason: "no candidates",
+          error: String(err).slice(0, 200),
         });
-        continue;
       }
-
-      const orphanInput = await loadOrphanInput(db, orphan);
-      const classifications = await classifyWithRetry(
-        orphanInput,
-        candidates,
-        stats
-      );
-      const { kept, reasonDropped } = pickKept(
-        classifications,
-        flags.minConfidence,
-        flags.perOrphan
-      );
-
-      records.push({
-        orphan,
-        candidates,
-        classifications,
-        kept,
-        reason_dropped: reasonDropped,
-      });
-
-      emit(flags.json, "orphan.classified", {
-        slug: orphan.slug,
-        candidates: candidates.length,
-        emitted: classifications.length,
-        kept: kept.length,
-        reason: reasonDropped ?? "ok",
-      });
     }
 
     // ============================================================
