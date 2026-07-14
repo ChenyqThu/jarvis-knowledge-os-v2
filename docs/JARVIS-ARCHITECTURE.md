@@ -5362,12 +5362,23 @@ file-level 手解。
 
 ---
 
-## 6.41 avman te3 渠道断供 → GitHub Models 应急接管 (2026-07-14)
+## 6.41 avman te3 断供 → 弃用 relay,直连官方 OpenAI (2026-07-14)
 
-**不是 sync,是 P0 事故处置。** §6.32 收敛以来 embedding 一直走 avman 的**原生 openai
-recipe**;2026-07-14 上午 avman 开始对 `text-embedding-3-large` 返回 **503「分组 \*\*\*
-下模型 text-embedding-3-large 无可用渠道(distributor)」** —— relay 本身活着(chat 200,
-`/models` 仍列出 te3),只是**该模型背后没有上游渠道**。非我方配置/密钥问题。
+**不是 sync,是 P0 事故处置。终局:embedding 路径上不再有任何 relay。**
+
+§6.32 收敛以来 embedding 一直走 avman 的**原生 openai recipe**;2026-07-14 上午 avman
+开始对 `text-embedding-3-large` 返回 **503「分组 \*\*\* 下模型 text-embedding-3-large
+无可用渠道(distributor)」** —— relay 本身活着(chat 200,`/models` 仍列出 te3),只是
+**该模型背后没有上游渠道**。非我方配置/密钥问题。
+
+中途有一段 **GitHub Models 应急(存活约 2 小时后被弃用)**,它的失败本身是本节最贵的
+教训,记在下面「GitHub Models 为什么不行」。**最终形态**:官方 OpenAI key 直连
+`api.openai.com`,**`OPENAI_BASE_URL` 不设**,四平面均为
+`openai:text-embedding-3-large` @1536。官方端点重现库内向量 **余弦 1.0000(6/6)**,
+零重嵌入;doctor `✓ 442ms`(比 relay 时代还快);限流 **3,000 req/min**,无按天上限。
+
+> **M3 那条「永不重新引入 `OPENAI_BASE_URL`」的禁令,重新生效。** §6.32 曾宣布它
+> "RETIRED"(因为要靠它路由 avman);现在路径直连,那条豁免随 avman 一起作废。
 
 ### 症状与真实影响
 
@@ -5400,9 +5411,24 @@ Lucien 提供 GitHub Models(Azure 托管 OpenAI 真模型:`x-ms-region: East US`
   不只是"自己像自己"。§6.32 那批假向量的自匹配只有 ~0.70,对比鲜明。
 - 判定:**同一向量空间 → 零重嵌入**
 
-### 接线(纯配置,零 `src/` 改动)
+### 最终接线(官方直连)
 
-两个坑,都是实测踩出来的:
+四平面(**4 plists + `.env.local` + `~/.gbrain/config.json` + DB `config` 表**)全部:
+
+```
+GBRAIN_EMBEDDING_MODEL=openai:text-embedding-3-large
+GBRAIN_EMBEDDING_DIMENSIONS=1536
+OPENAI_API_KEY=sk-proj-…          # 官方 key
+# OPENAI_BASE_URL                 # 必须不设 —— 设了就绕开官方端点
+```
+
+注意 **plist 与 `.env.local` 是两套独立的平面**:Lucien 只改了 `.env.local`,而 daemon
+和所有 cron 读的是 plist —— 4 个 plist 里当时仍是 avman 的 key + base URL。漏改它们的话
+"改完了"只是错觉。
+
+### GitHub Models 时期的接线(已废弃,仅存档)
+
+那 2 小时里踩的两个坑,若将来还需要经 OpenAI-compatible relay 接 embedding,仍然适用:
 
 1. **不能走原生 openai recipe** —— `resolveNativeBaseUrl`(#1250)对不带 `/v1` 的 URL
    **无条件补 `/v1`** → `models.github.ai/inference/v1/embeddings` **404**(实测)。改用
@@ -5415,15 +5441,8 @@ Lucien 提供 GitHub Models(Azure 托管 OpenAI 真模型:`x-ms-region: East US`
    静默不发 → 返回原生 3072 → dim mismatch**。写 `text-embedding-3-large` 即可
    (GitHub 两种写法都收)。该分支注释原文就是为 Azure 托管 te3 而写的。
 
-最终配置(**4 plists + `.env.local` + `config.json` + DB config 全部对齐**):
-
-```
-GBRAIN_EMBEDDING_MODEL=litellm:text-embedding-3-large    # 裸名,无 openai/ 前缀
-GBRAIN_EMBEDDING_DIMENSIONS=1536
-LITELLM_BASE_URL=https://models.github.ai/inference      # 无 /v1
-LITELLM_API_KEY=<GitHub PAT>
-OPENAI_BASE_URL / OPENAI_API_KEY                         # 保留 = 回滚路径
-```
+当时的配置(存档):`GBRAIN_EMBEDDING_MODEL=litellm:text-embedding-3-large`(裸名)+
+`LITELLM_BASE_URL=https://models.github.ai/inference`(无 `/v1`)+ `LITELLM_API_KEY`。
 
 ### `embedding_signature`:差点漏掉的地雷
 
@@ -5468,34 +5487,65 @@ OPENAI_BASE_URL / OPENAI_API_KEY                         # 保留 = 回滚路径
 > ⚠️ **绝不能对 `default` 跑 `gbrain sync`** —— 这些页磁盘上没有文件,sync 可能
 > 视为已删除。
 
-### 硬期限 ⚠️
+### GitHub Models 为什么不行(本节最贵的教训)
 
-GitHub Models **2026-07-30 全面下线**(每个响应都带 `sunset: Thu, 30 Jul 2026 00:00:00
-GMT` + deprecation link)。本方案是**应急,不是终局**。已挂 `com.jarvis.avman-embed-probe`
-(每小时;exit 0 = 仍挂,exit 10 = avman 回来了,日志里带完整回滚清单**含签名 UPDATE**)。
-**7/30 之前必须落实 avman 恢复或另一个 te3 供应商**,否则 embedding 再次断供。
-配额:GitHub 按 token 计(`x-ratelimit-limit-tokens: 500000`),concept 回填实测约
-150K token,一个窗口装得下;单请求体积有上限(20 页 × 平均值即 413,巨页需靠切块化解)。
+**限流头会撒谎。** GitHub 的成功响应只带 `x-ratelimit-limit-tokens: 500000` +
+`remaining-tokens`,看上去是个宽松的 token 配额;我据此判定"额度不是问题",把 9,000
+页的回填怼了上去。**真正的闸门只在 429 响应里现身**:
 
-### 绿门 / 验证
+```
+retry-after: 81862
+x-ratelimit-type: UserByModelByDay      ← 按天,不是按 token
+```
 
-- `[OK] embedding_provider: litellm:text-embedding-3-large ✓ 809ms, 1536 dims, DB aligned`
+**每天 150 次请求**,而 `gbrain embed` 是**一页一次请求**。算一下就知道这条路从一开始
+就不通:
+
+| 用途 | 请求数 | vs 150/天 |
+|---|---|---|
+| 每次向量查询 | 1 | |
+| 日常入库(实测日均 46–330 chunk) | 每页 1 | 合计就撑满 |
+| 回填 9,241 页 | 9,241 | **需 62 天** |
+
+后果:**配额烧光 → 生产 embedding 二次断供 22.7 小时**,只换来 462 个 chunk;跑批速率
+被 429 退避压到 **5.3 页/分钟**(单次 API 明明只要 0.8s),部分页 3 次重试后直接失败。
+
+> **教训(比技术细节重要)**:Lucien 一开始就说了"每分钟 15,每天 150";我拿一个
+> 响应头否定了他。**成功响应里的限流头只描述当前窗口的一个维度,不是配额的全貌** ——
+> 判断一个供应商能不能扛生产,应当先打到 429 把真限流问一遍,而不是读成功响应的头。
+> 同类:官方 OpenAI 的头(`limit-requests: 3000` / `reset-requests: 20ms`)才是完整的,
+> 且**没有** `...ByDay` 型限流。
+
+**切回官方后**:同一批回填 **126 页/分钟(24×)**,8,860 页约 70 分钟,成本约 **$0.065**
+(te3 官方价 $0.13/1M token)—— 整个 relay 应急链换来的麻烦,六分钱就买断了。
+
+### 绿门 / 验证(终局:官方直连)
+
+- `[OK] embedding_provider: openai:text-embedding-3-large ✓ 442ms, 1536 dims, DB aligned`
 - `[OK] embedding_env_override: env vars agree with DB config`(四平面一致)
 - `[OK] embedding_column_registry: Registry healthy`;`brain_score 81/100`
-- `embed --stale --dry-run`:**21,701 → 0**
-- **跨供应商检索实证**(绕开查询层直查 pgvector,用 GitHub 现场 embed 的查询向量打
-  avman 时代存的向量):「知识管理系统的架构设计」→ `concepts/knowledge-management`
-  0.5459 + `syntheses/knowledge-architecture-blueprint` 0.4894;「统一账号体系的合并
-  带来的登录问题」→ `sources/email/50910` 0.5136 + `people/junrong-liao`
+- **向量空间**:官方 te3 重现库内向量 **余弦 1.0000(6/6)**,交叉基线 0.3959 /
+  库内基线 0.3960 —— 零重嵌入
+- **签名**:`litellm:…` → `openai:…` 反向修正 6,435 行,残留 0;`embed --stale` 归 0
+- **daemon 真实环境**(`ps eww`,不看 plist 看进程):`GBRAIN_EMBEDDING_MODEL=openai:…`
+  / `OPENAI_API_KEY=sk-proj…` / **无 `OPENAI_BASE_URL`**
+- **检索实证**:`gbrain query "knowledge management"` → `concepts/knowledge-management`
+  **[1.1068] 排第一** —— 回填给了它 chunk,`source-boost.ts` 的 1.3× 概念加权终于生效
+  (回填前同一查询它只排第二 0.6665)。这正是上游 #2163 说"boost 是死的"那件事
 - `check:all` exit 0;label-normalize 保险实测仍能拒真实模型变更(伪造 gemini → SKIP)
 
 ### Linked docs
 
-- 回滚备份:`~/.gbrain/backups/embed-swap-20260714-103430/`(4 plists + `.env.local` + `config.json`)
-- 探针:[`scripts/jarvis-avman-embed-probe.sh`](../scripts/jarvis-avman-embed-probe.sh)
-  + [`scripts/launchd/com.jarvis.avman-embed-probe.plist.template`](../scripts/launchd/com.jarvis.avman-embed-probe.plist.template)
-- 标签规范器(保险已改为传输无关):[`scripts/jarvis-embedding-label-normalize.sh`](../scripts/jarvis-embedding-label-normalize.sh)
-- Commit `6ad1b940`
+- 回滚备份:`~/.gbrain/backups/embed-swap-20260714-103430/`(切 GitHub 前)
+  + `~/.gbrain/backups/embed-revert-oai-20260714-114525/`(切官方前)
+- 兜底 cron:[`scripts/jarvis-chunkless-backfill.sh`](../scripts/jarvis-chunkless-backfill.sh)
+  + [`scripts/launchd/com.jarvis.chunkless-backfill.plist.template`](../scripts/launchd/com.jarvis.chunkless-backfill.plist.template)
+- 标签规范器:[`scripts/jarvis-embedding-label-normalize.sh`](../scripts/jarvis-embedding-label-normalize.sh)
+- 上游 bug:[garrytan/gbrain#2163](https://github.com/garrytan/gbrain/issues/2163)
+  (已补证据 + 纠正其"atoms 是故意不嵌"的结论)
+- Commits `6ad1b940`(GitHub 应急,已废)/ `a1e78225`(chunkless 兜底)/ 本次收尾
+- **已移除**:`com.jarvis.avman-embed-probe` —— 官方直连后 avman 不再是回退目标,
+  探针的回滚清单会误导
 
 ---
 
