@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.chunkless-backfill</string>
+    <!--
+      Walks an upstream gap the dream cycle cannot close on its own (§6.41,
+      confirmed 2026-07-14):
+
+        synthesize_concepts + extract_atoms write pages via engine.putPage(),
+        which only touches `pages` — no content_chunks rows. The cycle's Phase 8
+        is `embed --stale`, whose predicate is rooted in
+        `FROM content_chunks cc JOIN pages p`. A page with zero chunk rows
+        contributes zero rows, so the only phase that would have embedded it
+        cannot see it — permanently.
+
+      Net at discovery: 9,241 pages (~34% of the brain) invisible to vector
+      search, including 100% of atoms (6,739/6,739 — that pipeline had never
+      embedded anything). `embed_skip` (the real opt-out) was set on 1 page
+      brain-wide, so this is a bug, not intent.
+
+      Fix belongs upstream (src/, which the fork does not patch); this is the
+      fork-side stopgap. Delete it if upstream chunks in putPage or roots the
+      stale predicate in `pages`.
+
+      07:00 local — after dream-cycle (03:11) so it sweeps the same night's
+      synthesized/extracted pages, and BEFORE embedding-label-normalize (08:25),
+      which cleans the stale ZE label the embed path stamps on new chunks.
+      Capped at 3,000 pages/run so a surprise backlog can't burn the embedding
+      quota unattended.
+
+      No secrets (wrapper sources .env.local) → this .plist == .plist.template.
+
+      Manual:  bash scripts/jarvis-chunkless-backfill.sh [--dry] [--max N]
+      Verify:  launchctl print "gui/$(id -u)/com.jarvis.chunkless-backfill"
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/scripts/jarvis-chunkless-backfill.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/chenyuanquan</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/chenyuanquan/.gbrain/chunkless-backfill.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenyuanquan/.gbrain/chunkless-backfill.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2</string>
+</dict>
+</plist>
