@@ -52,6 +52,16 @@ working on this codebase, before touching anything else:
    incl. 100% of atoms) were never chunked** — cycle-born pages that
    `embed --stale` structurally cannot see (upstream garrytan/gbrain#2163);
    backfilled, with `com.jarvis.chunkless-backfill` (07:00) holding the line.
+   **§6.42 query-embed deadline (2026-07-14, same day, MITIGATED not fixed)**:
+   with embedding healthy at ~250ms, the vector arm *still* died — `expandQuery`
+   (LLM, **1.5–41s** via CRS) runs first inside the same 6s absolute deadline and
+   spends it, then the embed aborts in ~0ms → silent keyword-only → **empty
+   results for compound CJK**. `GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` is now in all
+   4 plists + `.env.local` and **must stay**. It only mitigates (4/6 → 1/6) and is
+   load-dependent — idle boxes pass at 6s too, so green queries prove nothing. The
+   2s `MIN_QUERY_EMBED_BUDGET_MS` floor that upstream added for exactly this case
+   is **dead code** (the shared `AbortSignal` has already fired); reported at
+   garrytan/gbrain#2028. See §6.42.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"
@@ -122,9 +132,22 @@ working on this codebase, before touching anything else:
   match fine via body-fragment containment (see §6.25 for the
   2026-05-15 15-query probe). Operationally: always ensure vector
   search is live (`gbrain serve --http` on :7225 reachable via
-  `kos.chenge.ink`, `OPENAI_API_KEY` + `OPENAI_BASE_URL` (avman relay) env
-  set in plist — §6.32) before declaring queries broken — the modal operator query on this
-  brain is a compound CJK phrase that depends on it.
+  `kos.chenge.ink`, `OPENAI_API_KEY` set in plist and **no
+  `OPENAI_BASE_URL`** — §6.41) before declaring queries broken — the modal
+  operator query on this brain is a compound CJK phrase that depends on it.
+  **`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` must stay in all 4 plists +
+  `.env.local`** (§6.42): upstream's query-embed deadline is 6s *absolute
+  from search entry*, and `expandQuery` (an LLM call, measured **1.5–41s**
+  through CRS) spends it before the embed runs — the embed then aborts in
+  ~0ms and hybrid search silently degrades to keyword-only, which for
+  compound CJK means **empty results**. Losing this env var doesn't error;
+  it just makes Chinese queries fail under load. Caveats: it **mitigates,
+  not fixes** (4/6 → 1/6 on the measured distribution — a 41s expansion
+  still blows 30s), and it is **load-dependent**, so passing queries on an
+  idle box prove nothing. Real fix is upstream
+  ([#2028](https://github.com/garrytan/gbrain/issues/2028), `src/*` = fork
+  no-go): the `MIN_QUERY_EMBED_BUDGET_MS` 2s floor is defeated by the
+  already-fired shared `AbortSignal`.
 - **9 KOS page kinds coexist with GBrain's 20-dir MECE.** KOS `kind`
   frontmatter (source/entity/concept/project/decision/synthesis/comparison/
   protocol/timeline) is preserved on every page; it drives kos-jarvis

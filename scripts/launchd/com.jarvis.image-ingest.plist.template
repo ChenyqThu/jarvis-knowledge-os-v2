@@ -15,11 +15,18 @@
         <key>PATH</key>
         <string>/Users/chenyuanquan/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
 
-        <!-- gbrain native gateway (fork rule per CLAUDE.md L27-36) -->
+        <!-- gbrain native gateway (fork rule per CLAUDE.md) -->
         <key>GOOGLE_GENERATIVE_AI_API_KEY</key>
         <string><FILL:NANO_BANANA_API_KEY></string>
+        <!-- §6.32 + §6.41: te3@1536 on an OFFICIAL OpenAI key; NEVER add
+             OPENAI_BASE_URL (no relay on the embedding path). This is an INGEST
+             path — a gemini/zeroentropy model here writes vectors in a foreign
+             space straight into the brain, which is the §6.32 disaster. The
+             Google key stays for image *generation*, not embedding. -->
+        <key>OPENAI_API_KEY</key>
+        <string><FILL:OPENAI_API_KEY></string>
         <key>GBRAIN_EMBEDDING_MODEL</key>
-        <string>google:gemini-embedding-001</string>
+        <string>openai:text-embedding-3-large</string>
         <key>GBRAIN_EMBEDDING_DIMENSIONS</key>
         <string>1536</string>
 

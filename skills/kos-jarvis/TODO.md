@@ -420,6 +420,23 @@ nohup bun run skills/kos-jarvis/synthesis-sweep/run.ts \
 存根;`people/bill-wang` 反之)。真·分布: dossier 在 `mailagent-emails` 781
 个 / `default` 321 个。
 
+### [x] (P0-地雷) launchd 模板自 §6.32 起漂移 6 周 — 已修 2026-07-14
+
+补 §6.42 文档时发现的:**5 个 tracked `.plist.template` 全部还写着
+`GBRAIN_EMBEDDING_MODEL=google:gemini-embedding-001`,且无 `OPENAI_API_KEY`** —
+自 §6.32(2026-05-31 全库收敛到 te3@1536)起就没同步过。线上 4 个 plist 是对的
+(`openai:text-embedding-3-large` + 官方 key + `GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000`
+全部实测在位),但**模板才是重建 plist 的源头** → 任何一次从模板重装都会把
+embedding 打回 gemini,**重演 §6.32 修的那场三空间事故**;`image-ingest` 尤其危险
+(ingest 路径,会直接把异空间向量写进库)。已把 5 个模板补成与线上一致,并把
+§6.32/§6.41/§6.42 的禁令直接写进模板注释(改的人当场就看得到,不必先翻 CLAUDE.md)。
+注:`.plist.template` 因 `<FILL:…>` 占位符无法直接 `plutil -lint`(**改动前就如此**,
+非新引入);验证法 = `sed 's/<FILL:[A-Z_]*>/X/g'` 后再 lint,5/5 OK。
+
+**未修,待定 (P2)**:模板仍缺 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL`(线上
+serve-http 有,走 CRS)。不确定是否由安装脚本注入 —— 若不是,从模板重建的 daemon
+会丢掉 LLM 通道。需查 `scripts/launchd/README.md` 的安装路径后再定。
+
 ### [x] (P1) sources 非邮件去孤儿 — DONE 2026-07-14
 
 2,467/2,467 全分类, **2,300 条边落库, 0 错误**, 4h49m (10:27→15:17)。

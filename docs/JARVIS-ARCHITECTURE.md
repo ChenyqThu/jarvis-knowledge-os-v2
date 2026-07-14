@@ -5549,6 +5549,108 @@ x-ratelimit-type: UserByModelByDay      ← 按天,不是按 token
 
 ---
 
+## 6.42 query-embed deadline:expansion 饿死 embed → 向量臂静默消失 (2026-07-14)
+
+同日、§6.41 之后。**这是止血,不是修复** —— 根因在 `src/*`(fork 禁区),已报上游。
+
+### 症状与机制
+
+`hybridSearchCached` 在入口建一个 **6 秒绝对 deadline**,然后**同一个** deadline
+被传给内层 `hybridSearch`。而 **expansion(一次 LLM 调用)排在 embed 前面**,花的
+是同一份预算:
+
+```
+hybrid.ts:1683  const queryEmbedDl = makeQueryEmbedDeadline()   // 表开始走
+hybrid.ts:1698  embedQueryBounded(query, …, queryEmbedDl)       // cache-lookup embed
+      ↓ 同一个 deadline 经 opts._queryEmbedDeadline 传入内层
+hybrid.ts:1145  queries = await opts.expandFn(query)            // ← LLM,实测 1.5–41s
+hybrid.ts:1256  embedQueryBounded(q, embedOpts, embedDl)        // ← 拿到的预算常已为负
+```
+
+embed 失败 → catch → **静默退化成 keyword-only**。而本库是中文密集的,
+**复合 CJK(4+ 汉字无空格)在 Postgres tsvector 下没有分词器**(见 §6.25),
+keyword 臂对它恒等于 0 条 → **查询返回空**。这就是"中文查询时好时坏"的真身。
+
+分阶段实测(同一 query × 6 轮,embedding 已是 §6.41 的官方直连):
+
+| 轮 | expansion | embed | keyword | embed 开始时剩余预算 |
+|---|---|---|---|---|
+| 1 | 1,536ms | 1,477ms | 17ms | 4,464ms ✅ |
+| 2 | **7,605ms** | 171ms | 4ms | **−1,605ms** ❌ |
+| 3 | 1,909ms | 242ms | 3ms | 4,091ms ✅ |
+| 4 | **41,350ms** | 205ms | 20ms | **−35,350ms** ❌ |
+| 5 | **28,810ms** | 202ms | 21ms | **−22,810ms** ❌ |
+| 6 | **9,048ms** | 312ms | 5ms | **−3,048ms** ❌ |
+
+**embed 只要 ~250ms,却 4/6 轮根本没轮上。** 病灶不是 embedding 慢(§6.41 已治好),
+是 **expansion 经 CRS 在负载下能到 41 秒**。
+
+### 2 秒地板是坏的(上游那个防护措施本身失效)
+
+`hybrid.ts` 早就预见了这个场景,`MIN_QUERY_EMBED_BUDGET_MS = 2_000` 的注释原文:
+
+> *slow expansion/keyword … could leave ~0 budget and **starve a HEALTHY embed**
+> into a false keyword-only result. Flooring guarantees every embed gets at least
+> this long, so a fast healthy embed (~0.5s) always succeeds.*
+
+**它做不到。** 两层边界用的预算不一致:`makeQueryEmbedDeadline` 在入口就
+`AbortSignal.timeout(ms)`,`embedQueryBounded` 把**这个已经 fire 的 signal** 交给
+`embedQuery`,只给 `Promise.race` 的计时器加地板。第一层当场掐掉 fetch,第二层的
+地板永远轮不上。实测(`prove-floor-bug.ts`):
+
+```
+对照(新鲜 deadline)          : ✅ 1536d, 237ms
+expansion 占 6100ms → 剩 −102ms : ❌ 仅 2ms 就放弃
+expansion 占 7600ms → 剩 −1602ms: ❌ 仅 0ms 就放弃
+```
+
+地板承诺 2000ms,embed 需要 250ms,实得 **0–2ms**。
+
+### 已做:`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000`
+
+4 个 plist(`dream-cycle` / `enrich-sweep` / `gbrain-serve-http` / `kos-patrol`)
++ `.env.local`。备份 `~/.gbrain/backups/query-embed-timeout-20260714-144948`。
+plist 改完 **`bootout`+`bootstrap`**(`kickstart -k` 不重读 plist),`ps eww` 验过
+进程真实环境,`/health` 200。
+
+> ⚠️ **这是止血,不是修复,别当它修好了。**
+> - 按上表分布,30s 只把 **4/6 失败压成 1/6** —— 第 4 轮那 41s 照样爆。
+> - **它依赖负载**:空闲时 6s 也全通(实测把超时压回 6s,5 条复合中文全过),
+>   满载时(synthesis-sweep 在跑)才 4/10。**所以"现在查询好了"不能证明这个
+>   改动起了作用** —— 2026-07-14 当天查询恢复,主因是 §6.41 的 embedding 直连
+>   + 9,241 页 chunk 回填,与本节改动无关。
+> - 真修法是让 embed 用**自己的**计时器(`AbortSignal.timeout(remaining)`,把
+>   `remaining` 提到 `embedQuery` 调用之前),而非共用入口那个。在 `src/*`,
+>   fork 规矩不改上游 → **已报上游**。
+> - 我们这侧的根治方向:**expansion 也走直连**(一次 Haiku 调用 41 秒是病态的,
+>   §6.41 里 embedding 正是这么治好的)。但这会绕开 CRS 模型通道,**未做,待
+>   Lucien 决定**。
+
+### 上游
+
+[garrytan/gbrain#2028](https://github.com/garrytan/gbrain/issues/2028)(JunhaoV5,
+2026-06-10,我们评论前 0 回复)已报同一 bug 的另一半 —— 他的成因是
+**embedding 供应商慢**,并已独立发现 `=30000` 能救。我们
+[补的评论](https://github.com/garrytan/gbrain/issues/2028#issuecomment-4974401625)
+是**新的一半**:①**embedding 快也照样死**,因为 expansion 排在前面吃同一份预算
+→ 该 bug 与供应商快慢无关;②**那个 2 秒地板是坏的**(上表 + `prove-floor-bug`),
+这是它自带防护的失效,不在原报告里;③`=30000` 只是止血不是修复。
+另附:`vector_enabled` **本就存在**(`types.ts:1518` + `eval_candidates` 列),
+只是从不出现在 stderr/CLI —— 我们是靠脚本读 `onMeta` 才看见的,上游 ask #1
+(暴露降级)几乎是免费的。
+
+> 教训(与 §6.41 的限流头同类):**5 个假设全被自己的数据推翻过** —— 超时、
+> 分数阈值(0.64 失败而 0.53 成功)、缓存投毒(0 条空条目)、source 域(失败页
+> 就在 `default`)、mode 关联(CLI 与探针互相矛盾)。真因只在**分阶段计时**下
+> 现身。**别从症状猜机制,去测每一段的耗时。**
+
+### Linked docs
+
+- 探针:`prove-floor-bug.ts` / `probe-budget.ts`(scratchpad,未入库)
+- 相关:§6.25(CJK 无分词器 → 向量臂是复合中文的唯一通路)、§6.41(embedding 直连)
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |
