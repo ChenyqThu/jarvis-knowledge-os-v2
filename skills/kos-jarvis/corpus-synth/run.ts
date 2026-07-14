@@ -45,7 +45,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DB = process.env.GBRAIN_DATABASE_URL ?? "postgresql://chenyuanquan@127.0.0.1:5432/gbrain";
-const MODEL = process.env.GBRAIN_SYNTHESIS_MODEL ?? "claude-opus-4-8";
+const MODEL = process.env.GBRAIN_SYNTHESIS_MODEL ?? "claude-sonnet-5";
+// Provenance tag follows MODEL so a page always records what actually wrote it.
+const MODEL_TAG = /opus/.test(MODEL) ? "opus" : /sonnet/.test(MODEL) ? "sonnet" : /haiku/.test(MODEL) ? "haiku" : "llm";
 // CRS proxy base carries `/v1` for gbrain's gateway; the official SDK appends
 // `/v1/messages`, so strip a trailing `/v1` (cf. enrich-sweep NER / synthesis-sweep).
 const ANTHROPIC_BASE = process.env.ANTHROPIC_BASE_URL?.replace(/\/v1\/?$/, "") || undefined;
@@ -107,7 +109,7 @@ function parseFlags(argv: string[]): Flags {
   return f;
 }
 
-const HELP = `corpus-synth — Opus corpus-level viewpoint/insight synthesis (Wisdom layer)
+const HELP = `corpus-synth — corpus-level viewpoint/insight synthesis (Wisdom layer, ${MODEL})
 
   --source <id>        Corpus to synthesize (REQUIRED — you synthesize one body)
   --limit N            Process only the first N themes (small-batch verify)
@@ -370,7 +372,7 @@ function renderThemePage(t: Theme, synthesis: string, g: Gathered, model: string
     "---",
     `kind: ${kind}`,
     `title: ${JSON.stringify(t.title)}`,
-    `source_of_truth: brain-corpus-synth-opus`,
+    `source_of_truth: brain-corpus-synth-${MODEL_TAG}`,
     `scope: corpus-level`,
     `confidence: medium`,
     `theme_kind: ${t.kind}`,

@@ -370,6 +370,67 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 ---
 
+## P1 — KB 可补差距盘点 + 综合 sweep 续跑 (2026-07-14, 等额度)
+
+### [ ] (P1) 综合 sweep 剩余 526 个 — 一句话启动
+
+下次有额度时,新 session 直接说 **「跑 synthesis-sweep 剩下的 526 个」**,或
+直接执行 (checkpoint 幂等,已完成的永不重付):
+
+```bash
+cd /Users/chenyuanquan/Projects/jarvis-knowledge-os-v2
+set -a; . ./.env.local; set +a          # 需要 ANTHROPIC_BASE_URL (CRS, /v1)
+nohup bun run skills/kos-jarvis/synthesis-sweep/run.ts \
+  --refresh-stale --min-neighbors 5 --token-budget 120000 --concurrency 3 \
+  > /tmp/synth-$(date +%F).log 2>&1 &
+```
+
+- **526 个** = 6 new + 520 stale→refresh (实测 2026-07-14)。checkpoint
+  `~/.cache/kos-jarvis/synthesis-sweep/all.jsonl` = 1,887 行 / **1,841 唯一
+  slug**,自动加载,无需 `--resume`。
+- **成本 ~$235** (sonnet-5 @120k;实测 `people/jie-wu` 127,709 in / 4,266 out
+  → ~$0.45/个 × 526)。⚠️ sonnet-5 的 $3/$15 是**按 sonnet-4-6 推的,
+  `src/core/model-pricing.ts` 里没有 sonnet-5 条目** — 未证实。
+- **`--token-budget 120000 --concurrency 3` 不是随便选的**,是 SKILL.md:92
+  的实测稳定点。2026-07-14 上午用**默认 450k + conc 4** 跑了 32 个 → 满屏
+  `RATE-LIMIT` 重试,正是 SKILL.md 写明会炸的配置 (`450k / conc 4–6` storms
+  `rate_limit_error` + CF 524)。同一段还记着:**~100k context 已能产出优质
+  dossier,更大主要加广度不加深度**。
+- **成本口径已纠正 (2026-07-14)**: 权威表 `model-pricing.ts:57` = opus-4-8
+  **$5/$25**。此前 scratchpad 的 watchdog 按 $15/$75 算,**虚高 3 倍**。那
+  32 个实际花 **~$74** (14.27M in / 101k out),单个 **$2.31** 而非 $6.93。
+  省钱大头是 **budget 450k→120k (3×)**,换模型只再省 1.7×。
+- **`--refresh-stale` 的判据是「提及它的源数量增长 ≥ --stale-delta (默认5)」,
+  不是内容变化** (`run.ts:354` 注释)。所以:源被大改但数量没涨 → **不会**
+  重跑;只是被 5 条无关新邮件提到 → **会**重跑。今天那 520 个 stale 全是后者。
+- 模型默认已于 2026-07-14 改为 `claude-sonnet-5` (`GBRAIN_SYNTHESIS_MODEL`
+  可覆盖);`source_of_truth` 现跟随 MODEL → `brain-synthesis-sonnet`
+  (旧 1,809 页仍为 `-opus`,可按标签直接对比两模型产出质量)。
+
+### [ ] (P2) 72 个真·空人物页
+
+按 slug 聚合 (2026-07-14 实测): **1,151 人 → 72 人所有副本都是存根/过薄**
+(`Auto-stub created` 或 <1500 字), 1,079 人至少一处有 dossier, **409 人跨源
+多份**。怀疑 `--min-neighbors 5` 把这 72 人挡在门外 (未验证 — 先跑
+`--min-neighbors 2 --plan` 看选中数再决定)。
+
+**纠正**: 2026-07-14 早先口头报的「真实缺口 = 17 页」**是错的**,真值 72。
+早先「存根都是跨源副本、人在 `default` 里是全的」的解释**也不成立** —
+两个方向都有 (`people/jie-wu`: dossier 在 `mailagent-emails`,`default` 是
+存根;`people/bill-wang` 反之)。真·分布: dossier 在 `mailagent-emails` 781
+个 / `default` 321 个。
+
+### [x] (P1) sources 非邮件去孤儿 — DONE 2026-07-14
+
+2,467/2,467 全分类, **2,300 条边落库, 0 错误**, 4h49m (10:27→15:17)。
+**DB 验证**: `sources/%` 非邮件孤儿 2,467 → **167**,与算术吻合
+(115 置信度<0.8 + 49 判定 none + 3 分类器无输出 = 167) → 每一条声称写入的
+边都真的落库。剩余 167 个是分类器诚实的「找不到够格关联」,非失败。
+`git.commit: false / "no markdown changes"` 属正常 (DB-only 页,`md:"no_file"`)。
+log `/tmp/orphan-sources-nonemail-2026-07-14.log`。
+
+---
+
 ## P1 — entity-dedup skill built (2026-07-13, Lucien D: Z-class only)
 
 Graph audit flagged "same entity as multiple graph nodes" (Lucien 裂成 3 节点

@@ -36,12 +36,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DB = process.env.GBRAIN_DATABASE_URL ?? "postgresql://chenyuanquan@127.0.0.1:5432/gbrain";
-const MODEL = process.env.GBRAIN_SYNTHESIS_MODEL ?? "claude-opus-4-8";
+const MODEL = process.env.GBRAIN_SYNTHESIS_MODEL ?? "claude-sonnet-5";
+// Provenance tag follows MODEL so a dossier always records what actually wrote
+// it. Nothing filters on source_of_truth; it is read by humans.
+const MODEL_TAG = /opus/.test(MODEL) ? "opus" : /sonnet/.test(MODEL) ? "sonnet" : /haiku/.test(MODEL) ? "haiku" : "llm";
 // CRS proxy base carries `/v1` for gbrain's gateway; the official SDK appends
 // `/v1/messages`, so strip a trailing `/v1` (cf. enrich-sweep NER fix).
 const ANTHROPIC_BASE = process.env.ANTHROPIC_BASE_URL?.replace(/\/v1\/?$/, "") || undefined;
-// Optional 1M-context beta. Opus serves ~200k natively; for mega-hubs set
-// SYNTH_CONTEXT_1M=1 to raise the budget + send the 1M beta header.
+// Optional 1M-context beta. CRS accepts ~427k without a beta header (measured
+// 2026-06-02, SKILL.md); for mega-hubs set SYNTH_CONTEXT_1M=1 to raise the
+// budget + send the 1M beta header.
 const WANT_1M = process.env.SYNTH_CONTEXT_1M === "1";
 const BETA_1M = process.env.ANTHROPIC_BETA ?? "context-1m-2025-08-07";
 // Output cap — set to the model max so dossiers are never truncated. >~21k
@@ -109,7 +113,7 @@ function parseFlags(argv: string[]): Flags {
   return f;
 }
 
-const HELP = `synthesis-sweep — Opus per-entity dossier synthesis (Wisdom layer)
+const HELP = `synthesis-sweep — per-entity dossier synthesis (Wisdom layer, ${MODEL})
 
   --source <id>        Restrict to one source (default: all non-doc sources)
   --limit N            Process only the first N entities (small-batch verify)
@@ -264,7 +268,7 @@ function renderPage(t: Target, synthesis: string, g: Gathered, model: string): s
   const fm = [
     "---",
     `kind: synthesis`,
-    `source_of_truth: brain-synthesis-opus`,
+    `source_of_truth: brain-synthesis-${MODEL_TAG}`,
     `confidence: medium`,
     `synthesized_from: ${g.included} sources (${g.total} total${g.dropped ? `, ${g.dropped} dropped over token budget` : ""})`,
     `synthesis_model: ${model}`,
