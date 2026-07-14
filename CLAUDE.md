@@ -41,14 +41,42 @@ working on this codebase, before touching anything else:
    #2724 may address the root but UNVERIFIED — no migration ran this batch);
    §6.38 v0.42.53.0 sync (2026-06-26, zero-migration schema v119). Note §6.32
    (2026-05-31) was the embedding convergence, not a sync.
+   **OPEN — §6.41 embedding incident (2026-07-14, NOT a sync)**: avman's te3
+   channel 503'd; te3 now routes through GitHub Models via the `litellm` recipe
+   (same vectors, zero re-embed) — but **GitHub Models retires 2026-07-30**, so
+   a durable te3 provider must be in place before then. See the ⚠️ bullet below
+   and §6.41 for the wiring, the `embedding_signature` trap, and the revert
+   recipe. Also found there: 2,616 `default` concept pages were never chunked
+   (DB-only pages from the dream/extraction pipeline → invisible to vector
+   search); backfilled via `gbrain embed --source default --slugs …`.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"
 
 ### Fork-specific rules (override upstream behavior)
 
-- **Embeddings: OpenAI `text-embedding-3-large` @ 1536d via the avman.ai
-  OpenAI-compatible relay** (§6.32 convergence, 2026-05-31). The whole
+- **⚠️ EMBEDDING TRANSPORT IS ON A STOPGAP UNTIL 2026-07-30 — read §6.41
+  before touching embedding.** avman's te3 channel went 503 ("无可用渠道 /
+  distributor") on 2026-07-14, so te3 now routes through **GitHub Models via the
+  `litellm` recipe**. Same model, same vectors (verified: self-cosine
+  0.9994–1.0000 vs a 0.3961 cross baseline → zero re-embed), but **GitHub Models
+  is fully retired 2026-07-30** (`sunset` header). All four planes carry
+  `GBRAIN_EMBEDDING_MODEL=litellm:text-embedding-3-large` (**bare name** —
+  `openai/`-prefixed silently drops `dimensions` and returns 3072) +
+  `LITELLM_BASE_URL=https://models.github.ai/inference` (**no `/v1`** — the
+  native openai recipe's `resolveNativeBaseUrl` appends one and 404s, which is
+  why litellm rather than `OPENAI_BASE_URL`) + `LITELLM_API_KEY`. `OPENAI_*`
+  stays as the rollback path. Hourly `com.jarvis.avman-embed-probe` watches for
+  avman's return (exit 10 → log has the full revert recipe). **The model label
+  is NOT cosmetic**: `pages.embedding_signature` = `<provider:model>:<dims>`
+  drives staleness, so any swap must also UPDATE it or 21,701 chunks read as
+  stale (~4.3M wasted tokens). **Never `gbrain embed --all`** (re-embeds all
+  60,580 chunks — engine chunks lack `embedded_at`); **always pass `--source`**
+  (slugs are not unique across sources), before `--slugs`.
+  The rest of this bullet describes the §6.32 convergence that still defines the
+  vector space itself — only the transport changed.
+- **Embeddings: OpenAI `text-embedding-3-large` @ 1536d** (§6.32 convergence,
+  2026-05-31; via the avman.ai relay until the §6.41 stopgap above). The whole
   brain (38,056 chunks: `default` 6,940 + `mailagent-emails` 31,116) was
   re-embedded into ONE coherent vector space after the prior state was
   found incoherent: `~/.gbrain/config.json` said
@@ -66,13 +94,15 @@ working on this codebase, before touching anything else:
   INTENTIONAL and REQUIRED** — it routes the native `openai` recipe's
   `createOpenAI()` through the avman relay; the old M3 "never reintroduce
   OPENAI_BASE_URL" prohibition is RETIRED (that warning was about the
-  retired gemini-embed-shim, not this deliberate convergence). Caveats baked
-  in: the `litellm` recipe is **unusable** for embedding here (upstream gbrain
-  bug — `diagnoseEmbedding` at `src/core/ai/gateway.ts:670` rejects it
-  unconditionally), so we use the native `openai` recipe + `OPENAI_BASE_URL`;
+  retired gemini-embed-shim, not this deliberate convergence). Caveat baked in:
   gbrain's embed path **mislabels** the per-chunk `model` column as the gateway
   default, so after any re-embed run `UPDATE content_chunks SET
-  model='openai:text-embedding-3-large'` to fix the cosmetic label.
+  model='openai:text-embedding-3-large'` to fix the cosmetic label — the daily
+  `com.jarvis.embedding-label-normalize` cron does this (its guard is now
+  transport-agnostic per §6.41: it accepts either te3 spelling but still refuses
+  to relabel under a genuine model change). §6.32's "the `litellm` recipe is
+  unusable (gateway.ts:670)" caveat is **RETIRED** — upstream #1292 replaced
+  that guard, and §6.41 now runs production on litellm.
   `GOOGLE_GENERATIVE_AI_API_KEY` and any ZeroEntropy key are now **vestigial**
   for embedding (kept in env but unused). External writers (mailagent etc.) send
   content via MCP `put_page` (no client embedding possible — `PageInput` has no

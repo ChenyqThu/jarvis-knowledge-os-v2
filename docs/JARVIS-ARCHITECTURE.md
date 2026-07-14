@@ -5362,6 +5362,143 @@ file-level 手解。
 
 ---
 
+## 6.41 avman te3 渠道断供 → GitHub Models 应急接管 (2026-07-14)
+
+**不是 sync,是 P0 事故处置。** §6.32 收敛以来 embedding 一直走 avman 的**原生 openai
+recipe**;2026-07-14 上午 avman 开始对 `text-embedding-3-large` 返回 **503「分组 \*\*\*
+下模型 text-embedding-3-large 无可用渠道(distributor)」** —— relay 本身活着(chat 200,
+`/models` 仍列出 te3),只是**该模型背后没有上游渠道**。非我方配置/密钥问题。
+
+### 症状与真实影响
+
+- `gbrain doctor` → `[WARN] embedding_provider → probe failed: 无可用渠道`(3/3 持续)
+- **`gbrain query` 静默降级**:embedding 失败被吞掉(exit 0、无任何报错),hybrid 退化
+  成纯关键词路。能被关键词命中的查询照常返回,**只有向量路能服务的 compound CJK 查询
+  直接空手而归** —— 正是 CLAUDE.md 警告的那条线。
+- 最后一次成功 embedding:02:58(故障窗口 ≤7h)。期间新内容嵌不进去。
+
+> **排查陷阱(记下来,下次别再踩)**:头几轮 A/B 都选了关键词可命中的查询
+> ("omada" / "竞品分析"),两组结果**连分数都逐位相同**(0.5532/0.4225),险些误判为
+> "没坏"。反过来,我最初拿「知识管理系统的架构设计」当"坏掉"的证据也不成立 —— 它在
+> embedding 正常时也返回 No results(其最佳向量分 0.5459 低于查询层阈值)。
+> **可信判据只有两个:doctor 探针,以及绕开查询层的 pgvector 直查。**
+
+### 为什么不能就地换模型
+
+`text-embedding-3-small` 在 avman 上是通的(200 @1536),但**换模型 = 换向量空间**,
+与库里 60,580 个 chunk 不兼容 → 必须全库重嵌。这正是 §6.32 修好的那场"三空间打架"
+事故的成因。**下策,不采纳。**
+
+### 处置:同模型、换传输
+
+Lucien 提供 GitHub Models(Azure 托管 OpenAI 真模型:`x-ms-region: East US`,
+`x-ms-served-model: text-embedding-3-large-1`)。**先验空间、再接线**:
+
+- 取 6 个已嵌入 chunk,用 GitHub 重嵌其 `chunk_text`,与库里 avman 时代的向量比余弦
+- **自匹配 0.9994–1.0000**(6/6,其中 4 个 = 1.0000);交叉基线 **0.3961**;
+  **库内基线(已存向量彼此之间)0.3960** —— 新向量与现存向量的**彼此几何关系完全一致**,
+  不只是"自己像自己"。§6.32 那批假向量的自匹配只有 ~0.70,对比鲜明。
+- 判定:**同一向量空间 → 零重嵌入**
+
+### 接线(纯配置,零 `src/` 改动)
+
+两个坑,都是实测踩出来的:
+
+1. **不能走原生 openai recipe** —— `resolveNativeBaseUrl`(#1250)对不带 `/v1` 的 URL
+   **无条件补 `/v1`** → `models.github.ai/inference/v1/embeddings` **404**(实测)。改用
+   **litellm recipe**:其 baseURL 走 `cfg.base_urls[recipe.id]` **逐字使用**
+   (`build-gateway-config.ts:53` 把 `LITELLM_BASE_URL` 映射进去),是上游设计好的扩展位。
+   §6.40 已确认"litellm 不可用"的旧 caveat 被 #1292 修掉 —— 这次正好吃到红利,
+   连同 #2271 `trust_custom_dims`(让自声明的 1536 被采信)也是那批同步带进来的。
+2. **模型名必须裸写** —— `dims.ts:204` 用 `modelId.startsWith('text-embedding-3')` 决定
+   发不发 `dimensions`。写成 `openai/text-embedding-3-large` **匹配不上 → dimensions
+   静默不发 → 返回原生 3072 → dim mismatch**。写 `text-embedding-3-large` 即可
+   (GitHub 两种写法都收)。该分支注释原文就是为 Azure 托管 te3 而写的。
+
+最终配置(**4 plists + `.env.local` + `config.json` + DB config 全部对齐**):
+
+```
+GBRAIN_EMBEDDING_MODEL=litellm:text-embedding-3-large    # 裸名,无 openai/ 前缀
+GBRAIN_EMBEDDING_DIMENSIONS=1536
+LITELLM_BASE_URL=https://models.github.ai/inference      # 无 /v1
+LITELLM_API_KEY=<GitHub PAT>
+OPENAI_BASE_URL / OPENAI_API_KEY                         # 保留 = 回滚路径
+```
+
+### `embedding_signature`:差点漏掉的地雷
+
+`pages.embedding_signature = <provider:model>:<dims>`(`embedding.ts:166`),而 stale 判据是
+`cc.embedding IS NULL OR p.embedding_signature <> <当前签名>`(NULL 签名**祖父豁免**)。
+改模型标识后:
+
+- 6,134 页的 `openai:…:1536` ≠ 新签名 `litellm:…:1536` → **21,701 个 chunk 被判陈旧**
+- 夜间 `dream` 会去重嵌它们:**≈4.3M token ≈ 8.6 个 GitHub 窗口,纯属白烧**(向量本来就对)
+- 处置:`UPDATE pages SET embedding_signature='litellm:text-embedding-3-large:1536'
+  WHERE embedding_signature='openai:text-embedding-3-large:1536'`(6,159 行)→
+  `embed --stale --dry-run` 从 **21,701 回到 0**
+
+> **教训**:模型标识**不是化妆品**,它经 `embedding_signature` 有真实语义力量。
+> "所有平面必须一致"那条 fork 规则正是为此存在 —— 只改 env 平面会让**没 source
+> `.env.local` 的进程算出另一个签名**,让这批页在两个签名间反复横跳、反复触发重嵌。
+
+### 其它踩坑(全部实测)
+
+- **`launchctl kickstart -k` 不重读 plist** —— 进程重启了、PID 变了,**环境还是旧的**。
+  必须 `bootout` + `bootstrap`。用 `ps eww -p <pid>` 验进程真实环境,否则会误报成功。
+- **`gbrain embed --all` 是地雷** —— engine 返回的 chunk 对象不带 `embedded_at`,
+  `chunks.filter(c => !c.embedded_at)` 恒真 → **重嵌全库 60,580 chunk ≈ 12M token**。
+  dry-run 报 "Would embed 60580 chunks" 即为此。**回填只用 `--slugs`。**
+- **slug 跨源不唯一** —— `concepts/captive-portal` 同时存在于 default / mailagent-emails
+  / omada,不加 `--source` 的 embed 会命中**别源已嵌入的同名页**并**静默 no-op**。与
+  orphan-reducer 那个 source-盲写是同一类 bug。
+- **`--source` 必须在 `--slugs` 之前** —— `--slugs` 吞掉其后所有非 `--` 词,
+  `--slugs a b --source default` 会把 `default` 当成 slug(报 "Page not found: default")。
+- macOS 环境:**bash 3.2 无 `mapfile`**;**zsh 不对未加引号的变量分词**(bash 会)。
+  两者都曾让脚本静默失效 —— 与更早那次 `setsid` 在 macOS 不存在同类。
+
+### 顺带发现:2,616 个 concept 页从未被切块
+
+`default` 源磁盘上只有 **228** 个 `concepts/*.md`,DB 里却有 **2,847** 个。差额是
+`dream`/概念抽取管线**直接写库、从未切块**的纯 DB 页 —— **对向量检索完全隐形**
+(对照:mailagent-emails / omada 的 concept 页 chunk 覆盖率 100%)。这解释了此前
+"概念层 97% 孤儿"的成因:**不是回填漏了,是这条管线根本没给它们建 chunk**。
+已用 `gbrain embed --source default --slugs …` 分批回填(`embedPage` 在
+`chunks.length===0` 时会自己从 `compiled_truth` 切块再嵌)。
+
+> ⚠️ **绝不能对 `default` 跑 `gbrain sync`** —— 这些页磁盘上没有文件,sync 可能
+> 视为已删除。
+
+### 硬期限 ⚠️
+
+GitHub Models **2026-07-30 全面下线**(每个响应都带 `sunset: Thu, 30 Jul 2026 00:00:00
+GMT` + deprecation link)。本方案是**应急,不是终局**。已挂 `com.jarvis.avman-embed-probe`
+(每小时;exit 0 = 仍挂,exit 10 = avman 回来了,日志里带完整回滚清单**含签名 UPDATE**)。
+**7/30 之前必须落实 avman 恢复或另一个 te3 供应商**,否则 embedding 再次断供。
+配额:GitHub 按 token 计(`x-ratelimit-limit-tokens: 500000`),concept 回填实测约
+150K token,一个窗口装得下;单请求体积有上限(20 页 × 平均值即 413,巨页需靠切块化解)。
+
+### 绿门 / 验证
+
+- `[OK] embedding_provider: litellm:text-embedding-3-large ✓ 809ms, 1536 dims, DB aligned`
+- `[OK] embedding_env_override: env vars agree with DB config`(四平面一致)
+- `[OK] embedding_column_registry: Registry healthy`;`brain_score 81/100`
+- `embed --stale --dry-run`:**21,701 → 0**
+- **跨供应商检索实证**(绕开查询层直查 pgvector,用 GitHub 现场 embed 的查询向量打
+  avman 时代存的向量):「知识管理系统的架构设计」→ `concepts/knowledge-management`
+  0.5459 + `syntheses/knowledge-architecture-blueprint` 0.4894;「统一账号体系的合并
+  带来的登录问题」→ `sources/email/50910` 0.5136 + `people/junrong-liao`
+- `check:all` exit 0;label-normalize 保险实测仍能拒真实模型变更(伪造 gemini → SKIP)
+
+### Linked docs
+
+- 回滚备份:`~/.gbrain/backups/embed-swap-20260714-103430/`(4 plists + `.env.local` + `config.json`)
+- 探针:[`scripts/jarvis-avman-embed-probe.sh`](../scripts/jarvis-avman-embed-probe.sh)
+  + [`scripts/launchd/com.jarvis.avman-embed-probe.plist.template`](../scripts/launchd/com.jarvis.avman-embed-probe.plist.template)
+- 标签规范器(保险已改为传输无关):[`scripts/jarvis-embedding-label-normalize.sh`](../scripts/jarvis-embedding-label-normalize.sh)
+- Commit `6ad1b940`
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |
