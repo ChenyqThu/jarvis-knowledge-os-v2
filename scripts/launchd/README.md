@@ -1,42 +1,75 @@
-# launchd Services — Cutover Reference
+# launchd Services — Install Reference
 
-After **M3 cutover (2026-05-10)** the production service lineup is:
+Current production lineup (verified against `~/Library/LaunchAgents/`
+on **2026-07-21**, §6.43):
 
-1. **com.jarvis.kos-compat-api** — port 7225, drop-in HTTP replacement for
-   the v1 Python kos-api.py. Talks to gbrain CLI; embeds via the native
-   v0.27 Vercel AI SDK gateway (`google:gemini-embedding-001`, 1536 dim).
-   Carries `GOOGLE_GENERATIVE_AI_API_KEY` + `GBRAIN_EMBEDDING_MODEL` +
-   `GBRAIN_EMBEDDING_DIMENSIONS` + `KOS_API_TOKEN` + `ANTHROPIC_BASE_URL`.
-2. **com.jarvis.dream-cycle**, **kos-patrol**, **enrich-sweep**,
-   **notion-poller** — cron-style services. Each plist carries the same
-   Google embedding env block so any embed code path works.
+| Service | Schedule | Role |
+|---|---|---|
+| **gbrain-serve-http** | KeepAlive daemon, :7225 | native `gbrain serve --http` — OAuth 2.1 + MCP JSON-RPC; the origin behind `kos.chenge.ink` |
+| **gbrain-backup** | 03:33 daily | `pg_dump` the production Postgres |
+| **dream-cycle** | 03:11 daily | nightly `gbrain dream` cycle via `dream-wrap` |
+| **chunkless-backfill** | 07:00 daily | chunks cycle-born pages that `embed --stale` structurally cannot see (upstream #2163 — §6.41) |
+| **kos-patrol** | 08:07 daily | fork lint/patrol; `SuccessfulExitCodes` includes 2 (warn) |
+| **embedding-label-normalize** | 08:25 daily | fixes the cosmetic per-chunk `model` mislabel (§6.32) |
+| **enrich-sweep** | 22:13 Sun weekly | entity enrichment, via `scripts/minions-wrap/enrich-sweep.sh` |
 
-The old **com.jarvis.gemini-embed-shim** (port 7222 OpenAI→Gemini
-translator) was retired in M3; its plist template lives at
-`scripts/launchd/_archived/`. Don't reintroduce
-`OPENAI_BASE_URL`/`OPENAI_API_KEY=stub` — that would silently route
-around the native gateway.
+`image-ingest` has a tracked template but is **not currently loaded** on
+this box.
 
-The actual `.plist` files in this directory are **gitignored** (they
-embed secrets). Only the `.plist.template` files are tracked.
+The four query-path services (`gbrain-serve-http`, `dream-cycle`,
+`kos-patrol`, `enrich-sweep`) carry the §6.32/§6.41 embedding env block
+(`openai:text-embedding-3-large` @1536 on an **official** OpenAI key) plus
+the §6.42 `GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000`. **Never add
+`OPENAI_BASE_URL`** — there is no relay on the embedding path any more, and
+reverting the model to gemini/zeroentropy re-splits the vector space. The
+other three need only `HOME` + `PATH`.
+
+Retired: **kos-compat-api** (§6.28, 2026-05-17 — the KOS-v1 Bearer wire that
+used to own :7225), **notion-poller**, and **gemini-embed-shim** (port 7222
+OpenAI→Gemini translator, retired at M3). Their templates live in
+`_archived/` and describe a lineup that no longer exists — read them as
+history, not as reference.
+
+## Templates vs working copies
+
+Only the `.plist.template` files are tracked. The `.plist` files are
+gitignored because they embed real secrets.
+
+> **The `.plist` working copies are deploy-time artifacts, not a
+> reference.** You create one, substitute the secrets, `cp` it to
+> `~/Library/LaunchAgents/`, and from that moment it is frozen while the
+> template and the live service keep moving. Four of them sat here for
+> months carrying an obsolete `GBRAIN_HOME` that was a known P0 (it pointed
+> gbrain's config loader at a non-existent path and broke the dream-cycle
+> cron) — long after the live plists had been fixed. During the §6.43 sync
+> they were misread as evidence that production was misconfigured.
+>
+> They are now **deleted after install**. If you find a `.plist` sitting in
+> this directory, it is stale by construction: trust the template, or read
+> `~/Library/LaunchAgents/` for what is actually running.
 
 ## First-time install
 
 ```bash
-# Five plists today (M3, 2026-05-10): kos-compat-api + 4 cron services
-for svc in kos-compat-api dream-cycle enrich-sweep kos-patrol notion-poller; do
+# Seven services as of 2026-07-21
+SVCS="gbrain-serve-http gbrain-backup dream-cycle chunkless-backfill kos-patrol embedding-label-normalize enrich-sweep"
+
+for svc in $SVCS; do
   cp com.jarvis.$svc.plist.template com.jarvis.$svc.plist
 done
 
-# Edit each .plist and replace:
-#   <FILL:NANO_BANANA_API_KEY>  → your Google GenAI key (every plist with this placeholder)
-#   <FILL:KOS_API_TOKEN>        → kos-compat-api auth token (kos-compat-api.plist only)
+# Edit each .plist and replace the placeholders:
+#   <FILL:OPENAI_API_KEY>       → official OpenAI key (NOT a relay key — §6.41)
+#   <FILL:ANTHROPIC_API_KEY>    → CRS key (gbrain-serve-http only)
+#   <FILL:NANO_BANANA_API_KEY>  → Google GenAI key (vestigial for embedding; image work only)
 
-# Install to LaunchAgents
-for svc in kos-compat-api dream-cycle enrich-sweep kos-patrol notion-poller; do
+for svc in $SVCS; do
   cp com.jarvis.$svc.plist ~/Library/LaunchAgents/
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.$svc.plist
 done
-cp com.jarvis.kos-compat-api.plist ~/Library/LaunchAgents/
+
+# Delete the working copies — they carry secrets and go stale immediately.
+rm -f com.jarvis.*.plist
 ```
 
 ## Cutover sequence (Stage 3.2 — historical, 2026-04-16)
@@ -96,10 +129,43 @@ mv ~/Library/LaunchAgents/com.jarvis.kos-api.plist ~/Library/LaunchAgents/_archi
 
 ```bash
 launchctl list | grep com.jarvis
-# expect after M3 cutover:
-#   PID  0  com.jarvis.kos-compat-api      (long-running, KeepAlive)
-#   -    0  com.jarvis.dream-cycle         (cron, daily 03:11)
-#   -    0  com.jarvis.kos-patrol          (cron, daily 08:07)
-#   -    0  com.jarvis.notion-poller       (cron, every 5 min)
-#   -    0  com.jarvis.enrich-sweep        (cron, weekly Sun 22:13)
+# expect (2026-07-21):
+#   PID  0  com.jarvis.gbrain-serve-http          (KeepAlive, :7225)
+#   -    0  com.jarvis.gbrain-backup              (cron, daily 03:33)
+#   -    0  com.jarvis.dream-cycle                (cron, daily 03:11)
+#   -    0  com.jarvis.chunkless-backfill         (cron, daily 07:00)
+#   -    0  com.jarvis.kos-patrol                 (cron, daily 08:07)
+#   -    0  com.jarvis.embedding-label-normalize  (cron, daily 08:25)
+#   -    0  com.jarvis.enrich-sweep               (cron, weekly Sun 22:13)
+# (com.jarvis.cloudflared and com.jarvis.star-office-ui-backend also appear
+#  but are not managed from this directory.)
 ```
+
+## Verify a template still matches what is running
+
+The templates are the repo's only claim about production, so check them
+rather than assume. This compares every field, masking secret values:
+
+```bash
+norm() { sed -E 's/<FILL:[A-Z_]+>/PLACEHOLDER/g' "$1" \
+  | plutil -convert json -o - - \
+  | python3 -c 'import json,sys,re
+d=json.load(sys.stdin); env=d.get("EnvironmentVariables",{})
+for k in list(env):
+    if re.search(r"KEY|TOKEN|SECRET",k): env[k]="<MASKED>"
+print(json.dumps(d,sort_keys=True,indent=1))'; }
+
+for n in gbrain-serve-http gbrain-backup dream-cycle chunkless-backfill \
+         kos-patrol embedding-label-normalize enrich-sweep; do
+  printf '%-28s ' "$n"
+  diff -q <(norm "com.jarvis.$n.plist.template") \
+          <(norm ~/Library/LaunchAgents/com.jarvis.$n.plist) >/dev/null \
+    && echo 'template == live' || echo 'DRIFT'
+done
+```
+
+> Use `plutil`, not Python's `plistlib`, to read these files. Several plists
+> have XML comments containing `--` (`embed --stale`, `--dry-run`), which is
+> illegal in XML: `plistlib`'s expat parser rejects them outright while
+> `plutil` and launchd accept them. A comparison built on the strict parser
+> silently degrades to comparing two empty strings and reports a false pass.

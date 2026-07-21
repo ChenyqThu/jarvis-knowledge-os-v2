@@ -84,6 +84,21 @@
              under load. Mitigation only — real fix is upstream #2028. -->
         <key>GBRAIN_QUERY_EMBED_TIMEOUT_MS</key>
         <string>30000</string>
+        <!-- The daemon's LLM plane (expandQuery, think, MCP tool calls, dream
+             phases when driven through the server) routes via CRS. Pinned HERE
+             rather than left to .env.local: the compiled binary does pick these
+             up from the repo .env.local via WorkingDirectory, but that made the
+             daemon's provider config invisible in the plist — the 2026-07-21
+             §6.43 audit read this template, saw no chat provider, and could not
+             tell whether production had one. Explicit beats inferred for the
+             one file that documents the service.
+             NOTE the ANTHROPIC_BASE_URL trap: a Claude Code shell injects its
+             OWN value, so `unset ANTHROPIC_BASE_URL` before running any gbrain
+             LLM command by hand or every chat call 404s. -->
+        <key>ANTHROPIC_API_KEY</key>
+        <string><FILL:ANTHROPIC_API_KEY></string>
+        <key>ANTHROPIC_BASE_URL</key>
+        <string>https://crs.chenge.ink/api/v1</string>
     </dict>
     <key>KeepAlive</key>
     <true/>
