@@ -1,4 +1,42 @@
-# kos-jarvis — Outstanding Work (post v0.42.59.0 sync, 2026-07-13)
+# kos-jarvis — Outstanding Work (post v0.42.63.0 sync, 2026-07-21)
+
+> **Sync 2026-07-21** (§6.43, v0.42.59.0 → v0.42.63.0, **106 commits** across 4
+> releases, 443 files): **the largest batch to date, yet zero-conflict merge +
+> clean migration**. `merge-tree` flagged 8 "changed in both" files including 3
+> rewrite-scale hits on fork src patches (`gateway.ts` +378/−186,
+> `pglite-engine.ts` +203/−38, `extract-atoms.ts` +112/−82) — all auto-resolved
+> by the recursive virtual base. **Lesson: `changed in both` states that both
+> sides moved, it does NOT predict conflict** — treat it as a verify-list, not a
+> forecast. Schema **v122 → v124, two migrations applied** (v123 configurable
+> FTS language — no backfill at our `english` default; v124 drops
+> `compiled_truth` from `pages.search_vector`, #2704 tsvector 1MB overflow).
+> **§6.39's multi-statement-DDL P0 still did NOT trigger — and this time that
+> was actually verified rather than vacuous**: both migrations are `sql: ''` +
+> handler with per-statement `executeRaw`, which structurally cannot reach the
+> `conn.unsafe` batch path. **The P0 stays OPEN and still unproven** — it needs a
+> migration that uses a multi-statement `sql:` string. Fork territory
+> zero-invasion; **5 fork src/ patches survived**, notably the `gateway.ts`
+> embed-retry block which stayed *inside* upstream's `__embedInputTypeStore`
+> context (§6.35 composition intact) despite the rewrite, and
+> `extract-atoms.ts`'s `atoms_scan_hash` tombstone guard landing correctly in
+> upstream's three rewritten WHERE clauses. `docs/CLAUDE-UPSTREAM.md` needed no
+> refresh (upstream's own CLAUDE.md unchanged this batch; regen was
+> byte-identical). Production **27,469 pages / 71,415 chunks / 0 NULL / te3@1536**
+> (only **6** cosmetic zembed-mislabels, down from 48); `brain_score` **81/100**
+> (+1), **FAILs 3 → 2** as `orphan_ratio` fell 92% → **62%** and left FAIL.
+> doctor `embedding_provider ✓ **724ms**` — **16× faster than §6.40's 11,848ms
+> via the avman relay**, quantifying §6.41's direct-connect win. Both /health →
+> 0.42.63.0; CJK modal query 3/3 stable with **scores up 2–3×** (upstream
+> `184b6cb8` title-candidate arm — recall gain, head ordering unchanged).
+> **Still open, do not assume this batch closed them**: #2028 (query-embed floor
+> still dead → `GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` must stay in all 4 query
+> plists + `.env.local`, re-verified in place) and the chunkless backstop cron
+> (upstream #2163 fixed only `synthesize_concepts`; **100 chunkless live pages**
+> remain vs 9,241 at §6.41 — `com.jarvis.chunkless-backfill` demoted to backstop
+> but still required). New debt found, filed separately: `scripts/launchd/*.plist`
+> repo working copies have drifted badly from the live `~/Library/LaunchAgents/`
+> versions (live ones verified correct; both gitignored so no secret exposure).
+> See §6.43. No new outstanding work from the sync itself; items below carry over.
 
 > **Sync 2026-07-13** (§6.40, v0.42.57.0 → v0.42.59.0, 7 commits): **clean
 > zero-conflict merge + no-op production deploy**. v0.42.58.0 provider-agnostic
