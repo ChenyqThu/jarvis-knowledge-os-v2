@@ -5651,6 +5651,160 @@ plist 改完 **`bootout`+`bootstrap`**(`kickstart -k` 不重读 plist),`ps eww` 
 
 ---
 
+## 6.43 Upstream v0.42.63.0 sync (2026-07-21)
+
+**迄今最大的一批 —— 106 commits 横跨 4 个 release(v0.42.59.0 → v0.42.63.0)、443
+文件 / +18,663 / −41,655 —— 却是零冲突合并 + 干净迁移。** 上一批(§6.40)7 个
+commit,这批 15 倍量。merge-base `5008b287` = §6.40 合并点。
+
+**"changed in both" ≠ 冲突。** `git merge-tree` 预检报了 8 个双侧改动文件,其中 3 个
+正压在 fork 的 src patch 上(`gateway.ts` 上游 **+378/−186**、`pglite-engine.ts`
+**+203/−38**、`extract-atoms.ts` **+112/−82** —— 都是重写级别)。据此我在计划里预判
+"大概率真冲突需逐块手解",**判断错了**:递归合并用虚拟 base 把 8 个全自动收敛,
+`git merge` exit=0、conflicted files 为空。教训:`merge-tree` 的 `changed in both`
+只陈述两侧都动过,**不预测冲突**;别拿它当冲突预报,拿它当"该重点验哪几个文件"的清单。
+
+### 上游内容(挑与 fork 相关的)
+
+- **schema v122 → v124,两条迁移**(本批唯一的真迁移动作):
+  - **v123 `configurable_fts_language`** —— FTS 语言可配 + `reindex-search-vector`
+    命令(#580/#581/#582)。`GBRAIN_FTS_LANGUAGE` 我们未设 → 默认 `english` →
+    **直接 return 不回填**,只 `CREATE OR REPLACE` 两个 trigger 函数。
+  - **v124 `page_search_vector_drop_compiled_truth`**(#2704)—— `compiled_truth`
+    (无界整页正文)踢出 `pages.search_vector`,因为超大页会顶爆 Postgres 1MB
+    tsvector 硬上限,并且是**在 pages UPSERT 事务内**抛错 → 整个 source 的 sync
+    checkpoint 卡死。上游明确 no backfill(该列无任何查询读取,`searchKeyword()`
+    只查 `content_chunks.search_vector`)。
+- **`184b6cb8` 词法召回:title candidate arm + gated OR fallback** —— 见下"检索
+  分数上移"。
+- **#2163 被上游修了**(`1833d958`):`synthesize_concepts` 改走 `importFromContent`
+  (put_page 的 parse→chunk→embed 全管道)而非裸 `engine.putPage`,概念页现在会被
+  chunk + embed。这正是 §6.41 挖出的"cycle 生的页永不入向量"那个洞的一半。
+- 三个新 provider recipe(NVIDIA NIM / Mistral / Moonshot Kimi)、Postgres RLS
+  source-scope 绑定(opt-in)、sync 数据丢失家族修复(#2404/#2426/#2607)、
+  monorepo 子目录 source(`--src-subpath`)。
+
+### §6.39 那条 P0 为什么没触发(这次是真验证,不是"无迁移所以没碰上")
+
+§6.40 的说法是"本批零迁移故不触发"——**等于没验**。这批**真跑了两条迁移**,所以
+是第一次实打实的验证机会。结论:**仍不触发,但原因是这两条迁移的形状恰好避开了
+bug,不是 bug 被修了。** §6.39 的成因是 `sql:` 字段里的多语句 DDL 串经
+`conn.unsafe` 批量执行时被 postgres.js 在 parse 阶段拒掉;而 v123/v124 都是
+`sql: ''` **+ handler**,handler 内部逐条 `await engine.executeRaw(<单语句>)`。
+**单语句永远走不到那条批处理路径。** 故:
+
+> **P0 依然 OPEN 且依然未验证。** #2724 是否真修了根因,仍要等一条**用 `sql:` 多语句
+> 串**的迁移才能证。见
+> `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`。
+
+### fork 完整性
+
+fork territory **零侵入**(`git diff master <merge> -- skills/kos-jarvis/ server/
+workers/ scripts/launchd/ skills/RESOLVER.md` 空)。`CLAUDE.md` 递归合自动收敛到
+fork 版(diff 空)。**5 个 fork src patch 全存活**,其中两个值得单独记:
+
+- **`gateway.ts` embed-transport-retry 块**(§6.34/§6.35):尽管上游把这个文件
+  +378/−186 重写,fork 块不仅逐字保留,**且仍嵌在上游 `__embedInputTypeStore`
+  上下文内**(行 ~1802 `doEmbed = () => embedTransportWithRetry(...)`)—— §6.35
+  那条"每次重试 ATTEMPT 的 fetch shim 都能看见 input_type"的组合语义没被打断。
+  这是本批最该验的一处,已逐行确认。
+- **`extract-atoms.ts`**:上游重写了发现 SQL 和 prompt,fork 的 `atoms_scan_hash`
+  零产出墓碑守卫(#2144)**准确合进了新 SQL 的三处 WHERE**,`concepts` 字段
+  (#2123)也落在新 interface 上。auto-merge 在重写文件上仍然给出语义正确的结果。
+
+**`docs/CLAUDE-UPSTREAM.md` 本批无需刷新** —— 上游自己的 `CLAUDE.md` 在
+`5008b287..upstream/master` 区间**未改动**。(过程中一度误判"上游 CLAUDE.md 大改
++831/−303":那是 **fork CLAUDE.md vs 上游 CLAUDE.md** 的对比,两个文件按设计本就
+内容不同,该数字对"上游是否改动"零信息量。正确判据是
+`git diff <merge-base>..upstream/master -- CLAUDE.md`。仍按流程重新生成了一遍,
+产出**逐字节相同**的文件,反过来印证无需刷新。)
+
+### 绿门
+
+`bun install` 新增 2 个 dep(`js-yaml` / `marked`,上游带入);`bun run build` →
+`gbrain 0.42.63.0`;`typecheck` 0 错;`check:all` **全绿**(privacy /
+skill-brain-first / gateway-routed-no-direct-anthropic / key-files-current-state /
+exports-count=20 / admin vite build 等 22 项);`bun test test/ai/` **393 pass /
+0 fail**(§6.40 是 328,上游新增 65 个)。`llms-full.txt` auto-merge 版有漂移,
+重生成后 +101/−36,`chore:` 单独提交。
+
+### 生产部署 + smoke
+
+备份 `pg_dump` **834MB**(`/tmp/pg-pre-sync-v0.42.63.0-2026-07-21.dump.gz`,
+`gzip -t` OK)+ config 副本(`~/.gbrain/config.json.before-sync-v0.42.63.0`)。
+沿 §6.39/§6.40 教训:`bun run build` 覆写的正是 launchd daemon 的 KeepAlive
+program,但 daemon(pid 93001)未自触发 relaunch(health 仍报 0.42.59.0),故
+**受控 bootout+bootstrap 明确执行** → 新 pid **93811**。
+
+`init --migrate-only` → `Schema version 122 → 124 (2 migration(s) pending)` →
+两条均 ✓ → `2 migration(s) applied`。**迁移前后页数/chunk 数逐位不变**
+(27,469 / 71,415 / 0 NULL)—— 零丢失。
+
+两个 `/health`(本地 + `https://kos.chenge.ink`)均报 **0.42.63.0 / postgres** ✓。
+
+**检索 smoke —— 三类形态全跑**(本批上游动了词法召回 + v124 改了
+`pages.search_vector`,单跑英文不足以证):
+
+| 形态 | query | 头名 | 分数 | vs §6.40 |
+|---|---|---|---|---|
+| 复合 CJK(向量臂,本库 modal) | `知识管理` | `sources/…jarvis-dual-platform-architecture` | **0.8761** | 0.2734 |
+| 复合 CJK(换题材,防单点) | `竞品分析` | `concepts/tp-link-id` | 0.8444 | — |
+| EN 关键词(hybrid) | `Karpathy` | `people/karpathy` | **1.1716** | 0.6801 |
+| 短 CJK 2 字 | `向量` / `嵌入` | 各有相关头名 | 0.77 / 0.80 | — |
+
+复合 CJK **连跑 3/3 分数完全一致**(证嵌入确定 + 向量臂活 + gateway 重写零破坏)。
+**头名页面与 §6.40 完全相同,但分数普遍上移 2–3 倍** —— 归因于上游 `184b6cb8`
+新增的 title candidate arm + gated OR fallback 抬高了词法臂贡献;**是召回增强不是
+排序漂移**(头部次序未变)。CJK 查询端到端 2.3s,远在 30s 预算内。
+
+### 部署后健康快照
+
+1. **embedding**:`content_chunks` **71,415 / 0 NULL**。doctor
+   `embedding_provider ✓ **724ms** 1536 dims DB aligned` —— vs §6.40 经 avman
+   relay 的 **11,848ms**,**直连快 16 倍**,§6.41 的收益在这里量化了。
+   `embeddings 100%/0 missing`、`embedding_env_override` env==DB、宽度一致性全 ✓。
+   **cosmetic 误标降到 6**(§6.40 是 48,§6.38 曾 324),全 1536d = te3 宽,
+   `embedding-label-normalize` 日 cron 持续自愈中。
+2. **pages 27,469**(§6.40 的 27,115 **+354**,8 天四源日入,与本 sync 正交)。
+3. **doctor `schema_version` 124(latest 124)、`brain_score` 81/100**(§6.40 80,
+   **+1**)。**FAIL 从 3 个降到 2 个**:`sync_freshness` / `cycle_freshness` 沿
+   §6.35 以来既定(四源 MCP 写入非 git-sync),而 **`orphan_ratio` 退出 FAIL 变
+   WARN —— 62%(12,880/20,722),vs §6.40 的 92%(24,863/27,109)**,是 §6.41
+   chunkless 补链 + entity-dedup 落地的复利。RLS 61/61、pgvector installed、
+   resolver 61 skills all reachable、skill_brain_first 61/61。
+
+### 两个仍然 open 的东西(别以为这批带走了)
+
+- **#2028 未修**。上游 `hybrid.ts:781` 的 `MIN_QUERY_EMBED_BUDGET_MS = 2_000`
+  地板原样还在(仍被已 fire 的共享 `AbortSignal` 击穿)。
+  **`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` 必须继续留在 4 个查询路径 plist +
+  `.env.local`** —— 本批已逐个确认在位(dream-cycle / enrich-sweep /
+  gbrain-serve-http / kos-patrol)。§6.42 全文继续有效。
+- **chunkless 兜底 cron 不能撤**。上游 #2163 只修了 `synthesize_concepts` 这一条
+  写入路径,cycle 的其他 phase 未覆盖。实测当前仍有 **100 个无 chunk 活页**
+  (vs §6.41 事发时的 9,241 = 全脑 34%)—— 说明 `com.jarvis.chunkless-backfill`
+  (07:00)正压着线。它从"补漏主力"降级为**兜底**,但仍是必需品。
+
+### 顺带发现(未处理,非本批引入)
+
+`scripts/launchd/*.plist` 的**仓库工作副本已陈旧**,与
+`~/Library/LaunchAgents/` 里的线上版本严重漂移(仓库副本缺 §6.32/§6.41 的
+embedding env、`enrich-sweep` 连 ProgramArguments 都指向旧入口)。**线上 4 个
+plist 是正确的**,已逐个验证 —— 但仓库副本已不能作为参考。两者均 gitignored
+(只有 `*.plist.template` 入库)故无泄密风险。属既存债,与本 sync 正交,单开任务处理。
+
+### Conflict resolution
+
+**本批零冲突**(merge exit=0)。8 个双侧改动文件全部由递归合并的虚拟 base 自动
+收敛,含 3 个重写级 src 文件。无 file-level 手解。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-07-21)
+- §6.39(P0 migrator,仍 open)、§6.41(embedding 直连)、§6.42(query-embed deadline)
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |

@@ -165,34 +165,83 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.39 v0.42.57.0
-   upstream sync (2026-07-07, 3 commits / v0.42.53.0 → v0.42.57.0 / 76 files;
-   schema v119 → v122 3-step — v120 schema-lint (page_links security_invoker +
-   trigger-fn search_path), v121 chronicle timeline event_page_id, v122 facts
-   ontology dimension; merge zero-conflict (upstream didn't touch
-   CLAUDE.md/llms-full.txt); package.json auto-merged (fork pglite 0.4.4 +
-   version); fork territory zero-invasion, 5 fork src/ patches survived (WAL
-   pg_switch_wal auto-merged clean despite +289 to pglite-engine.ts);
-   v0.42.55.0 security-hardening + v0.42.56.0 Life Chronicle + v0.42.57.0
-   pglite live-lock fix. INCIDENT: `gbrain init --migrate-only` is broken on
-   real Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations
-   (postgres.js conn.unsafe batch parse-time validation; PGLite tolerates so
-   upstream missed it) — the daemon's initSchema path DID succeed, and the
-   daemon self-migrated to v122 when launchd KeepAlive relaunched it onto the
-   mid-build bin/gbrain; see §6.39 教训①②③ +
-   docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md)**.
-   Previous: §6.38 v0.42.53.0 sync (2026-06-26, 2 commits, zero-migration
-   schema v119, op_checkpoints jsonb #2339); §6.37 v0.42.51.0 sync (2026-06-20,
-   7 commits, schema v117 → v119). Note §6.32 (2026-05-31) was the embedding
-   convergence, not a sync.
+   operates ↔ OpenClaw executes). Latest sync story: **§6.40 v0.42.59.0
+   upstream sync (2026-07-13, 7 commits / v0.42.57.0 → v0.42.59.0 / 42 files;
+   **zero-conflict merge + no-op deploy**. v0.42.58.0 provider-agnostic gateway
+   (#1249/#1250/#1292/#2271 — empty-env clobber, native baseURL /v1 normalize,
+   dims-presence guard, trust_custom_dims) + v0.42.59.0 five community fixes
+   (#2724 pre-v121 replay / #2677 migrate preserve-sources / #2726 facts
+   pipe-escape / #2723 entity-ambiguity quarantine / #2200 think source-scope).
+   Schema ZERO new migrations (stays v122) → migrate-only clean no-op, §6.39's
+   multi-statement-DDL bug NOT triggered. **§6.32 re-verified**: upstream's new
+   `resolveNativeBaseUrl` idempotent for our `…/v1` avman URL (no /v1/v1); doctor
+   embedding_provider ✓ real 1536d. **The §6.32 "litellm recipe unusable
+   (gateway.ts:670)" caveat is now OUTDATED** — upstream #1292 replaced that
+   guard; we still use the native openai recipe. Fork territory zero-invasion,
+   5 fork src/ patches survived (gateway.ts embed-retry block disjoint from
+   upstream's +77). Prod 27,115 pages / 60,523 chunks / 0 NULL / te3@1536;
+   brain_score 80/100 (+2); both /health → 0.42.59.0)**.
+   Previous: §6.39 v0.42.57.0 sync (2026-07-07, 3 commits, schema v119→v122
+   3-step; **OPEN P0 INCIDENT** — `gbrain init --migrate-only` broken on real
+   Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations (postgres.js
+   conn.unsafe batch parse-time validation; PGLite tolerates so upstream missed
+   it), reported garrytan/gbrain#2667, see
+   docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md; v0.42.59.0
+   #2724 may address the root but UNVERIFIED — no migration ran this batch);
+   §6.38 v0.42.53.0 sync (2026-06-26, zero-migration schema v119). Note §6.32
+   (2026-05-31) was the embedding convergence, not a sync.
+   **§6.41 embedding incident (2026-07-14, NOT a sync — RESOLVED)**: avman's te3
+   channel 503'd, silently killing the vector half of every query. Embedding now
+   goes **direct to api.openai.com on an official key, no relay** (vectors
+   identical, cosine 1.0000 → zero re-embed). A GitHub Models stopgap in between
+   lasted two hours and was abandoned: its real ceiling is **150 req/day**, and
+   `gbrain embed` spends one request per page, so it can serve neither ingest nor
+   a backfill. See the ⚠️ bullet below for the standing rules this cost us, and
+   §6.41 for the full trail. Also found there: **9,241 pages (~34% of the brain,
+   incl. 100% of atoms) were never chunked** — cycle-born pages that
+   `embed --stale` structurally cannot see (upstream garrytan/gbrain#2163);
+   backfilled, with `com.jarvis.chunkless-backfill` (07:00) holding the line.
+   **§6.42 query-embed deadline (2026-07-14, same day, MITIGATED not fixed)**:
+   with embedding healthy at ~250ms, the vector arm *still* died — `expandQuery`
+   (LLM, **1.5–41s** via CRS) runs first inside the same 6s absolute deadline and
+   spends it, then the embed aborts in ~0ms → silent keyword-only → **empty
+   results for compound CJK**. `GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` is now in all
+   4 plists + `.env.local` and **must stay**. It only mitigates (4/6 → 1/6) and is
+   load-dependent — idle boxes pass at 6s too, so green queries prove nothing. The
+   2s `MIN_QUERY_EMBED_BUDGET_MS` floor that upstream added for exactly this case
+   is **dead code** (the shared `AbortSignal` has already fired); reported at
+   garrytan/gbrain#2028. See §6.42.
 3. Read [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) — current
    outstanding work (P0/P1/P2). Check here before suggesting "what should
    we do next?"
 
 ### Fork-specific rules (override upstream behavior)
 
-- **Embeddings: OpenAI `text-embedding-3-large` @ 1536d via the avman.ai
-  OpenAI-compatible relay** (§6.32 convergence, 2026-05-31). The whole
+- **⚠️ NO RELAY ON THE EMBEDDING PATH ANY MORE (§6.41, 2026-07-14).** avman's
+  te3 channel went 503 ("无可用渠道 / distributor") and embedding now goes
+  **direct to `api.openai.com` with an official OpenAI key** — `OPENAI_API_KEY`
+  set, **`OPENAI_BASE_URL` UNSET** across all four planes. Do not reintroduce
+  `OPENAI_BASE_URL`: the M3-era prohibition, un-retired. §6.32's "OPENAI_BASE_URL
+  is INTENTIONAL and REQUIRED" is **obsolete** — it described the avman relay.
+  Vector space unchanged (official te3 reproduces the stored vectors at cosine
+  **1.0000**, 6/6 → zero re-embed). Rate ceiling is now 3,000 req/min instead of
+  a relay's channel health. Three traps §6.41 paid for, keep them in mind:
+  - **The model label is NOT cosmetic.** `pages.embedding_signature` =
+    `<provider:model>:<dims>` drives staleness, so changing the model *string*
+    (even for the identical model) marks every stamped page stale — 21,701
+    chunks, a ~4.3M-token re-embed the nightly `dream` would have run. Any swap
+    must UPDATE the signature in the same breath.
+  - **Never `gbrain embed --all`** — engine chunk rows come back without
+    `embedded_at`, so it re-embeds all 61k chunks. Use `--slugs`.
+  - **Always pass `--source`, before `--slugs`** — slugs are NOT unique across
+    sources, so an unscoped embed silently no-ops on another source's copy.
+  Also from §6.41: `com.jarvis.chunkless-backfill` (daily 07:00) walks an
+  upstream bug — cycle-born pages are never chunked and `embed --stale` cannot
+  see chunkless pages (upstream garrytan/gbrain#2163).
+  The rest of this bullet is the §6.32 convergence, which still defines the
+  vector space — only the transport changed.
+- **Embeddings: OpenAI `text-embedding-3-large` @ 1536d** (§6.32 convergence,
+  2026-05-31; via the avman.ai relay until §6.41 went direct). The whole
   brain (38,056 chunks: `default` 6,940 + `mailagent-emails` 31,116) was
   re-embedded into ONE coherent vector space after the prior state was
   found incoherent: `~/.gbrain/config.json` said
@@ -205,18 +254,20 @@ working on this codebase, before touching anything else:
   global query model could never serve. Production env (4 plists + `.env.local`
   + `~/.gbrain/config.json` + DB-plane `config` table — ALL must agree) carries
   `GBRAIN_EMBEDDING_MODEL=openai:text-embedding-3-large`,
-  `GBRAIN_EMBEDDING_DIMENSIONS=1536`, `OPENAI_API_KEY` (the avman relay key) +
-  `OPENAI_BASE_URL=https://api.avman.ai/v1`. **`OPENAI_BASE_URL` is now
-  INTENTIONAL and REQUIRED** — it routes the native `openai` recipe's
-  `createOpenAI()` through the avman relay; the old M3 "never reintroduce
-  OPENAI_BASE_URL" prohibition is RETIRED (that warning was about the
-  retired gemini-embed-shim, not this deliberate convergence). Caveats baked
-  in: the `litellm` recipe is **unusable** for embedding here (upstream gbrain
-  bug — `diagnoseEmbedding` at `src/core/ai/gateway.ts:670` rejects it
-  unconditionally), so we use the native `openai` recipe + `OPENAI_BASE_URL`;
+  `GBRAIN_EMBEDDING_DIMENSIONS=1536`, and `OPENAI_API_KEY` — an **official
+  OpenAI key**, no `OPENAI_BASE_URL`, since §6.41. The §6.32-era text here said
+  `OPENAI_BASE_URL=https://api.avman.ai/v1` was "INTENTIONAL and REQUIRED" and
+  that the M3 no-base-URL rule was retired; both statements are **dead** —
+  that base URL now points at a channel avman no longer has. Caveat baked in:
   gbrain's embed path **mislabels** the per-chunk `model` column as the gateway
-  default, so after any re-embed run `UPDATE content_chunks SET
-  model='openai:text-embedding-3-large'` to fix the cosmetic label.
+  default (`zeroentropyai:zembed-1` — the default, never the configured model),
+  so after any re-embed run `UPDATE content_chunks SET
+  model='openai:text-embedding-3-large'` to fix the cosmetic label — the daily
+  `com.jarvis.embedding-label-normalize` cron does this, and refuses to run if
+  the config plane ever leaves te3, so it can't mask a real model change.
+  §6.32's "the `litellm` recipe is unusable (gateway.ts:670)" caveat is also
+  **RETIRED** — upstream #1292 replaced that guard (§6.41 ran production on
+  litellm for two hours), though nothing needs it now that the path is direct.
   `GOOGLE_GENERATIVE_AI_API_KEY` and any ZeroEntropy key are now **vestigial**
   for embedding (kept in env but unused). External writers (mailagent etc.) send
   content via MCP `put_page` (no client embedding possible — `PageInput` has no
@@ -230,9 +281,22 @@ working on this codebase, before touching anything else:
   match fine via body-fragment containment (see §6.25 for the
   2026-05-15 15-query probe). Operationally: always ensure vector
   search is live (`gbrain serve --http` on :7225 reachable via
-  `kos.chenge.ink`, `OPENAI_API_KEY` + `OPENAI_BASE_URL` (avman relay) env
-  set in plist — §6.32) before declaring queries broken — the modal operator query on this
-  brain is a compound CJK phrase that depends on it.
+  `kos.chenge.ink`, `OPENAI_API_KEY` set in plist and **no
+  `OPENAI_BASE_URL`** — §6.41) before declaring queries broken — the modal
+  operator query on this brain is a compound CJK phrase that depends on it.
+  **`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` must stay in all 4 plists +
+  `.env.local`** (§6.42): upstream's query-embed deadline is 6s *absolute
+  from search entry*, and `expandQuery` (an LLM call, measured **1.5–41s**
+  through CRS) spends it before the embed runs — the embed then aborts in
+  ~0ms and hybrid search silently degrades to keyword-only, which for
+  compound CJK means **empty results**. Losing this env var doesn't error;
+  it just makes Chinese queries fail under load. Caveats: it **mitigates,
+  not fixes** (4/6 → 1/6 on the measured distribution — a 41s expansion
+  still blows 30s), and it is **load-dependent**, so passing queries on an
+  idle box prove nothing. Real fix is upstream
+  ([#2028](https://github.com/garrytan/gbrain/issues/2028), `src/*` = fork
+  no-go): the `MIN_QUERY_EMBED_BUDGET_MS` 2s floor is defeated by the
+  already-fired shared `AbortSignal`.
 - **9 KOS page kinds coexist with GBrain's 20-dir MECE.** KOS `kind`
   frontmatter (source/entity/concept/project/decision/synthesis/comparison/
   protocol/timeline) is preserved on every page; it drives kos-jarvis
@@ -910,6 +974,7 @@ upstream sections above; KOS extensions are append-only by policy.
 | "corpus ingest", "bulk ingest pipeline", "一键入脑", "ingest a knowledge base" — one-command D→I→K→W pipeline for one isolated source (register→ingest→embed→enrich→graph→[entity-synth]→corpus-synth), idempotent/incremental, --from/--to-stage | `skills/kos-jarvis/corpus-ingest/SKILL.md` |
 | Ingest images from IMAGE_SOURCE_DIR via Voyage multimodal-3 (cross-modal v0.36.6.0); scaffolded — awaits VOYAGE_API_KEY + IMAGE_SOURCE_DIR | `skills/kos-jarvis/image-ingest/SKILL.md` |
 | "atom concepts backfill", "concepts backfill" — stamp `frontmatter.concepts` onto page-derived atoms (bridges the upstream extract_atoms → synthesize_concepts gap; idempotent, retires when the upstream fix lands) | `skills/kos-jarvis/atom-concepts-backfill/SKILL.md` |
+| "entity dedup", "deduplicate entities", "merge duplicate entities", "canonicalize entity" — merge WITHIN-SOURCE duplicate entity-variant pages (e.g. `people/lucien` + `people/lucien-chen`) into one canonical node: repoint links/facts/aliases + slug redirect + soft-delete alias. LLM sorts each cluster into merge/ambiguous/distinct (ambiguous quarantined, never merged); default `--dry`. Cross-source same-slug pages are NEVER touched (two-axis design; slug_aliases is source-scoped). | `skills/kos-jarvis/entity-dedup/SKILL.md` |
 
 These chain into upstream skills: digest-to-memory reads patrol output;
 enrich-sweep wraps upstream `skills/enrich/` in bulk mode; synthesis-sweep is
@@ -1254,6 +1319,24 @@ The whole loop is described in [`docs/architecture/topologies.md`](docs/architec
 
 **Job queue (Minions).** BullMQ-shaped, Postgres-native job queue. Durable subagents (LLM tool loops that survive crashes via two-phase pending→done persistence), shell jobs with audit, child jobs with cascading timeouts, rate leases for outbound providers, attachments via S3/Supabase storage. Replaces "spawn subagent as fire-and-forget Promise" with something that recovers from anything.
 
+**Non-English brains (FTS language config).** The Postgres full-text search tokenizer is configurable via `GBRAIN_FTS_LANGUAGE`. Defaults to `english`. Set it to any text-search configuration that exists in your Postgres instance:
+
+```bash
+export GBRAIN_FTS_LANGUAGE=portuguese     # uses built-in portuguese stemmer
+export GBRAIN_FTS_LANGUAGE=spanish        # built-in spanish stemmer
+export GBRAIN_FTS_LANGUAGE=pt_br          # custom config (e.g. unaccent + portuguese)
+```
+
+List available configs: `psql -c "SELECT cfgname FROM pg_ts_config"`. Both the **query side** (`websearch_to_tsquery`) and the **write side** (the trigger functions that populate `pages.search_vector` and `content_chunks.search_vector`) honor `GBRAIN_FTS_LANGUAGE`. On first install (or upgrade), the `configurable_fts_language` schema migration reads the env var and creates trigger functions in the configured language; subsequent inserts/updates tokenize using that setting. To change language on a brain that has already run the migration, use the dedicated CLI command:
+
+```bash
+export GBRAIN_FTS_LANGUAGE=portuguese
+gbrain reindex-search-vector --dry-run    # preview row counts
+gbrain reindex-search-vector --yes        # recreate triggers + backfill
+```
+
+The command is idempotent (re-running with the same language is a no-op for vector content) and uses the same recreate-and-backfill primitives as the migration. For accent-insensitive Portuguese (`pt_br`), see [docs/guides/multi-language-fts.md](docs/guides/multi-language-fts.md) for the `unaccent` + portuguese stemmer recipe.
+
 **43 curated skills.** Routing lives in [`skills/RESOLVER.md`](skills/RESOLVER.md). Covers signal capture, ingest (idea / media / meeting), enrichment, querying, brain ops, citation fixing, daily task management, cron scheduling, reports, voice, soul audit, skill creation, eval framework, and migrations. Skills are markdown files (tool-agnostic), packaged as a single skillpack the installer drops into your agent workspace.
 
 **Eval framework.** `gbrain eval longmemeval` runs the public [LongMemEval](https://huggingface.co/datasets/xiaowu0162/longmemeval) benchmark against your hybrid retrieval. `gbrain eval export` + `gbrain eval replay` capture real queries and replay them against code changes (set `GBRAIN_CONTRIBUTOR_MODE=1`). `gbrain eval cross-modal` cross-checks an output against the task using three different-provider frontier models. `gbrain eval retrieval-quality` runs NamedThingBench, which hard-gates the named-thing retrieval families (title-substring, alias-synonym, generic-to-named, multi-chunk-dilution) so a regression in "find the page this query names" fails CI loudly. Full methodology in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](docs/eval/SEARCH_MODE_METHODOLOGY.md).
@@ -1284,6 +1367,8 @@ Data flowing into the brain. Each integration is a recipe — markdown + setup h
 **Why the graph matters.** Vector search returns chunks that are semantically close. The graph returns chunks that are factually connected. Hybrid search pulls from both; auto-linking on every write keeps the graph fresh. Deep dive: [`docs/architecture/RETRIEVAL.md`](docs/architecture/RETRIEVAL.md).
 
 ## Troubleshooting
+
+**`gbrain init --pglite` crashes on macOS 26.x (Tahoe)?** PGLite's embedded WASM engine is incompatible with macOS 26.x on Apple Silicon. The fix is to use native Homebrew PostgreSQL + pgvector instead. Full step-by-step setup in [`docs/INSTALL.md` — Troubleshooting: PGLite crashes on macOS 26.x](docs/INSTALL.md#pglite-crashes-on-macos-26x-tahoe).
 
 **`gbrain import` fails with `expected N dimensions, not M`?** Run `gbrain doctor`. It will print the exact `gbrain config set ...` or `gbrain retrieval-upgrade` command to repair the mismatch. You should not need to delete `~/.gbrain`. Fresh `gbrain init --pglite` auto-detects your embedding provider from API keys in your environment: set `OPENAI_API_KEY` (or `ZEROENTROPY_API_KEY` / `VOYAGE_API_KEY`) before running init, or pass `--embedding-model <provider>:<model>` explicitly. With multiple keys set, init fires an interactive picker. In non-TTY contexts (CI, Docker) with no keys, init exits 1 with a paste-ready setup hint; pass `--no-embedding` to defer setup until runtime. See [`docs/integrations/embedding-providers.md`](docs/integrations/embedding-providers.md) for the full provider matrix and [`docs/operations/headless-install.md`](docs/operations/headless-install.md) for Docker/CI sequencing.
 
@@ -1594,6 +1679,51 @@ RRF fusion, multi-query expansion, and 4-layer dedup are engine-agnostic. They o
 **Hosting:** Supabase Pro ($25/mo). Zero-ops. Managed Postgres with pgvector built in.
 
 **Why not self-hosted for v0:** The brain should be infrastructure agents use, not something you maintain. Self-hosted Postgres with Docker is a welcome community PR, but v0 optimizes for zero ops.
+
+### Opt-in RLS source-scope binding (`GBRAIN_RLS_SCOPE_BINDING`)
+
+Defense-in-depth layer for Postgres deployments that want the database itself
+to enforce source isolation, in addition to the mandatory app-layer filters
+(`sourceScopeOpts` — layer 1, always on).
+
+**Mechanism.** With `GBRAIN_RLS_SCOPE_BINDING=1` (or `true`), the engine's
+source-scoped read methods wrap their queries in a transaction that first runs
+`SELECT set_config('app.scopes', $1, true)` — the value is a bound parameter
+(federated `sourceIds` CSV > scalar `sourceId` > `'*'` for unscoped internal
+reads), transaction-local (equivalent to `SET LOCAL`, which itself can't take
+bound params). An RLS policy can then filter rows by
+`current_setting('app.scopes', true)`.
+
+**Default off.** With the env var unset, reads call through on the shared pool
+exactly as before — no per-read transaction, no pool-slot hold (the search
+methods keep the transaction they always had for their `SET LOCAL
+statement_timeout`). Existing operators see zero behavior change.
+
+**Enabling it** (operator-managed SQL; gbrain ships no DDL for this):
+
+```sql
+ALTER TABLE pages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY pages_scope_filter ON pages
+  USING (current_setting('app.scopes', true) = '*'
+         OR source_id = ANY(string_to_array(current_setting('app.scopes', true), ',')));
+
+-- Required: connections that don't run through the scoped read helper
+-- (admin, autopilot, cycle, writes) must default to unscoped, or they
+-- see zero rows once the policy exists:
+ALTER ROLE <runtime-role> SET app.scopes = '*';
+
+-- If the runtime role OWNS the table, RLS is skipped for it unless forced:
+ALTER TABLE pages FORCE ROW LEVEL SECURITY;
+```
+
+Safe to enable in either order: the env var without a policy is a no-op
+setting; a policy without the env var is enforced only via the role default.
+
+**Honest caveat:** only read paths routed through the scoped helper carry a
+per-request scope binding — unwrapped paths (writes, admin/maintenance reads)
+run under the role default and are not backstopped per caller. This is layer 2;
+the app-layer source filters remain layer 1 and stay mandatory. Behavioral pins
+live in `test/postgres-engine-rls-scope.test.ts`.
 
 ## PGLiteEngine (v0.7, ships)
 
@@ -2266,6 +2396,16 @@ hashes match. If both a cron and `--watch` fire simultaneously, no conflict.
    or delete them, and fixing the file clears it on the next sync. A repository
    history rewrite still hard-blocks even with `--skip-failed`. Run
    `gbrain sync --skip-failed` to acknowledge a known-bad set yourself.
+
+5. **Import checkpoints name the import target, not the caller's CWD.**
+   Interrupted `gbrain import <dir>` runs may leave
+   `~/.gbrain/import-checkpoint.json` so the next import can resume. The
+   checkpoint `dir` is the absolute, resolved import target captured when
+   import starts. It is not a cleanup instruction and it must not be
+   re-derived from the process working directory. Checkpoints written by
+   gbrain include `schema_version: 1`, `owner: "gbrain"`, and
+   `kind: "import"` so downstream tools can validate the contract before
+   deciding whether to resume.
 
 ## How to Verify
 
@@ -3145,12 +3285,19 @@ to the HTTP server, so no migration is required.
 gbrain serve --http --port 3131
 ```
 
-On first start, the server prints an **admin bootstrap token** to stderr:
+On first start in an interactive terminal, the server prints an **admin
+bootstrap token** to stderr:
 
 ```
 Admin bootstrap token: 3a1f9c...
 Open http://localhost:3131/admin and paste it to log in.
 ```
+
+On a non-TTY start (systemd, Docker, any piped or captured logs) the generated
+token is hidden so it never lands in log storage. For headless deploys either
+set `GBRAIN_ADMIN_BOOTSTRAP_TOKEN` to a value you control before starting, or
+run `gbrain serve --http --print-admin-token` once on a trusted terminal to
+force printing.
 
 Save this token. Open `http://localhost:3131/admin` and paste it to access the
 dashboard. The dashboard shows live activity, registered clients, request logs,
