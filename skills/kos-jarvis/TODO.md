@@ -408,11 +408,11 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 ---
 
-## P1 — KB 可补差距盘点 + 综合 sweep 续跑 (2026-07-14, 等额度)
+## P1 — KB 可补差距盘点 + 综合 sweep 续跑 (2026-07-14, 2026-07-21 复测)
 
-### [ ] (P1) 综合 sweep 剩余 526 个 — 一句话启动
+### [ ] (P1) 综合 sweep 剩余 525 个 — 一句话启动 (2026-07-21 复测)
 
-下次有额度时,新 session 直接说 **「跑 synthesis-sweep 剩下的 526 个」**,或
+下次有额度时,新 session 直接说 **「跑 synthesis-sweep 剩下的 525 个」**,或
 直接执行 (checkpoint 幂等,已完成的永不重付):
 
 ```bash
@@ -444,19 +444,188 @@ nohup bun run skills/kos-jarvis/synthesis-sweep/run.ts \
 - 模型默认已于 2026-07-14 改为 `claude-sonnet-5` (`GBRAIN_SYNTHESIS_MODEL`
   可覆盖);`source_of_truth` 现跟随 MODEL → `brain-synthesis-sonnet`
   (旧 1,809 页仍为 `-opus`,可按标签直接对比两模型产出质量)。
+- **2026-07-21 复测: 待补 525**(6 new + 519 stale→refresh),与 7/14 的 526 只
+  差 1 → 这一周 sweep 一次没跑,checkpoint 最后写入停在 7/14 15:11。DB 侧
+  `source_of_truth` 分布: `-opus` 1,805 / `-sonnet` **1** — sonnet 默认改完后
+  基本没实跑过,两模型质量当时无样本可比。
+- ⚠️ **`--limit N` 不是"跑 N 条"**。它是 `selectTargets` 的 SQL `LIMIT`
+  (`run.ts:208`),先按 neighbors 降序取 top-N,**再**过滤 checkpoint → 实际
+  跑的条数远小于 N。实测 `--limit 100` 只得到 **41 条**(top-100 hub 里够
+  stale-delta 的只有 41 个)。想精确跑 100 条得把 `--limit` 开到 250 左右。
+- ⚠️ **checkpoint 按 slug 幂等,换模型重跑要手动摘行**。用 sonnet 跑过的 slug
+  记进 `all.jsonl` 后,再想用 opus 重跑同一批必须先删掉对应行,否则直接跳过。
+  (幂等本身很好用:2026-07-21 为了改预算/做迁移停启了 3 次 sweep,已完成的
+  7 + 41 条一条都没重付。)
 
-### [ ] (P2) 72 个真·空人物页
+#### 2026-07-21 执行记录 + 两处口径纠正
 
-按 slug 聚合 (2026-07-14 实测): **1,151 人 → 72 人所有副本都是存根/过薄**
-(`Auto-stub created` 或 <1500 字), 1,079 人至少一处有 dossier, **409 人跨源
-多份**。怀疑 `--min-neighbors 5` 把这 72 人挡在门外 (未验证 — 先跑
-`--min-neighbors 2 --plan` 看选中数再决定)。
+**首批 41 条(sonnet-5 @120k/conc3)**: 41/41 成功、0 失败、仅 1 次 RATE-LIMIT
++ 1 次空响应(退避 6s 重试成功 — SKILL 的 <400 字符不入账护栏生效)。
+4,590,451 in / 232,085 out。
 
-**纠正**: 2026-07-14 早先口头报的「真实缺口 = 17 页」**是错的**,真值 72。
-早先「存根都是跨源副本、人在 `default` 里是全的」的解释**也不成立** —
-两个方向都有 (`people/jie-wu`: dossier 在 `mailagent-emails`,`default` 是
-存根;`people/bill-wang` 反之)。真·分布: dossier 在 `mailagent-emails` 781
-个 / `default` 321 个。
+**sonnet-5 vs opus 产出对比**:
+
+| | n | 输出 tok 均值 | 中位 | 备注 |
+|---|---|---|---|---|
+| opus 存量(全部) | 1,887 | 2,392 | 2,236 | |
+| opus(仅 in>100k) | 431 | 2,942 | 2,802 | 同口径 |
+| **sonnet 本批** | 41 | **5,660** | 5,486 | 输入仅 112k |
+
+⚠️ **这不是纯模型对比**:opus 那批是 450k 预算时代跑的,输入普遍 47 万 tok,
+sonnet 本批只用 12 万。真正的读数是「**sonnet 用 1/4 输入产出 1.9 倍篇幅**」。
+质性抽查 `people/wesley-gan`:六段结构完整、逐条 `[来源ID]` 引用、洞见段是真
+跨 case 综合(把 Latigo 权限需求与 Cov VoIP 缺陷并置,提炼「前线时效 vs 架构
+可维护性」的重复张力),不是复述。**结论:继续用 sonnet**(质性样本 n=1,靠篇幅
+数据补强)。
+
+**🔴 口径纠正:「budget 450k→120k 省 3×」是错的,真值 1.7×**。上面那条
+2026-07-14 的记录说"省钱大头是 budget 450k→120k (3×)",**那是从当天 32 个
+全是 hub 的样本外推的**,不能套到整个 sweep。按 `--char-cap 4000` × 1.5 字/tok
+换算:**120k ≈ 45 个来源,450k ≈ 169 个**。对 550 个目标实测分布:
+
+| 邻居数 | 数量 | 加预算的效果 |
+|---|---|---|
+| ≤45 | **253 (46%)** | **零收益也零成本** — 本来就取不满 120k |
+| 46–169 | **278 (51%)** | **真收益**,450k 正好全覆盖 |
+| >169 | 19 (3%) | 仍截断,多拿 124 源 |
+
+总输入 52.4M → 91.1M tok(**1.7×**),$157 → $273;代价主要在**时间**
+(约 9h → 约 22h,只有 51% 的目标会变慢)。**Lucien 2026-07-21 决定放宽回
+450k**,已按 `--token-budget 450000 --concurrency 3` 重启跑 547 个。
+⚠️ `450k/conc 3` 是**未验证组合**(SKILL 只记录了 `450k/conc 4–6` 会 storm),
+起跑后已挂监控盯 rate-limit 风暴,若出现应先降 concurrency。
+
+### [x] (P0-bug) synthesis-sweep 的 checkpoint 是 source-盲的 — 已修 + 已迁移 2026-07-21
+
+**根因**: `loadDone`(`run.ts`)用裸 `r.slug` 做 Map key,`markDone` 写的记录里
+根本没有 `source_id` 字段。多源库里 slug **不唯一**,于是一个 slug 在任一源被
+合成后,其他源的同名页 `done.get(t.slug)` 命中 → 永远跳过,**再怎么重跑也够
+不着**。与 orphan-reducer 的 source-盲 writer、entity-dedup 的跨源同 slug 同族。
+
+**实证**: `people/ezreal-yang` checkpoint 记 in=474,412 / out=5,473,`default`
+源确有 opus dossier,而 `mailagent-emails` 源的同名页至今仍是 2026-06-01 的
+auto-stub 原文。
+
+**影响面量化(别被表面数字吓到)**: 945 个跨源多份 slug → 414 个"一份厚一份
+存根" → 385 个在 checkpoint 里(被压制)。但按存根副本**在自己源里的**邻居数
+拆开,397 个副本中:
+
+| 邻居数 | 数量 | |
+|---|---|---|
+| ≥15 | 39 | 该补 |
+| 5–14 | 31 | 该补 |
+| 3–4 | 16 | 边缘 |
+| **<2** | **311 (78%)** | **证据太少,本就不该合成** |
+
+→ **真正"本该有却被 bug 拦住"的只有 70 个**(mn5 门槛),约 $32。
+
+**修法**: `doneKey(source_id, slug)` 复合 key;查找 `done.get(doneKey(...)) ??
+done.get(slug)`,裸 slug 作为老行回退(不回退就要重付 1,841 条)。`markDone`
+补 `source_id`。改完 `--plan` 复验 484 不变 → 零行为回归。
+
+**迁移(一次性)**: 老行按 DB 反查归属 — 哪个源持有该 slug 的 sweep dossier 就
+补哪个 `source_id`。⚠️ **归属证据只能认 `brain-synthesis-<model>`(opus/sonnet/
+haiku/llm),绝不能用 `LIKE 'brain-synthesis%'`** — 裸标签 `brain-synthesis` 是
+**enrich-sweep 的 auto-stub**(全库 3,398 页)。第一版脚本就踩了这个,dry-run
+展开出 779 个错误行,会把大批从没合成过的存根标记为"已完成"→ **永久锁死,比
+原 bug 更糟**。收紧后降到 81。**教训: 这类迁移必须先 dry-run 看展开数**。
+- 迁移结果: 1,871 归属成功 / 81 多源展开 / 57 无法归属(保持裸 key,行为不变);
+  checkpoint 1,931 → 2,012 行,备份 `all.jsonl.bak-2026-07-21-1123`。
+- 验证: `--plan` 目标数 481 → **554**,解锁 **73**(预估 70,吻合)。构成从
+  「6 new / 478 stale」变为「170 new / 384 stale」— 那 91 个的迁移正说明它们的
+  checkpoint 记录归属到了别的源,本源这份被**正确重判为从没合成过**。
+
+### [ ] (P2) 薄实体页 — 真实缺口只有 18 个,原归因已证伪 (2026-07-21 重测)
+
+**原文 (2026-07-14) 的归因是错的**,2026-07-21 逐个比对证伪:
+
+- 原文写「**1,151 人 → 72 人所有副本都是存根/过薄**,怀疑 `--min-neighbors 5`
+  把这 72 人挡在门外」。实跑 `--plan --min-neighbors 2` 确实得到 **72 个 new** —
+  数字撞脸,但**不是同一批**。把这 72 个 slug 逐个比对:**projects 27 /
+  concepts 23 / companies 16 / people 仅 3**。`mn5` 从来没有挡住那批人物页。
+- **`Auto-stub created` 判据会误报**。它匹配的是 body 文本,而 dossier 会把
+  存根原文一起吃进去 → `people/zoe-wang` 6,672 字的完整 dossier 也被判「薄」。
+  改用**纯长度**(跨源取最长副本 <1500 字)重算才是真值。
+
+**重测真值 (2026-07-21, 纯长度口径)**: 薄实体页 **124 个** — people 63 +
+**companies 61**(原文只统计了 people,漏了整个 companies 桶)。拆开看:
+
+| 分类 | 数量 | 说明 |
+|---|---|---|
+| 已在 checkpoint,但页仍 <1500 字 | **78** | **不是失败**,是证据本来就少 |
+| 从未合成 | 46 | 其中 28 个 0 邻居 |
+| └ 0 邻居(sweep 结构上永远选不到) | 28 | 已验证 `links_extracted_at` 全非 NULL |
+| └ **真正跑一跑就能补上的** | **18** | 2–15 邻居,`mn2`/`mn5` 可选中 |
+
+- **那 78 个「合成过却仍薄」不用管**。抽样 6 个查 checkpoint + DB 对照:
+  `companies/backblaze` 7 来源 / out 410 tok、`companies/bosch` 4 来源 /
+  1,220 tok、`companies/ajax` 4 来源 / 1,090 tok — **全部写回成功**
+  (`source_of_truth: brain-synthesis-opus`,updated_at 2026-06-02),短是因为
+  4–15 个来源榨不出更多。`<1500 字` 这个判据在低证据实体上就是误报。
+- **那 28 个 0 邻居是真孤儿**,不是没抽边 — 已查 `links_extracted_at` 全部非
+  NULL,就是真没有 email/source 页提到它们。sweep 靠 by-mention 图选目标,
+  结构上够不着,要补得换路子(或接受)。
+- 跨源分布(2026-07-14 实测,仍成立): dossier 在 `mailagent-emails` 781 个 /
+  `default` 321 个;两个方向都有(`people/jie-wu` dossier 在 mailagent、default
+  是存根;`people/bill-wang` 反之)。早先「人在 `default` 里是全的」不成立。
+
+### [x] (P1-新) doctor 的 `sync_freshness` FAIL 是误报 — **不要跑 `gbrain sync`**（已处置 2026-07-21）
+
+2026-07-21 发现并处置。doctor 报 3 个源 "never synced" + `default` 64 天未 sync,并
+建议 `gbrain sync --all`。**照做会导入上万个文件,不是"补上同步"**:
+
+| 源 | DB 页数 | file-backed (`source_path` 非空) | `local_path` 目录里的 md |
+|---|---|---|---|
+| default | 11,597 | **132** | 16,708 |
+| mailagent-emails | 12,593 | **0** | 1,977 |
+| omada | 3,132 | **0** | 729 |
+| gbrain-docs | 147 | **0** | 0 |
+
+全库 27,469 页里**只有 132 页是文件导入的**,其余 27,337 页全部来自 MCP
+`put_page`(mailagent / omada-sentiment / feishu / Notion worker)。三个源的
+`local_path` 是建源时的配置遗留,那些目录**从未被导入过** → 它们根本不走 sync
+路径,"never synced" 是常态而非故障。
+
+- **删除风险可排除**: reconcile-delete 只作用于 `source_path IS NOT NULL` 的行
+  (`src/commands/sync.ts:3594`),这三个源是 0 行;另有 #2828 的 >50%
+  mass-delete 安全阀。**但导入方向没有任何安全阀。**
+- **覆盖风险实测(这才是真危险)**: `~/mailagent-emails` 的 1,986 个文件里
+  **1,982 个 slug 与 DB 撞名**,只有 4 个是新的。撞名的构成:1,560 个邮件页
+  (文件均 16,174 字节 vs DB 均 15,041 字,内容相当,无害) + **419 个 dossier
+  页**(其中 14 个是当天刚写的 sonnet 产出)。样例:`people/harvey-tian`
+  DB 30,726 字档案 ← 会被 564 字节存根覆盖;`people/jaydon-wu` 20,863 字 ←
+  1,765 字节。这些页是被**更新**掉的,不进删除统计,**mass-delete 安全阀根本
+  不触发**,命令会安静跑完并报成功。
+- 目录写入方已由 Lucien 澄清:**就是 mailagent 本身**,每收到一封「重要」等级
+  以上的邮件就同步写一份到 `~/mailagent-emails/`。即该目录是重要邮件的本地
+  副本(子集),DB 12,593 页是 MCP `put_page` 写的全量 — 两条独立路径,反向
+  sync 永远是拿子集覆盖全量。
+- **[x] 已处置 2026-07-21**: `UPDATE sources SET local_path=NULL WHERE id IN
+  ('mailagent-emails','omada','gbrain-docs')` (UPDATE 3)。原值备份在
+  `~/local_path-backup-2026-07-21.txt`。`default` **故意保留** `~/brain` —
+  它有 132 页真是文件导入的,属混合状态,需单独判断。
+- **这同时是 `gbrain dream` 的前置条件,不只是消 WARN**。`sync` 是
+  `ALL_PHASES` 的第 3 个 phase(`src/core/cycle.ts:104`),`gbrain dream` 不带
+  `--phase` 就会跑到它。`resolveBrainDir`(`src/commands/dream.ts:272`)的顺序是
+  显式 `--dir` → **该源自己的 `local_path`** → 否则 `null`;而
+  `~/.gbrain/config.json` 只有 5 个 key,**没有全局 brain 目录兜底**。所以
+  `local_path` 一清,`brainDir=null` → 文件系统 phase(lint/backlinks/sync/
+  synthesize/extract/patterns)全部以 `no_brain_dir` 跳过。**实测验证**:
+  `dream --source omada` 的日志直接从 `extract_facts` 开始,前 5 个 phase 连
+  `start` 都没打。
+- `default` 的 dream 仍会跑 sync 去扫 `~/brain` 的 16,708 个文件 — **在查清
+  那 132 页的来历之前不要跑 `dream --source default`**。
+
+### [x] (P2) doctor `links_extraction_lag 45%` 是标记陈旧,不是真缺边 — 2026-07-21
+
+`gbrain extract --stale` 25 秒扫完 12,368 页,结果
+`0 link(s) + 0 timeline entr(ies)` — **一条边都没新增**。那 45%(12,336 页)是
+`links_extracted_at` 时间戳过时,内容上边早就抽全了。全库真正"从未抽过边"的只有
+**482 页**(mailagent 437 / default 36 / omada 9)。
+
+⚠️ 附带推论:**跑它对 `orphan_ratio 62%` 毫无帮助**(原以为能顺带降孤儿,不成立)。
+降孤儿要用 `extract links --by-mention`,而按既有结论那个对 concept 类孤儿架构上
+无效 → **孤儿这条线目前没有便宜解法**,别再重复试这条路。
 
 ### [x] (P0-地雷) launchd 模板自 §6.32 起漂移 6 周 — 已修 2026-07-14
 

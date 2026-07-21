@@ -160,11 +160,29 @@ function checkpointPath(scope: string): string {
   return join(CACHE_DIR, `${sanitizeId(scope)}.jsonl`);
 }
 
-// Map slug → neighbor count recorded at synthesis time. Neighbors = the total
-// mentioning sources the entity had when its dossier was written. Prefer the
-// explicit `neighbors` field; fall back to sources+dropped for pre-refresh-stale
-// checkpoints (which always recorded both). Keep the MAX across re-syntheses so
-// the staleness baseline tracks the freshest dossier.
+// Checkpoint key. Slugs are NOT unique across sources (`people/ezreal-yang`
+// exists in both `default` and `mailagent-emails`), so a bare-slug key made one
+// source's dossier suppress every other source's copy forever — the copy stayed
+// an auto-stub and no amount of re-running could reach it. Key on the pair.
+function doneKey(sourceId: string, slug: string): string {
+  return `${sourceId}\t${slug}`;
+}
+
+// Map checkpoint key → neighbor count recorded at synthesis time. Neighbors =
+// the total mentioning sources the entity had when its dossier was written.
+// Prefer the explicit `neighbors` field; fall back to sources+dropped for
+// pre-refresh-stale checkpoints (which always recorded both). Keep the MAX
+// across re-syntheses so the staleness baseline tracks the freshest dossier.
+//
+// Legacy rows (written before `source_id` was recorded) key on the bare slug
+// and are looked up as a fallback — see the lookup in main(). That fallback
+// preserves the old cross-source suppression for those rows, but re-keying them
+// would re-pay ~1,841 dossiers. Migrate them by backfilling `source_id` from
+// the DB: whichever source holds a page tagged `brain-synthesis-<model>`
+// (opus/sonnet/haiku/llm — what renderPage writes) is where that dossier
+// landed. Do NOT match `brain-synthesis%`: the bare `brain-synthesis` tag is
+// enrich-sweep's auto-stub, and attributing those marks never-synthesized
+// stubs as done, locking them out permanently.
 function loadDone(path: string): Map<string, number> {
   const done = new Map<string, number>();
   if (!existsSync(path)) return done;
@@ -173,13 +191,14 @@ function loadDone(path: string): Map<string, number> {
     try {
       const r = JSON.parse(line);
       const n = typeof r.neighbors === "number" ? r.neighbors : (r.sources ?? 0) + (r.dropped ?? 0);
-      done.set(r.slug, Math.max(done.get(r.slug) ?? 0, n));
+      const key = typeof r.source_id === "string" ? doneKey(r.source_id, r.slug) : r.slug;
+      done.set(key, Math.max(done.get(key) ?? 0, n));
     } catch { /* skip */ }
   }
   return done;
 }
 
-function markDone(path: string, rec: { slug: string; neighbors: number; in_tokens: number; out_tokens: number; sources: number; dropped: number }): void {
+function markDone(path: string, rec: { slug: string; source_id: string; neighbors: number; in_tokens: number; out_tokens: number; sources: number; dropped: number }): void {
   appendFileSync(path, JSON.stringify(rec) + "\n");
 }
 
@@ -356,7 +375,8 @@ async function main() {
   type Tagged = { t: Target; status: "new" | "refresh" };
   let tagged: Tagged[] = selectTargets(f)
     .map((t): Tagged | null => {
-      const prev = done.get(t.slug);
+      // Exact (source, slug) first; bare slug is the legacy-row fallback.
+      const prev = done.get(doneKey(t.source_id, t.slug)) ?? done.get(t.slug);
       if (prev === undefined) return { t, status: "new" };
       if (f.refreshStale && t.neighbors - prev >= f.staleDelta) return { t, status: "refresh" };
       return null; // done + fresh enough → skip
@@ -392,7 +412,7 @@ async function main() {
       const w = writePage(t.slug, renderPage(t, s.text, g, MODEL), t.source_id);
       if (!w.ok) { summary.failed++; console.log(`[B] ${n}/${total} ${t.slug.slice(0, 40).padEnd(40)} ✗ write: ${w.msg}`); return; }
       summary.synthesized++; summary.in_tokens += s.in; summary.out_tokens += s.out; summary.dropped_sources += g.dropped;
-      markDone(ckptPath, { slug: t.slug, neighbors: t.neighbors, in_tokens: s.in, out_tokens: s.out, sources: g.included, dropped: g.dropped });
+      markDone(ckptPath, { slug: t.slug, source_id: t.source_id, neighbors: t.neighbors, in_tokens: s.in, out_tokens: s.out, sources: g.included, dropped: g.dropped });
       console.log(`[B] ${n}/${total} ${t.slug.slice(0, 40).padEnd(40)} ✓ ${s.in}→${s.out} tok (${g.included}/${g.total} src${g.dropped ? `, drop ${g.dropped}` : ""})`);
     } catch (e: any) {
       const msg = e?.message ?? String(e);
