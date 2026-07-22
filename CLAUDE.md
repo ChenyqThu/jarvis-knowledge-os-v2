@@ -317,3 +317,7 @@ Manual PR creation skips all of these.
   [`docs/KOS-JARVIS-CONSOLIDATION-PLAN.md`](docs/KOS-JARVIS-CONSOLIDATION-PLAN.md)
 - Skill routing table (upstream + fork):
   [`skills/RESOLVER.md`](skills/RESOLVER.md)
+- KOS Knowledge Dashboard (F1–F7, live 公网 `kosadmin.chenge.ink`, launchd
+  `com.jarvis.kos-dashboard` on :7226, RO role + MCP-only writes):
+  [`server/kos-dashboard/`](server/kos-dashboard/) — delivery + 残余 in
+  [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) "KOS Knowledge Dashboard" 段

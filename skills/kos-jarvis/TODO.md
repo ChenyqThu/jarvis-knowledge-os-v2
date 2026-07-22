@@ -408,6 +408,40 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 ---
 
+## KOS Knowledge Dashboard — DELIVERED + LIVE (2026-07-22)
+
+Fork-local web 看板(`server/kos-dashboard/`,Bun+Hono :7226,只读 role `kos_dashboard_ro`
+SELECT-only+BYPASSRLS)全量交付 F1–F7 并公网上线。Trellis `07-21-kos-dashboard`(+ m1/m2/m3/m4)。
+写路径只走 MCP put_page / gbrain CLI,绝不直写 compiled_truth。
+
+- **F1–F4 + F6**(M1/M2,commit `674901d9`):概览/分布/趋势/健康四页 + JSON API,shadcn/ECharts,
+  source 全局切换,brain_score 五分项与 doctor 一致,PT 日界。
+- **F5 编辑纠偏**(M3,`674901d9`):MCP put_page 写回 + 版本/回滚(put_page-replay 走全链路,非裸
+  revert_version)+ 围栏/非 default/非 markdown 三重服务端锁 + 乐观并发。codex 8 轮收敛。
+  残余:非 CAS put_page 亚秒 TOCTOU(上游)。
+- **F7 操作面板**(第二波,commit `8019a323`):白名单运维(doctor / enrich-sweep-dry / label-normalize /
+  kos-patrol / chunkless-backfill / embed 选中页)。shell-less 数组式 spawn + 单飞 + detached 进程组 kill
+  + 文件审计(RO 库不能写) + embed 校验(拒 flag 型 slug、非合格集排除、上限 100、修订漂移检测)+
+  跨进程嵌入写锁(与 chunkless-backfill.sh 同路径)。公网加固:非放大限速(即时 401/429)、
+  `OPENAI_BASE_URL` 存在即 fail-fast、X-Frame-Options/CSP、bodyLimit、DB statement_timeout。
+  **codex gpt-5.6-sol xhigh 4 轮独立收敛,fork 可修全修。** 同批硬化了两个 cron 脚本
+  (`jarvis-chunkless-backfill.sh`/`jarvis-embedding-label-normalize.sh`:unset OPENAI_BASE_URL、
+  排除 flag/归档、锁、失败传播到退出码)。
+- **M4 公网**:`kosadmin.chenge.ink → :7226`(Lucien 在 CF Zero Trust / Irvine-MacMini tunnel 建;
+  本机 jarvis-office tunnel 凭证丢失已死,tunnel 拓扑见 memory `m4-cloudflared-tunnel-topology`)。
+  launchd `keepalive|runatload`,kill-pid 崩溃自恢复实测通过。**公网 + 仅静态 token(Lucien 明确选)**:
+  64 字符 token 是写脑/花钱面的唯一口令,务必保密;可后续在该 hostname 叠 Cloudflare Access 做二因子。
+  遗留:CF 面板删我早前 `cloudflared route dns` 建的 `kos-dash.chenge.ink → 091f59a8` 死 CNAME(现 530,CLI 删不掉)。
+
+**待报上游 issue(2 个,均 `src/*` fork 禁区 + 生产 chunkless-backfill cron 早已同样暴露)**:
+1. `gbrain embed` / `put_page` 无 expected-content-hash 修订守卫 → 并发改写同页可短暂 desync 搜索索引
+   (F7 已做**检测**、非预防;codex pass-4 指出)。
+2. 完全嵌入写串行化需 DB advisory lock(FS mkdir 锁只是 best-effort;codex pass-3)。
+两者的有界性论证见 `server/kos-dashboard/src/ops/lock.ts` 注释:总花费被单飞+有限且递减的合格集+100 上限
+独立封死,非无界/不可攻击放大,与 F5 的上游-CAS TOCTOU 同类可接受。
+
+---
+
 ## P1 — KB 可补差距盘点 + 综合 sweep 续跑 (2026-07-14, 2026-07-21 复测)
 
 ### [ ] (P1) 综合 sweep 剩余 525 个 — 一句话启动 (2026-07-21 复测)
