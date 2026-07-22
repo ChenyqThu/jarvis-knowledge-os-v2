@@ -1,6 +1,45 @@
-# kos-jarvis — Outstanding Work (post v0.42.63.0 sync, 2026-07-21)
+# kos-jarvis — Outstanding Work (post v0.42.64.0 sync, 2026-07-22)
 
-> **Sync 2026-07-21** (§6.43, v0.42.59.0 → v0.42.63.0, **106 commits** across 4
+> **Sync 2026-07-22** (§6.44, v0.42.63.0 → v0.42.64.0, **20 commits**, 74 files,
+> +2,503/−228): small single-release batch, **zero migrations** (schema stays
+> v124), **one modify/delete conflict** — `.github/workflows/test.yml`, which the
+> fork deleted in `1adab13b` and upstream touched in #3231; resolved by keeping
+> the deletion. Note the `/sync-upstream` auto-gathered delta reported **no new
+> commits** while there were 20 — always confirm with
+> `git log --oneline HEAD..upstream/master`. Fork territory zero-invasion; **all
+> 6 fork src/ patches survived byte-for-byte** (the pre/post
+> `git diff upstream/master -- src/` stat is *identical* — 6 files / +243/−27 —
+> a cheaper survival check than eyeballing each file). Two verified by hand:
+> `gateway.ts`'s embed-retry block is still nested inside upstream's
+> `__embedInputTypeStore` context (§6.35 composition intact two batches running),
+> and **`link-extraction.ts`'s plural-`sources` DIR_PATTERN patch is NOT
+> superseded by upstream #2866** — #2866 only fixes the *generic* wikilink pass
+> and is gated behind `link_resolution.global_basename`, while the fork patch
+> makes `sources/` a *qualified* resolution covering markdown links too,
+> unconditionally. **Do not delete it just because upstream touched the file.**
+> `docs/CLAUDE-UPSTREAM.md` needed no refresh (upstream's CLAUDE.md unchanged in
+> range; regen differed only in the 5 intended privacy scrubs). Green: typecheck
+> 0, `check:all` 22/22, `bun test test/ai/` **405 pass / 0 fail** (was 393).
+> Production **27,553 pages / 71,337 chunks / 0 NULL**, byte-identical across the
+> deploy; both /health → **0.42.64.0**; `brain_score` **84/100** (+3), **FAILs
+> 3 → 1** (only `cycle_freshness`). **`orphan_ratio` is now 25% and OK — that is
+> the fork's own orphan-reduction pass (`7cc00641`, 62% → 25%), NOT upstream
+> #3015**; #3015's shared exclusion policy barely moved the denominator
+> (20,722 → 20,700). The daemon again did **not** self-relaunch after
+> `bun run build` overwrote its binary — explicit bootout+bootstrap required,
+> now four batches running, treat as a constant. **#1410 smoke (this batch's one
+> externally-visible win)**: `/mcp` 401 now carries
+> `resource_metadata="https://kos.chenge.ink/.well-known/oauth-protected-resource"`
+> — correct *public* issuer through cloudflared, not `127.0.0.1:7225` — and
+> existing clients are unbroken (`lucien-cli` client_credentials → token →
+> `tools/list` OK; 7/7 clients consistent). **Still open, this batch closed none
+> of them**: §6.39's multi-statement-DDL P0 (zero migrations ⇒ *no evidence
+> either way*, not "fine"), #2028 (`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000`
+> re-verified in all 4 plists + `.env.local`, all 4 also confirmed free of
+> `OPENAI_BASE_URL`), and the chunkless backstop cron (**still exactly 100**
+> chunkless live pages, level with §6.43). See §6.44. Two new items below.
+>
+> **Previous — Sync 2026-07-21** (§6.43, v0.42.59.0 → v0.42.63.0, **106 commits** across 4
 > releases, 443 files): **the largest batch to date, yet zero-conflict merge +
 > clean migration**. `merge-tree` flagged 8 "changed in both" files including 3
 > rewrite-scale hits on fork src patches (`gateway.ts` +378/−186,
@@ -405,6 +444,42 @@ pending), brain_score 80/100。doctor status: warnings (resolver_health 51 issue
 全是 ~/.openclaw/workspace AGENTS.md 跨 boundary 引用,不是 fork 责任)。生产
 Postgres 17 + pgvector 0.8.2 已升到 schema v45 (35 tables 全 RLS,新增 facts +
 oauth_*),WAL fork patch retained for brain-db.ts。
+
+---
+
+## P1 — 评估接入上游 `gbrain maintain` + `orphan-policy` (#3015, added 2026-07-22, §6.44)
+
+v0.42.64.0 带进来 `gbrain maintain [--safe|--dry-run|--json]`
+(`src/commands/maintain.ts`)和共享排除策略 `src/core/orphan-policy.ts`。本次 sync
+**有意未接入**(保持 sync 纯粹,不混 feature)。两个具体可用点:
+
+1. **`maintain --safe` 的 stale link/timeline 抽取** 正好压住本批 doctor 新报的
+   `links_extraction_lag` WARN(10,540/27,546 页 = 38% 有未抽取的边)。先跑
+   `--dry-run --json` 看它到底会动什么,再决定要不要挂 cron 或接进看板 F7 的白名单
+   运维动作。
+2. **`orphans.exclude_prefixes` / `orphans.exclude_slugs` 两个 per-brain config 键**
+   —— 比继续刷 orphan-reducer 更治本:把 fork 特有的"本就不该有入链"的页
+   (`sources/email/*` 的一部分等)正式从孤儿口径剔除,而不是靠造链把比例压下去。
+   注意 orphan-reducer 的两个已知 bug(source-盲 writer / SDK base-URL 双拼)仍在,
+   规模化用它之前要先修。
+
+**注意别记错功劳**:当前 `orphan_ratio` 25% 是 fork 自己那轮去孤儿(`7cc00641`,
+62% → 25%)的结果,不是 #3015 —— #3015 的默认排除对分母几乎没动(20,722 → 20,700)。
+
+## P2 — 上游检索 top-1 依赖 `--limit` 且非单调(added 2026-07-22, §6.44)
+
+同一 query 只改 `--limit`,头名整个换掉,且**更大的 limit 捞出更高分的文档**:
+`知识管理` 在 limit=1/3/5 分别得 0.8391 / 0.8996 / **0.9200**,三个不同头名。
+top-1 本应是全局 argmax、与 k 无关 —— 现象指向候选池随 `limit` 缩放,小 limit
+饿死召回并**漏掉真正最相关的页**。
+
+**已确认是上游既存行为,非 v0.42.64.0 引入**:从 `master` 拉 worktree 编出
+0.42.63.0 二进制,与新二进制打同一生产库 A/B,三个 limit 上逐条同分同头名。
+
+待办:构造最小复现(小库 + 固定语料)后报上游。`src/*` 是 fork no-go,我们不自己修。
+
+**顺带立个规矩**:以后 sync 的 CJK smoke 至少跑 `limit ∈ {1, 5}` —— 只跑单一 limit
+既看不见这个缺陷,也无法证明本批对检索无影响。
 
 ---
 
