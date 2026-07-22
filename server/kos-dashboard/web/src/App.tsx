@@ -6,6 +6,7 @@ import { Overview } from './pages/Overview';
 import { Distribution } from './pages/Distribution';
 import { Trends } from './pages/Trends';
 import { Health } from './pages/Health';
+import { Ops } from './pages/Ops';
 import { Skeleton } from '@/components/ui/skeleton';
 import { DashboardContext, type DashboardContextValue } from './dashboard-context';
 
@@ -163,6 +164,7 @@ export function App() {
               <Editor />
             </Suspense>
           )}
+          {tab === 'ops' && <Ops />}
         </main>
       </div>
     </DashboardContext.Provider>

@@ -220,3 +220,55 @@ export interface PageRevertResponse {
   result: PutPageResult;
   page: { content: string; content_hash: string | null; updated_at: string; title: string; type: string; kind: string };
 }
+
+// ---- Ops panel (F7) ----
+// Mirrors server/kos-dashboard/src/routes/ops.ts. Every action is a fixed
+// server-side command template; the client only ever picks an action id (and,
+// for embed-selected, a source + a subset of the live chunkless list).
+
+/** read = no writes/spend; write = mutates the brain but no LLM/embed spend;
+ * spend = real OpenAI/LLM cost. Drives the UI badge + confirm level. */
+export type OpsDanger = 'read' | 'write' | 'spend';
+
+export interface OpsAction {
+  id: string;
+  label: string;
+  desc: string;
+  danger: OpsDanger;
+  /** Require a destructive-confirm dialog before running. */
+  confirm: boolean;
+  /** embed-selected needs a source + slugs; the rest are parameterless. */
+  needs_params: boolean;
+}
+
+export interface OpsJob {
+  id: string;
+  action: string;
+  params: Record<string, unknown> | null;
+  status: 'running' | 'done' | 'error';
+  started_at: string;
+  ended_at: string | null;
+  exit_code: number | null;
+  timed_out: boolean;
+}
+
+export interface OpsActionsResponse {
+  actions: OpsAction[];
+  /** The single in-flight job, if any (ops are single-flight). */
+  running: OpsJob | null;
+}
+
+export interface OpsJobsResponse {
+  jobs: OpsJob[];
+}
+
+export interface OpsJobDetail {
+  job: OpsJob;
+  /** Tail of the job's combined stdout+stderr log. */
+  log: string;
+}
+
+export interface OpsRunResponse {
+  ok: true;
+  job: OpsJob;
+}

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { serveStatic } from 'hono/bun';
+import { secureHeaders } from 'hono/secure-headers';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { bearerAuth } from './auth.ts';
@@ -9,8 +10,35 @@ import { kindsRoute } from './routes/kinds.ts';
 import { trendsRoute } from './routes/trends.ts';
 import { healthRoute } from './routes/health.ts';
 import { pagesRoute } from './routes/pages.ts';
+import { opsRoute } from './routes/ops.ts';
+
+// §6.41 structural guard (codex): the F7 embed actions spawn `bin/gbrain`, which
+// reloads .env.local itself — so stripping OPENAI_BASE_URL from the child env is
+// not enough if the variable is present in .env.local. The dashboard ALSO loads
+// .env.local (Bun auto-load from the repo-root WorkingDirectory), so refusing to
+// start when OPENAI_BASE_URL is set ties "the dashboard runs" to "the embed path
+// is direct to api.openai.com". Fail closed rather than silently reroute embeds.
+if (process.env.OPENAI_BASE_URL) {
+  console.error(
+    'FATAL: OPENAI_BASE_URL is set. The embedding path must go direct to api.openai.com (§6.41). Unset it in .env.local. Refusing to start.',
+  );
+  process.exit(1);
+}
 
 const app = new Hono();
+
+// Anti-clickjacking (codex, M4 public-exposure prep): the token lives in
+// localStorage, so a framed overlay could trick an already-authenticated owner
+// into launching a spending job. Forbid framing outright. `frame-ancestors`
+// is the only CSP directive set, so it constrains framing without touching the
+// SPA's own script/style loading.
+app.use(
+  '*',
+  secureHeaders({
+    xFrameOptions: 'DENY',
+    contentSecurityPolicy: { frameAncestors: ["'none'"] },
+  }),
+);
 
 // Unauthenticated liveness probe. Deliberately has no DB dependency — a
 // process-alive check, not a DB-alive check.
@@ -24,6 +52,7 @@ api.route('/', kindsRoute);
 api.route('/', trendsRoute);
 api.route('/', healthRoute);
 api.route('/', pagesRoute);
+api.route('/', opsRoute);
 app.route('/api/v1', api);
 
 // Depth-in-defense: any unhandled error (e.g. a DB query throwing) falls

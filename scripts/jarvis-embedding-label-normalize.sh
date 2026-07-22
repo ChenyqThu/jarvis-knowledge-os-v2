@@ -24,19 +24,32 @@ DRY=0; [ "${1:-}" = "--dry" ] && DRY=1
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # Guard: confirm the brain is still on the canonical te3 model (DB config plane).
-cfg=$(psql "$DB" -At -c "SELECT value FROM config WHERE key='embedding_model'" 2>/dev/null)
+# A FAILED query (psql nonzero) must be an error, not a benign SKIP — otherwise a
+# DB outage silently reports success (codex). An empty result with psql exit 0
+# (key genuinely absent) is still a legitimate SKIP.
+cfg=$(psql "$DB" -At -c "SELECT value FROM config WHERE key='embedding_model'") \
+  || { echo "$(ts) ERROR: embedding_model config query failed"; exit 1; }
 if [ "$cfg" != "$CANON" ]; then
   echo "$(ts) SKIP: embedding_model='$cfg' != '$CANON' — refusing to relabel (would mask a real model change)"
   exit 0
 fi
 
-n=$(psql "$DB" -At -c "SELECT count(*) FROM content_chunks WHERE model='$STALE_LABEL' AND embedding IS NOT NULL" 2>/dev/null)
-n=${n:-0}
+# A failed count query must be an error, not "0 mislabeled → nothing to do"
+# (codex): validate psql's exit status and that the result is numeric.
+n=$(psql "$DB" -At -c "SELECT count(*) FROM content_chunks WHERE model='$STALE_LABEL' AND embedding IS NOT NULL") \
+  || { echo "$(ts) ERROR: mislabel count query failed"; exit 1; }
+case "${n:-}" in ''|*[!0-9]*) echo "$(ts) ERROR: bad count '${n:-}'"; exit 1;; esac
 if [ "$n" -eq 0 ]; then echo "$(ts) ok: 0 mislabeled chunks, nothing to do"; exit 0; fi
 
 if [ "$DRY" = 1 ]; then
   echo "$(ts) [dry] would relabel $n chunks '$STALE_LABEL' -> '$CANON'"
   exit 0
 fi
-psql "$DB" -c "UPDATE content_chunks SET model='$CANON' WHERE model='$STALE_LABEL'" >/dev/null 2>&1
-echo "$(ts) relabeled $n chunks '$STALE_LABEL' -> '$CANON'"
+if psql "$DB" -c "UPDATE content_chunks SET model='$CANON' WHERE model='$STALE_LABEL'" >/dev/null 2>&1; then
+  echo "$(ts) relabeled $n chunks '$STALE_LABEL' -> '$CANON'"
+else
+  # Don't echo success after a failed UPDATE (codex HIGH: the script had no
+  # `set -e`, so a failed relabel was still reported as done).
+  echo "$(ts) ERROR: relabel UPDATE failed"
+  exit 1
+fi

@@ -13,4 +13,9 @@ const DATABASE_URL =
 export const sql = postgres(DATABASE_URL, {
   max: 5,
   idle_timeout: 30,
+  // Bound every query. Without this, a stalled statement (e.g. the F7
+  // embed-selected post-run verify) would hang forever and wedge the ops
+  // single-flight lock (codex). 30s is far above any real dashboard query.
+  connect_timeout: 10,
+  connection: { statement_timeout: 30_000 },
 });

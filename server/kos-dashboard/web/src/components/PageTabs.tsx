@@ -1,6 +1,6 @@
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-export type TabId = 'overview' | 'distribution' | 'trends' | 'health' | 'editor';
+export type TabId = 'overview' | 'distribution' | 'trends' | 'health' | 'editor' | 'ops';
 
 export const TAB_IDS: readonly TabId[] = [
   'overview',
@@ -8,6 +8,7 @@ export const TAB_IDS: readonly TabId[] = [
   'trends',
   'health',
   'editor',
+  'ops',
 ];
 
 const TAB_LABELS: Record<TabId, string> = {
@@ -16,6 +17,7 @@ const TAB_LABELS: Record<TabId, string> = {
   trends: '趋势',
   health: '健康',
   editor: '编辑',
+  ops: '操作',
 };
 
 interface PageTabsProps {
