@@ -657,17 +657,39 @@ haiku/llm),绝不能用 `LIKE 'brain-synthesis%'`** — 裸标签 `brain-synthes
   - 邮件入链 0 → 7,015 / 9,078。
   - `orphan_ratio` **63% WARN → 29% OK**;`graph_signals_coverage` 28.6% → 53.6%
     ("多数查询都触发",对检索质量是实打实提升);doctor 总分 60 → 65。
-  - ⚠️ `brain_score` 的 orphans 分项仍 10/15 没动 —— 阈值或需 default 源也跑完才反映,待查。
-- **未吃满的收益(排队)**:
-  - [ ] **重编译 `bin/gbrain`**(`bun build --compile --outfile bin/gbrain src/cli.ts`)
-    —— 否则 launchd cron 跑的旧二进制仍用旧正则,补丁不在生产生效。
-  - [ ] 批量把 599 份 **sonnet** dossier 的 `[纯数字]` 引用改写成
-    `[[sources/email/数字]]`(sonnet 用纯数字,不被 bare-slug pass 认;opus 用完整
-    slug 已自动建边)。`get→改正文→put` round-trip 已在 `people/wesley-gan` 验证
-    可行(建成 21 条真边)。改写脚本 `scratchpad/pilot-wikilink.ts`,解析规则
-    55.2% 引用可解析(`scratchpad/probe-citations2.ts`)。
-  - [ ] 对 **default** 源也跑一次 `extract links --source db --source-id default`
-    (opus dossier 引用的 `sources/notion/*` 应能再捞一批)。
+  - ⚠️ `brain_score` 的 orphans 分项仍 10/15 没动 —— orphan_ratio 25% 仍没够
+    满分阈值线(评分曲线比 doctor 的 OK 门槛严),但 orphan_ratio/graph_signals
+    才是检索质量的实指标。
+- **后续收益(2026-07-21 当天全部吃满)**:
+  - [x] **重编译 + 上线 `bin/gbrain`** —— 编译到临时文件→验证(default 源建的
+    1,105 条边全指向 sources/,证明新正则在内)→原子 `mv` 覆盖(备份
+    `bin/gbrain.bak-preSourcesPatch-2026-07-21`)→`launchctl kickstart -k
+    com.jarvis.gbrain-serve-http` 重启守护进程(新 PID,`kos.chenge.ink/health` ok)。
+    cron 下次自动用新二进制;serve 守护进程重启后 put_page 内联建 sources 边。
+  - [x] **default 源 DB extract** —— 顺带完成,1,105 条 sources/ 边。
+  - [x] **批量改写全部 dossier 的引用 → wikilink** —— 范围远超预期的"599 份":
+    实际 `bin/gbrain put` 改写 **1,374 份**(含[[sources/),转换 **57,077 条**引用,
+    **0 失败**。脚本 `scratchpad/batch-rewrite.ts`。**踩了 3 个坑,全在 dry-run 拦住**:
+    (a) `extract` 默认走 FS 路径,必须显式 `--source db` 才读 DB 的 compiled_truth;
+    (b) `bin/gbrain` 是编译二进制,改 src 后不重编译不生效,验证期用 `bun run src/cli.ts`;
+    (c) 引用格式是 `["来源1000004744"]`(带引号+中文前缀+裸数字/缺前缀/完整 slug 混杂),
+    resolve 先漏剥引号,又发现**前缀白名单的英文 `source` 会吃掉 `sources/email/` 的开头**
+    → 中文前缀可贴着剥、英文前缀改成必须后跟 `:` 才剥。保留的 19,494 个方括号是
+    notion 页的裸尾引用(缺 `sources/notion/` 前缀)+散文,本轮不碰。
+  - **建边靠 put 内联**: 新二进制的 `put` 内联 auto-link 就地解析了 `[[sources/email/x]]`,
+    改写完邮件孤儿已从 2,063 → 1,362,事后 `extract links --source db` 两个源都建 0 条
+    新边(边已存在,`ON CONFLICT DO NOTHING`)。
+
+  **最终成果(整轮 orphan pass, 2026-07-21)**:
+  | 指标 | 会话初 | 现在 |
+  |---|---|---|
+  | orphan_ratio | 62% WARN | **25% OK** |
+  | graph_signals_coverage | 28.6%(偶尔) | **56.5%(多数查询触发)** |
+  | 邮件孤儿 | 9,078 | **1,362** |
+  | doctor 总分 | 5/100 | **65/100** |
+
+  剩余(可选,非本轮): notion 裸尾引用(缺 `sources/notion/` 前缀,19,494 个方括号)
+  的归一化 —— 属另一类、有 slug 尾巴碰撞风险,值得单独谨慎做。
 
 ### [x] (P0-地雷) launchd 模板自 §6.32 起漂移 6 周 — 已修 2026-07-14
 
