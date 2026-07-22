@@ -165,23 +165,32 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.40 v0.42.59.0
-   upstream sync (2026-07-13, 7 commits / v0.42.57.0 → v0.42.59.0 / 42 files;
-   **zero-conflict merge + no-op deploy**. v0.42.58.0 provider-agnostic gateway
-   (#1249/#1250/#1292/#2271 — empty-env clobber, native baseURL /v1 normalize,
-   dims-presence guard, trust_custom_dims) + v0.42.59.0 five community fixes
-   (#2724 pre-v121 replay / #2677 migrate preserve-sources / #2726 facts
-   pipe-escape / #2723 entity-ambiguity quarantine / #2200 think source-scope).
-   Schema ZERO new migrations (stays v122) → migrate-only clean no-op, §6.39's
-   multi-statement-DDL bug NOT triggered. **§6.32 re-verified**: upstream's new
-   `resolveNativeBaseUrl` idempotent for our `…/v1` avman URL (no /v1/v1); doctor
-   embedding_provider ✓ real 1536d. **The §6.32 "litellm recipe unusable
-   (gateway.ts:670)" caveat is now OUTDATED** — upstream #1292 replaced that
-   guard; we still use the native openai recipe. Fork territory zero-invasion,
-   5 fork src/ patches survived (gateway.ts embed-retry block disjoint from
-   upstream's +77). Prod 27,115 pages / 60,523 chunks / 0 NULL / te3@1536;
-   brain_score 80/100 (+2); both /health → 0.42.59.0)**.
-   Previous: §6.39 v0.42.57.0 sync (2026-07-07, 3 commits, schema v119→v122
+   operates ↔ OpenClaw executes). Latest sync story: **§6.43 v0.42.63.0
+   upstream sync (2026-07-21, **106 commits** / v0.42.59.0 → v0.42.63.0 / 443
+   files — largest batch to date, yet **zero-conflict merge**. `merge-tree`
+   flagged 8 "changed in both" files incl. 3 rewrite-scale hits on fork src
+   patches (gateway.ts +378/−186, pglite-engine.ts +203/−38, extract-atoms.ts
+   +112/−82); all auto-resolved by the recursive virtual base — **`changed in
+   both` is a verify-list, NOT a conflict forecast**. Schema **v122 → v124, two
+   migrations applied** (v123 configurable FTS language, no backfill at our
+   `english` default; v124 drops compiled_truth from pages.search_vector, #2704
+   tsvector 1MB overflow). **§6.39's multi-statement-DDL P0 still did not
+   trigger — this time genuinely verified**: both migrations are `sql: ''` +
+   handler with per-statement executeRaw, structurally unable to reach the
+   `conn.unsafe` batch path. **P0 stays OPEN and unproven** — needs a
+   multi-statement `sql:` migration to settle. Fork territory zero-invasion,
+   5 fork src/ patches survived (gateway.ts embed-retry block stayed *inside*
+   upstream's `__embedInputTypeStore` context — §6.35 composition intact).
+   Prod 27,469 pages / 71,415 chunks / 0 NULL / te3@1536 (6 cosmetic mislabels,
+   was 48); brain_score 81/100 (+1), FAILs 3→2 as orphan_ratio fell 92%→62%;
+   doctor embedding_provider ✓ **724ms — 16× faster than §6.40's 11,848ms via
+   the avman relay**, quantifying §6.41's direct-connect win; both /health →
+   0.42.63.0; CJK modal query 3/3 stable with scores up 2–3× (upstream
+   `184b6cb8` title-candidate arm — recall gain, head ordering unchanged))**.
+   Previous: §6.40 v0.42.59.0 sync (2026-07-13, 7 commits, zero-migration
+   v122, provider-agnostic gateway; note its "litellm recipe unusable" caveat
+   retirement still stands);
+   §6.39 v0.42.57.0 sync (2026-07-07, 3 commits, schema v119→v122
    3-step; **OPEN P0 INCIDENT** — `gbrain init --migrate-only` broken on real
    Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations (postgres.js
    conn.unsafe batch parse-time validation; PGLite tolerates so upstream missed
@@ -201,6 +210,10 @@ working on this codebase, before touching anything else:
    incl. 100% of atoms) were never chunked** — cycle-born pages that
    `embed --stale` structurally cannot see (upstream garrytan/gbrain#2163);
    backfilled, with `com.jarvis.chunkless-backfill` (07:00) holding the line.
+   **#2163 is PARTIALLY fixed upstream as of v0.42.63.0** (§6.43): only
+   `synthesize_concepts` now writes through the chunk+embed pipeline; other
+   cycle phases still don't, and 100 chunkless live pages remained at the
+   2026-07-21 check — **the backstop cron stays**.
    **§6.42 query-embed deadline (2026-07-14, same day, MITIGATED not fixed)**:
    with embedding healthy at ~250ms, the vector arm *still* died — `expandQuery`
    (LLM, **1.5–41s** via CRS) runs first inside the same 6s absolute deadline and
@@ -453,6 +466,10 @@ Manual PR creation skips all of these.
   [`docs/KOS-JARVIS-CONSOLIDATION-PLAN.md`](docs/KOS-JARVIS-CONSOLIDATION-PLAN.md)
 - Skill routing table (upstream + fork):
   [`skills/RESOLVER.md`](skills/RESOLVER.md)
+- KOS Knowledge Dashboard (F1–F7, live 公网 `kosadmin.chenge.ink`, launchd
+  `com.jarvis.kos-dashboard` on :7226, RO role + MCP-only writes):
+  [`server/kos-dashboard/`](server/kos-dashboard/) — delivery + 残余 in
+  [`skills/kos-jarvis/TODO.md`](skills/kos-jarvis/TODO.md) "KOS Knowledge Dashboard" 段
 
 ---
 
