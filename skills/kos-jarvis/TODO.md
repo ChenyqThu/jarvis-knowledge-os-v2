@@ -624,8 +624,50 @@ haiku/llm),绝不能用 `LIKE 'brain-synthesis%'`** — 裸标签 `brain-synthes
 **482 页**(mailagent 437 / default 36 / omada 9)。
 
 ⚠️ 附带推论:**跑它对 `orphan_ratio 62%` 毫无帮助**(原以为能顺带降孤儿,不成立)。
-降孤儿要用 `extract links --by-mention`,而按既有结论那个对 concept 类孤儿架构上
-无效 → **孤儿这条线目前没有便宜解法**,别再重复试这条路。
+~~降孤儿要用 `extract links --by-mention`,而按既有结论那个对 concept 类孤儿架构上
+无效 → **孤儿这条线目前没有便宜解法**,别再重复试这条路。~~ **← 此结论已于当天
+稍晚被推翻,见下一条。**
+
+### [x] (P0-上游-bug) orphan 的真·便宜解法找到了 — DIR_PATTERN 漏了复数 `sources` (2026-07-21)
+
+上一条断言"孤儿没有便宜解法"是**错的**。当天深挖 547 份新 dossier 写进去后
+`orphan_ratio` 反而 62%→63% 的原因,一路挖到上游一个正则漏字:
+
+- **根因**: `src/core/link-extraction.ts` 的 `DIR_PATTERN` 目录白名单只列了单数
+  `source`,**没有复数 `sources`**。而全库 9,078 个邮件页 slug 都是
+  `sources/email/<id>`。任何指向 `sources/*` 的 wikilink/markdown 链接都匹配不上
+  → 被当裸名丢弃 → **这些页永远拿不到入链,是最大的孤儿桶(9,078 页 100% 孤儿)**。
+  最小复现: `extractEntityRefs('[[sources/email/x]]')` → `needsResolution:true`
+  被丢;`[[people/x]]` → false 正常。
+- **诊断踩的坑(排查耗时的大头)**:
+  1. `resolveSlug` / `resolveCandidateSources` 隔离测试全过,但整批 0 边 →
+     一度以为是水位/写入过滤。
+  2. 真正堵点其二: **`gbrain extract links` 默认走 FS 路径(`links_fs`)**,扫的是
+     磁盘文件(旧存根),不是 DB 的 compiled_truth(我改写的 wikilink 在这)。必须
+     显式 **`--source db`** 才走 `extractLinksFromDB`。`--source-id` ≠ `--source`。
+  3. `bin/gbrain` 是**编译好的二进制**,改 src/ 后必须 `bun run src/cli.ts` 或
+     重编译才生效 —— 见下方 [ ] 重编译待办。
+- **修复**: fork src/ 补丁,`DIR_PATTERN` 加 `sources`(放 `source` 前)。这行
+  **本就是 fork 改过的**(早前加过 tech/finance/…),不新开冲突面。守卫拦 src/ 编辑,
+  由 Lucien 手动 `git apply`。文档 `docs/UPSTREAM-PATCHES/v042-dir-pattern-sources-plural.md`,
+  上游 issue [garrytan/gbrain#3188](https://github.com/garrytan/gbrain/issues/3188)。
+- **结果**(仅对 mailagent-emails 跑了一次 `extract links --source db`):
+  - 32,611 条边一次建成(大头是 opus dossier 正文里一直存在的完整 slug 引用,
+    因这 bug 从没被抽过)。
+  - 邮件入链 0 → 7,015 / 9,078。
+  - `orphan_ratio` **63% WARN → 29% OK**;`graph_signals_coverage` 28.6% → 53.6%
+    ("多数查询都触发",对检索质量是实打实提升);doctor 总分 60 → 65。
+  - ⚠️ `brain_score` 的 orphans 分项仍 10/15 没动 —— 阈值或需 default 源也跑完才反映,待查。
+- **未吃满的收益(排队)**:
+  - [ ] **重编译 `bin/gbrain`**(`bun build --compile --outfile bin/gbrain src/cli.ts`)
+    —— 否则 launchd cron 跑的旧二进制仍用旧正则,补丁不在生产生效。
+  - [ ] 批量把 599 份 **sonnet** dossier 的 `[纯数字]` 引用改写成
+    `[[sources/email/数字]]`(sonnet 用纯数字,不被 bare-slug pass 认;opus 用完整
+    slug 已自动建边)。`get→改正文→put` round-trip 已在 `people/wesley-gan` 验证
+    可行(建成 21 条真边)。改写脚本 `scratchpad/pilot-wikilink.ts`,解析规则
+    55.2% 引用可解析(`scratchpad/probe-citations2.ts`)。
+  - [ ] 对 **default** 源也跑一次 `extract links --source db --source-id default`
+    (opus dossier 引用的 `sources/notion/*` 应能再捞一批)。
 
 ### [x] (P0-地雷) launchd 模板自 §6.32 起漂移 6 周 — 已修 2026-07-14
 

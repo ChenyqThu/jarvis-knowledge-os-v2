@@ -82,8 +82,16 @@ export type LinkResolutionType = 'qualified' | 'unqualified';
  *   - Gbrain canonical: people, companies, meetings, concepts, deal, civic, project, source, media, yc, projects
  *   - Our domain extensions: tech, finance, personal, openclaw (domain-organized wikis)
  *   - Our entity prefix: entities (we kept some legacy entities/projects/ pages)
+ *   - Our fix: `sources` (PLURAL). Upstream whitelists only `source`
+ *     (singular), but gbrain files ingested source docs under `sources/`
+ *     (e.g. our 9,078 email pages at `sources/email/<id>`). Without the
+ *     plural, every `[[sources/email/x]]` / `[x](sources/email/y)` link is
+ *     dropped as an unresolvable bare-name ref, so those pages can never
+ *     receive inbound edges and stay orphaned forever. Reported upstream
+ *     as garrytan/gbrain#3188. `sources` is placed before `source` so the
+ *     longer prefix wins the ordered alternation.
  */
-const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|source|media|yc|tech|finance|personal|openclaw|entities)';
+const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|sources|source|media|yc|tech|finance|personal|openclaw|entities)';
 
 /**
  * Match `[Name](path)` markdown links pointing to entity directories.
