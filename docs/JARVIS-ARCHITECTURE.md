@@ -5805,6 +5805,210 @@ plist 是正确的**,已逐个验证 —— 但仓库副本已不能作为参考
 
 ---
 
+## 6.44 Upstream v0.42.64.0 sync (2026-07-22)
+
+**20 commits / 74 文件 / +2,503 / −228,单版本跨度(v0.42.63.0 → v0.42.64.0),
+零迁移,一个 modify/delete 冲突。** merge-base `3cc34c92` = §6.43 合并点。相对
+§6.43 的 106 commits 这批很小,一天之内的上游增量。
+
+**`/sync-upstream` 自动采集的 delta 段是空的("New upstream commits: no output"),
+但实际有 20 个 commit。** 别把自动采集当权威 —— 手跑
+`git log --oneline HEAD..upstream/master` 才是判据。
+
+### 唯一冲突:`.github/workflows/test.yml`(modify/delete)
+
+fork 在 `1adab13b` 删掉了这个文件(CI 噪音清理),上游 `d69f2116` (#3231) 又改了它
+(delta-assert reporter 泄漏测试 + shard timeout 提到 22min)。**保持删除**
+(`git rm`),沿 fork 既定策略。其余 73 文件全部 auto-merge。
+
+### 上游内容(挑与 fork 相关的)
+
+- **`d43fb631` (#1410) `serve-http` 401 头补 `resource_metadata`** —— MCP 授权规范
+  (2025-06-18 draft §5.1)+ RFC 9728 要求受保护资源在 401 里回 discovery URL。
+  **这是本批对 fork 唯一有实际外部可见收益的改动**:`kos.chenge.ink` 的 MCP
+  客户端(claude.ai / Cursor 这类)以前从裸 401 起不了 OAuth 流,只能报一句泛化的
+  "连不上 MCP server"。纯加法,存量已持 token 的客户端零影响(已实测,见 smoke)。
+- **`7f841fae` (#3015) `feat(maintain)` + 共享 orphan-exclusion policy** ——
+  新增 `gbrain maintain [--safe|--dry-run|--json]` 命令和 `src/core/orphan-policy.ts`。
+  policy 把"无入链属正常"的页(`_atlas`/`_index` 等伪 slug、`output/`
+  `dashboards/` `templates/` 等前缀、`scratch/thoughts/catalog/entities/raw/atoms/
+  skills/dreaming/daily` 首段、`agents/*` workspace 约定)从孤儿口径里剔除,并开放
+  `orphans.exclude_prefixes` / `orphans.exclude_slugs` 两个 per-brain 配置键。
+  `maintain --safe` 目前只做两件事:stale link/timeline 抽取、source cycle
+  freshness。**本批只评估未接入**(见"未处理")。
+- `02ba4b4f` Matryoshka dims:只对 `qwen3-embedding` / `qwen3-embedding:*` 生效,
+  **我们的 `openai:text-embedding-3-large` 路径零触碰**,已读代码确认。
+- **`447e57ec` (#2800) tier 配置的模型进 recipe allowlist + 刷新 Anthropic 模型
+  表** —— `claude-opus-4-8` / `claude-sonnet-5` / `claude-fable-5` 现在都在上游
+  allowlist 里了。我们 DB config 平面的 `models.tier.reasoning` /
+  `models.tier.subagent` / `models.aliases.sonnet` 全指 `anthropic:claude-sonnet-5`,
+  doctor `subagent_capability` 报 **"resolves to anthropic:claude-sonnet-5 with
+  full tool-loop capability" ✓**。
+- `1fabbb98` (#2866) DB/put_page 路径解析 path-qualified wikilink、`64920f83`
+  (#769) 重嵌保留 code-chunk metadata、`f529eaa2` (#2125) 排队 AI 作业刷新 gateway
+  config、`d61808d8` 加固 confidential OAuth token 撤销、`60125ee6` `dream --once`。
+
+### fork 完整性
+
+fork territory **零侵入**(`git diff master <merge> -- skills/kos-jarvis/ server/
+workers/ scripts/launchd/ skills/RESOLVER.md` 空)。`CLAUDE.md` 合并后 diff 空
+(fork 版原样保留)。**6 个 fork src patch 全部逐字存活** —— 合并前后
+`git diff upstream/master -- src/` 的统计**完全一致**(6 文件 / +243 / −27),
+这个"统计量守恒"是比逐文件肉眼看更省事的存活判据。其中两个双侧改动点已逐行确认:
+
+- **`gateway.ts` embed-transport-retry 块**(§6.34/§6.35):上游本批 +42/−1
+  (远小于 §6.43 的 +378/−186),fork 块仍嵌在 `__embedInputTypeStore` 上下文内
+  (`doEmbed = () => embedTransportWithRetry(...)` →
+  `__embedInputTypeStore.run(threadedInputType, doEmbed)`),§6.35 的组合语义连续
+  两批 sync 未断。
+- **`link-extraction.ts` 复数 `sources` DIR_PATTERN**(`8d18c4d3`,已报
+  garrytan/gbrain#3188):上游 #2866 动了同一个文件,**但没有取代 fork patch**。
+  两者不等价 —— #2866 修的是**泛化 wikilink pass** 的兜底(把 `[[notes/x]]` 按末段
+  查索引再用写法过滤),且受 `link_resolution.global_basename` **flag 门控**;
+  fork patch 把 `sources/` 放进 **`qualified` 一类**,覆盖 wikilink **和** markdown
+  `[x](sources/...)` 两种写法,且**无条件生效**。结论:**fork patch 必须保留**,
+  别因为看到上游动了同一文件就想当然删掉。
+
+**`docs/CLAUDE-UPSTREAM.md` 本批无需刷新** —— `git diff <merge-base>..upstream/master
+-- CLAUDE.md` 为空。仍按 §6.43 立的规矩重生成校验了一遍:与上游正文逐行 diff 只有
+**5 处差异,且全部是既定的隐私 scrub**(私有 agent fork 名 → `openclaw-reference`),
+正文其余部分逐字节相同。
+
+### §6.39 那条 P0:本批**又**没有验证机会
+
+`init --migrate-only` 报 `Schema up to date`,schema 停在 **v124**,本批**零迁移**。
+所以这批既没有触发,也**没有提供任何证据**。按 §6.40 的教训措辞:这**不等于**
+bug 消失。
+
+> **P0 依然 OPEN 且依然未验证。** 仍要等一条**用 `sql:` 多语句串**的迁移才能证
+> #2724 是否修了根因。见
+> `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`。
+
+### 绿门
+
+`bun install` 新增 2 包;`bun run build` → `gbrain 0.42.64.0`;`typecheck` 0 错;
+`check:all` **22 项全绿**(privacy / skill-brain-first / gateway-routed-no-direct-anthropic /
+key-files-current-state / exports-count=20 / admin vite build 等);`bun test test/ai/`
+**405 pass / 0 fail**(§6.43 是 393,上游新增 12)。`llms-full.txt` auto-merge 版有
+漂移,重生成后 +34/−17,`chore:` 单独提交。
+
+### 生产部署 + smoke
+
+备份 `pg_dump` **781MB**(`/tmp/pg-pre-sync-v0.42.64.0-2026-07-22.dump.gz`,`gzip -t`
+OK)+ config 副本(`~/.gbrain/config.json.before-sync-v0.42.64.0`)。沿
+§6.39/§6.40/§6.43 教训,daemon(pid 63541)在 `bun run build` 覆写二进制后**仍报
+0.42.63.0、未自触发 relaunch**,故**受控 bootout+bootstrap 明确执行** → 新 pid
+**51879**。**连续四批 sync 都是这个行为,可以当常量对待了。**
+
+`init --migrate-only` → `Schema up to date`。**部署前后页数/chunk 数逐位不变**
+(**27,553 / 71,337 / 0 NULL**)—— 零丢失。
+
+两个 `/health`(本地 + `https://kos.chenge.ink`)均报 **0.42.64.0 / postgres** ✓。
+
+**OAuth / MCP wire smoke(本批必跑 —— #1410 动的正是这条线)**:
+
+- 裸 POST `/mcp` → `HTTP/2 401` +
+  `www-authenticate: Bearer error="invalid_token", error_description="Missing
+  Authorization header", resource_metadata="https://kos.chenge.ink/.well-known/oauth-protected-resource"`
+  —— **新参数已生效,且穿过 cloudflared 后 issuer 仍是公网 hostname**(不是
+  `127.0.0.1:7225`),这点很关键,否则外部客户端会拿到一个不可达的 discovery URL。
+- discovery doc 可取:`{"resource":"https://kos.chenge.ink/","authorization_servers":
+  ["https://kos.chenge.ink/"],"scopes_supported":["admin","agent","read",
+  "sources_admin","users_admin","write"],"resource_name":"GBrain MCP Server"}`
+- **存量客户端未被打断**:`lucien-cli` 走 `client_credentials` 取到 token
+  (`gbrain_at_…`,len 74),带 token 打 `tools/list` 正常返回工具表。
+- doctor `oauth_confidential_client_health`:**7 个 client 全部 auth shape 一致** ✓。
+
+**检索 smoke**:
+
+| 形态 | query | 头名 | 分数 |
+|---|---|---|---|
+| 复合 CJK(向量臂,本库 modal) | `知识管理` (limit 5) | `concepts/knowledge-compilation` | 0.9200 |
+| 复合 CJK(换题材) | `竞品分析` | `concepts/competitive-benchmarking` | 0.8475 |
+| EN 关键词(hybrid) | `Karpathy` | `people/karpathy` | 1.1907 |
+| 短 CJK 2 字 | `向量` | `entities/jarvis` | 0.8527 |
+
+复合 CJK 连跑 3/3 同分同头名(嵌入确定 + 向量臂活),端到端 ~4.2s,远在 30s 预算内。
+
+### 本批发现:检索 top-1 依赖 `--limit`,且非单调(**上游既存,非本批引入**)
+
+同一个 query `知识管理`,只改 `--limit`,头名整个换掉,而且**更大的 limit 捞出
+更高分的文档**:
+
+| limit | 头名 | 分数 |
+|---|---|---|
+| 1 | `concepts/personal-knowledge-management` | 0.8391 |
+| 3 | `concepts/knowledge-management` | 0.8996 |
+| 5 | `concepts/knowledge-compilation` | **0.9200** |
+
+这是反的 —— top-1 本应是全局 argmax,与 k 无关。现象指向候选池随 `limit` 缩放
+(每臂取 k×N 候选再融合/重排),小 limit 直接饿死召回,**把真正最相关的页整个漏掉**。
+
+**判定方法(值得留作以后 sync 的标准动作)**:从 `master` 拉 worktree 编出
+**0.42.63.0 的二进制**,与新二进制打同一个生产库做 A/B。结果三个 limit 上
+**逐条同分同头名** → **不是本批引入的回归,是上游既存行为**;反过来,这也是本批
+"检索零影响"最强的证据(比"分数看起来正常"强得多)。已记入 TODO 待报上游。
+
+**教训**:smoke 只跑一个固定 limit 会同时看不见这两件事 —— 既看不见既存的召回
+缺陷,也无法证明本批对检索无影响。以后 CJK smoke 至少跑 limit ∈ {1, 5}。
+
+### 部署后健康快照
+
+1. **embedding**:`content_chunks` **71,337 / 0 NULL**。doctor
+   `embedding_provider ✓ 1312ms, 1536 dims, DB aligned`(§6.43 是 724ms —— 同一
+   数量级的直连往返,非 §6.40 经 relay 的 11,848ms 那种量级)。
+   `embeddings 100%/0 missing`、`embedding_env_override` env==DB、
+   `embedding_width_consistency` + `facts_embedding_width_consistency` 全 ✓。
+   cosmetic 误标 **61**(全部 `zeroentropyai:zembed-1` 标签、1536d = te3 宽),
+   是当日新入内容尚未过 `embedding-label-normalize` 日 cron,自愈中。
+2. **pages 27,553**(§6.43 的 27,469 **+84**,一天四源日入,与本 sync 正交)。
+3. **doctor `schema_version` 124(latest 124)、`brain_score` 84/100**(§6.43 81,
+   **+3**;embed 35/35、links 25/25、timeline 1/15、orphans 13/15、dead-links 10/10)。
+   **FAIL 只剩 1 个**:`cycle_freshness`(default 源 25h 未 cycle)。
+   `sync_freshness` **已转 OK**。`orphan_ratio` **25% (5182/20700) → OK**,
+   但**这是 fork 自己那轮去孤儿的功劳(见 `7cc00641`,62% → 25%,发生在本 sync
+   之前),不要记到 #3015 头上** —— #3015 的排除策略对分母几乎没动(§6.43 是
+   20,722,现在 20,700)。RLS event trigger ✓、pgvector installed、resolver 61
+   skills all reachable、skill_brain_first 61/61。
+4. **新增 WARN `links_extraction_lag`:10,540/27,546 页(38%)有未抽取的边。**
+   归因于 `cycle_freshness` 那条 FAIL(`extract` 是 cycle 的一个 phase,cycle 停了
+   25h),**但没有 pre-sync doctor 基线可比对,所以这条归因未经验证**,先记下。
+   —— 顺带,这正是 #3015 `maintain --safe` 声称能自动处理的两件事之一。
+
+### 三个仍然 open 的东西(本批一个都没带走)
+
+- **#2028 未修**,`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` 必须继续留在 4 个查询路径
+  plist + `.env.local` —— 本批已逐个确认在位(dream-cycle / enrich-sweep /
+  gbrain-serve-http / kos-patrol),同时确认 4 个 plist **均无 `OPENAI_BASE_URL`**
+  且均带 te3(§6.41 规则未被侵蚀)。§6.42 全文继续有效。
+- **chunkless 兜底 cron 不能撤**。当前仍有 **100 个无 chunk 活页**,与 §6.43
+  **完全持平** —— `com.jarvis.chunkless-backfill`(07:00)稳定压着线,上游 #2163
+  仍只修了 `synthesize_concepts` 一条写入路径。
+- **§6.39 P0**,见上。
+
+### 未处理(有意留下)
+
+- **#3015 的 `gbrain maintain` 未接入。** 本次 sync 保持纯粹(不混 feature)。
+  值得后续评估的两个点:(a) `maintain --safe` 的 stale-extraction 正好能压上面
+  那条 38% 的 `links_extraction_lag`;(b) `orphan-policy.ts` 的
+  `orphans.exclude_prefixes` / `orphans.exclude_slugs` 让我们能把 fork 特有的
+  "本就不该有入链"的页(如 `sources/email/*` 的一部分)从孤儿口径里正式剔除,
+  比继续刷 orphan-reducer 更治本。已进 TODO。
+- **`scripts/launchd/*.plist` 仓库工作副本仍然陈旧**(§6.43 已记)。线上 4 个
+  plist 本批已逐个验证正确,仓库副本仍不可作参考。既存债,与本 sync 正交。
+
+### Conflict resolution
+
+1 个冲突:`.github/workflows/test.yml` modify/delete → **保持 fork 的删除**
+(`git rm -f`)。无其他 file-level 手解。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-07-22)
+- §6.39(P0 migrator,仍 open)、§6.41(embedding 直连)、§6.42(query-embed deadline)、§6.43(上一批 sync)
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |
