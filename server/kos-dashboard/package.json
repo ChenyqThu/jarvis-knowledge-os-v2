@@ -1,0 +1,21 @@
+{
+  "name": "kos-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fork-local read-only stats API for the KOS knowledge dashboard (Trellis task 07-21-m1-stats-api).",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "hono": "^4.6.14",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  }
+}

@@ -75,3 +75,8 @@ server/kos-compat-api.std*.log.*.archive.gz
 .gbrain/oauth-clients/
 **/oauth-clients/*.json
 docs/omada/*.pdf
+
+# Trellis (mindfold-ai) task workspace — local-only per Lucien 2026-07-21,
+# KOS dashboard epic planning lives here (.trellis/tasks/07-21-kos-dashboard*).
+.trellis/
+.claude/commands/trellis/

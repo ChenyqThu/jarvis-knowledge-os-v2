@@ -1,0 +1,293 @@
+@import 'tailwindcss';
+
+/* `<html class="dark">` is fixed (see main.tsx) — this is a single-operator
+ * internal tool, so we deliberately do not build a light theme or a
+ * toggle (design.md §1: "不做 light 切换"). Keeping the `dark` variant wired
+ * up (rather than just baking dark colors into :root) so shadcn-generated
+ * component markup that uses `dark:` utility overrides still resolves. */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.625rem;
+
+  /* Design tokens — design.md §1 token table (zinc dark base). */
+  --background: #09090b; /* zinc-950 */
+  --foreground: #fafafa; /* zinc-50 */
+  --card: #18181b; /* zinc-900 */
+  --card-foreground: #fafafa;
+  --popover: #18181b;
+  --popover-foreground: #fafafa;
+  --primary: #38bdf8; /* sky-400 */
+  --primary-foreground: #09090b;
+  --secondary: #27272a; /* zinc-800 */
+  --secondary-foreground: #fafafa;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa; /* zinc-400 */
+  --accent: #27272a;
+  --accent-foreground: #fafafa;
+  --destructive: #f87171; /* red-400 */
+  --destructive-foreground: #09090b;
+  --border: #27272a; /* zinc-800 */
+  --input: #27272a;
+  --ring: #38bdf8;
+
+  /* Semantic health colors (design.md §1): coverage / doctor / brain_score
+   * bands reuse M1's >=0.9 emerald / >=0.7 amber / else red thresholds. */
+  --success: #34d399; /* emerald-400 */
+  --warning: #fbbf24; /* amber-400 */
+  --danger: #f87171; /* red-400 */
+
+  /* ECharts series palette (design.md §1): sky/emerald/amber/violet/rose 400. */
+  --chart-1: #38bdf8;
+  --chart-2: #34d399;
+  --chart-3: #fbbf24;
+  --chart-4: #a78bfa;
+  --chart-5: #fb7185;
+
+  /* emil-design-eng motion primitive (design.md §3): strong ease-out, never
+   * ease-in, never `transition: all`. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* design.md §1 font stacks — system fonts only (no web font fetch, keeps
+   * this internal tool's first paint independent of any CDN). */
+  --font-sans:
+    system-ui, -apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    font-size: 14px;
+  }
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* All numeric displays (metric cards, table columns) use tabular figures so
+ * refreshed values don't reflow — design.md §3 "数字刷新变化". */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Motion primitives (design.md §3) ----
+ * Only `transform`/`opacity` are ever transitioned (GPU path); no `width`,
+ * `height`, or `transition: all`; ease-in is never used. */
+
+.btn-press {
+  transition: transform 140ms var(--ease-out);
+}
+.btn-press:active {
+  transform: scale(0.97);
+}
+
+/* Entrance for error/empty states only — opacity 0->1 + scale(0.98->1),
+ * never from scale(0) per design.md §3. */
+.state-enter {
+  animation: state-enter 150ms var(--ease-out);
+}
+@keyframes state-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-press,
+  .btn-press:active {
+    transition: none;
+    transform: none;
+  }
+  .state-enter {
+    animation: none;
+  }
+}
+
+/* Row/element hover highlight, gated to real pointer devices so touch/track
+ * input never gets a stuck hover state (design.md §3). */
+@media (hover: hover) and (pointer: fine) {
+  .hover-row:hover {
+    background: var(--accent);
+  }
+}
+
+/* Radix popover content (Tooltip/Select): 125ms ease-out fade + scale using
+ * Radix's own transform-origin var (design.md §3 "Tooltip" row). We don't
+ * pull in tw-animate-css just for the `animate-in`/`fade-in-0` utility
+ * classes shadcn's generated markup references — those are inert without
+ * it, so this replaces them with the exact spec'd animation. First-open
+ * delay is TooltipProvider's `delayDuration`, not this transition. */
+[data-slot='tooltip-content'],
+[data-slot='select-content'] {
+  animation-duration: 125ms;
+  animation-timing-function: var(--ease-out);
+  animation-fill-mode: both;
+}
+[data-slot='tooltip-content'][data-state='delayed-open'],
+[data-slot='tooltip-content'][data-state='instant-open'],
+[data-slot='select-content'][data-state='open'] {
+  animation-name: popover-enter;
+}
+[data-slot='tooltip-content'][data-state='closed'],
+[data-slot='select-content'][data-state='closed'] {
+  animation-name: popover-exit;
+}
+
+@keyframes popover-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes popover-exit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='tooltip-content'],
+  [data-slot='select-content'] {
+    animation: none;
+  }
+  [data-slot='skeleton'] {
+    animation: none;
+  }
+}
+
+/* Radix Dialog / AlertDialog (design.md §3 "确认 Dialog 用 Radix 默认 150ms
+ * ease-out，不 from scale(0)"). Same situation as Tooltip/Select above: the
+ * shadcn markup references tw-animate-css utility classes (`animate-in` /
+ * `zoom-in-95`) that are inert here, so the motion is driven explicitly.
+ * Content keeps its `translate(-50%,-50%)` centering inside the keyframe so
+ * the transform-scale doesn't knock it to the corner — enters from
+ * scale(0.96), never scale(0). */
+[data-slot='dialog-overlay'],
+[data-slot='alert-dialog-overlay'] {
+  animation-duration: 150ms;
+  animation-timing-function: var(--ease-out);
+  animation-fill-mode: both;
+}
+[data-slot='dialog-overlay'][data-state='open'],
+[data-slot='alert-dialog-overlay'][data-state='open'] {
+  animation-name: overlay-enter;
+}
+[data-slot='dialog-overlay'][data-state='closed'],
+[data-slot='alert-dialog-overlay'][data-state='closed'] {
+  animation-name: overlay-exit;
+}
+[data-slot='dialog-content'],
+[data-slot='alert-dialog-content'] {
+  animation-duration: 150ms;
+  animation-timing-function: var(--ease-out);
+  animation-fill-mode: both;
+}
+[data-slot='dialog-content'][data-state='open'],
+[data-slot='alert-dialog-content'][data-state='open'] {
+  animation-name: dialog-enter;
+}
+[data-slot='dialog-content'][data-state='closed'],
+[data-slot='alert-dialog-content'][data-state='closed'] {
+  animation-name: dialog-exit;
+}
+
+@keyframes overlay-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes overlay-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+@keyframes dialog-exit {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='dialog-overlay'],
+  [data-slot='alert-dialog-overlay'],
+  [data-slot='dialog-content'],
+  [data-slot='alert-dialog-content'] {
+    animation: none;
+  }
+}

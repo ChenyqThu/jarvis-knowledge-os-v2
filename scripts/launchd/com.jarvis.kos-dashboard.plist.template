@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.kos-dashboard</string>
+    <!--
+      KOS dashboard read-only stats API (Trellis 07-21-kos-dashboard, M1+M2).
+      Bun + Hono on :7226, every query routed through the read-only
+      `kos_dashboard_ro` Postgres role (see db.ts).
+
+      WorkingDirectory MUST stay the repo root: Bun auto-loads `.env.local`
+      from its CWD (not from the entry script's directory), and that's the
+      only place `KOS_DASHBOARD_TOKEN` lives (auth.ts). Pointing
+      WorkingDirectory at server/kos-dashboard/ instead makes the token
+      invisible to the process -> auth.ts now fails fast at startup with a
+      clear "KOS_DASHBOARD_TOKEN is not set" error and exit code 1 (was: a
+      silent per-request 500 on every route). See M1 opus review P1,
+      .trellis/tasks/07-21-m1-stats-api/review.md.
+
+      Manual smoke (after bootstrap):
+        curl -s http://127.0.0.1:7226/healthz
+        # -> {"status":"ok"}
+        curl -s http://127.0.0.1:7226/api/v1/overview
+        # -> 401 {"error":"unauthorized"} (no token)
+        curl -s -H "Authorization: Bearer $KOS_DASHBOARD_TOKEN" \
+          http://127.0.0.1:7226/api/v1/overview
+        # -> 200 real JSON
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/chenyuanquan/.bun/bin/bun</string>
+        <string>server/kos-dashboard/src/index.ts</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2</string>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/chenyuanquan/Library/Logs/com.jarvis.kos-dashboard.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenyuanquan/Library/Logs/com.jarvis.kos-dashboard.err.log</string>
+</dict>
+</plist>
