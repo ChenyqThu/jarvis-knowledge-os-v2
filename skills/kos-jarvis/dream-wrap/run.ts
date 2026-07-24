@@ -45,6 +45,16 @@
  *   bun run skills/kos-jarvis/dream-wrap/run.ts            # full cycle
  *   bun run skills/kos-jarvis/dream-wrap/run.ts --dry-run  # preview only
  *   bun run skills/kos-jarvis/dream-wrap/run.ts --phase lint
+ *
+ * ⚠️ GBRAIN_BIN and pack-gated phases (found 2026-07-23): do NOT point
+ * GBRAIN_BIN at the COMPILED binary (bin/gbrain) for dream runs. Inside the
+ * compiled artifact the schema-pack load throws, and packDeclaresPhase's
+ * `catch { return false }` silently reports "active pack does not declare
+ * this phase" — extract_atoms + synthesize_concepts get SKIPPED with no
+ * error (verified: bin/gbrain skipped; src-entrypoint ran `ok`, 2630
+ * concepts). launchd is safe (PATH resolves ~/.bun/bin/gbrain → src/cli.ts);
+ * manual runs should use the default PATH resolution or
+ * GBRAIN_BIN=$HOME/.bun/bin/gbrain. Upstream (src/) quirk — fork no-go.
  */
 
 import { spawnSync } from "node:child_process";
