@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.email-link-sweep</string>
+    <!--
+      Graph edges for remote-written email pages (mailagent-emails).
+
+      put_page's auto-link is security-gated OFF for remote MCP callers, so
+      emails arrive with chunks/embeddings/facts but no graph edges; before
+      this cron the edges only existed because of manual batch runs (last:
+      2026-07-08 mentions, 07-21 markdown). Runs two deterministic extract
+      passes (watermark-stale links+timeline, then gazetteer by-mention with
+      a 3-day overlap window). Zero LLM / zero embedding spend — pure DB.
+
+      07:40 local — after chunkless-backfill (07:00) and before kos-patrol
+      (08:07) so patrol's lint sees the fresh edges the same morning.
+
+      No secrets (script sources .env.local; passes need none anyway)
+      → this .plist == .plist.template.
+
+      Manual:  bash scripts/jarvis-email-link-sweep.sh
+      Verify:  launchctl print "gui/$(id -u)/com.jarvis.email-link-sweep"
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/scripts/jarvis-email-link-sweep.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/chenyuanquan</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>40</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/chenyuanquan/.gbrain/email-link-sweep.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenyuanquan/.gbrain/email-link-sweep.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2</string>
+</dict>
+</plist>

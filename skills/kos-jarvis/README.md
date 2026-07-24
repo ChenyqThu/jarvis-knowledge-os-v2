@@ -73,9 +73,12 @@ skills/kos-jarvis/
 
 **Active**: 7 skills (kos-patrol / dream-wrap / digest-to-memory / enrich-sweep /
 image-ingest scaffold / orphan-reducer / url-fetcher) + 2 helpers (_lib, templates).
-**Archived**: 10 dirs (post-§6.31 cleanup). **Production cron**: 3 active plists
-(`com.jarvis.dream-cycle`, `kos-patrol`, `enrich-sweep`) + `gbrain-serve-http`
-+ `gbrain-backup` template. Stale plists archived in `scripts/launchd/_archived/`.
+**Archived**: 10 dirs (post-§6.31 cleanup). **Production cron**: 6 active plists
+(`com.jarvis.dream-cycle` 03:11, `chunkless-backfill` 07:00, `email-link-sweep`
+07:40 — graph edges for remote-written mailagent pages, added 2026-07-23,
+`kos-patrol` 08:07, `embedding-label-normalize` 08:25, `enrich-sweep`) +
+`gbrain-serve-http` + `gbrain-backup` template. Stale plists archived in
+`scripts/launchd/_archived/`.
 
 ## 与 GBrain 原生 skills 的关系
 
