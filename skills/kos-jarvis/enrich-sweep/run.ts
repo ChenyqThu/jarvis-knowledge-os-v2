@@ -235,18 +235,55 @@ function gbrainGet(slug: string): string {
   return r.stdout;
 }
 
+// Batch-read the frontmatter `updated` date for many slugs at once.
+//
+// Phase D needs one date per candidate: the earliest `updated` across its
+// mentions. It used to get there by calling gbrainGet() once PER MENTION and
+// regexing the frontmatter — 52,323 cold `gbrain` spawns for a 3,237-candidate
+// sweep (~26h of pure process startup), because mention counts are heavy-tailed:
+// people/lucien-chen alone carries 4,306 mentions, i.e. 4,306 spawns and ~31min
+// wall-clock to compute a single date. That is what made every weekly run die on
+// the job timeout. Distinct slugs across the whole sweep: 6,731 — so the old
+// shape re-read the same pages ~8x on average.
+//
+// Reads `frontmatter->>'updated'`, NOT the updated_at column: `gbrain get`
+// renders the former, and they disagree (sources/email/40592 is 2026-01-15 in
+// frontmatter, 2026-05-27 in the column). Scoped by source_id because slugs are
+// not unique across sources.
+function fetchUpdatedDates(sourceId: string, slugs: string[]): Map<string, string> {
+  const dbUrl = process.env.DATABASE_URL
+    ?? `postgresql://${process.env.USER ?? 'chenyuanquan'}@127.0.0.1:5432/gbrain`;
+  const out = new Map<string, string>();
+  const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  // Chunked to keep the -c argument well clear of ARG_MAX.
+  for (let i = 0; i < slugs.length; i += 2000) {
+    const batch = slugs.slice(i, i + 2000);
+    const sql = `
+      SELECT slug, substring(frontmatter->>'updated' from 1 for 10)
+      FROM pages
+      WHERE source_id = ${q(sourceId)}
+        AND deleted_at IS NULL
+        AND slug IN (${batch.map(q).join(",")})
+        AND frontmatter->>'updated' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}';
+    `;
+    const r = spawnSync("psql", [dbUrl, "-At", "-F", "\t", "-c", sql], { encoding: "utf-8" });
+    // Match the old gbrainGet() contract: a failed read yields no date rather
+    // than aborting the sweep — first_mention_date is cosmetic on the stub.
+    if (r.status !== 0) continue;
+    for (const line of r.stdout.trim().split("\n")) {
+      if (!line) continue;
+      const [slug, updated] = line.split("\t");
+      if (slug && updated) out.set(slug, updated);
+    }
+  }
+  return out;
+}
+
 function parseKindFromFrontmatter(body: string): string | undefined {
   const m = body.match(/^---\n([\s\S]*?)\n---/);
   if (!m) return undefined;
   const kind = m[1].match(/^kind:\s*(\S+)/m);
   return kind?.[1];
-}
-
-function parseUpdatedFromFrontmatter(body: string): string | undefined {
-  const m = body.match(/^---\n([\s\S]*?)\n---/);
-  if (!m) return undefined;
-  const u = m[1].match(/^updated:\s*'?([0-9]{4}-[0-9]{2}-[0-9]{2})'?/m);
-  return u?.[1];
 }
 
 // ─────────────────────────── dedupe ───────────────────────────
@@ -430,9 +467,22 @@ type Summary = {
 
 type PlannedCandidate = { canonical: Canonical; tier: Tier; tier1_blocked: boolean; slug: string };
 
-async function runWritePhase(newCandidates: PlannedCandidate[], summary: Summary, flags: Flags): Promise<void> {
+async function runWritePhase(
+  newCandidates: PlannedCandidate[],
+  summary: Summary,
+  flags: Flags,
+  sourceId: string,
+): Promise<void> {
   // ── Phase D: write stubs (with Tavily for Tier 2) ──
   console.log("[D] Writing stubs …");
+
+  // One batched read up front, instead of one subprocess per mention inside the
+  // loop below. See fetchUpdatedDates() for why this is not a micro-optimization.
+  const mentionSlugs = [...new Set(newCandidates.flatMap((c) => c.canonical.mentions.map((m) => m.source_slug)))];
+  console.log(`    resolving first-mention dates for ${mentionSlugs.length} distinct pages …`);
+  const updatedBySlug = fetchUpdatedDates(sourceId, mentionSlugs);
+  console.log(`    ${updatedBySlug.size}/${mentionSlugs.length} resolved\n`);
+
   let tavilyBudget = flags.maxTier2;
   for (let di = 0; di < newCandidates.length; di++) {
     const cand = newCandidates[di];
@@ -445,8 +495,10 @@ async function runWritePhase(newCandidates: PlannedCandidate[], summary: Summary
       tavilyBlock = condense(result);
     }
 
+    // Lexicographic min over YYYY-MM-DD == chronological earliest, same as the
+    // old .sort()[0]; slugs with no parseable `updated` drop out as before.
     const firstMention = cand.canonical.mentions
-      .map((m) => parseUpdatedFromFrontmatter(gbrainGet(m.source_slug)))
+      .map((m) => updatedBySlug.get(m.source_slug))
       .filter((x): x is string => !!x)
       .sort()[0];
 
@@ -582,7 +634,7 @@ async function main() {
       }
       summary.unique_entities = cached.length;
       console.log(`[resume] ${resumeCandidates.length} to write, ${skipped} already exist (skipped)`);
-      await runWritePhase(resumeCandidates, summary, flags);
+      await runWritePhase(resumeCandidates, summary, flags, sourceId);
       process.exit(summary.aborted ? 1 : summary.stubs_failed > 0 ? 2 : 0);
     }
 
@@ -712,7 +764,7 @@ async function main() {
       process.exit(0);
     }
 
-    await runWritePhase(newCandidates, summary, flags);
+    await runWritePhase(newCandidates, summary, flags, sourceId);
     process.exit(summary.aborted ? 1 : summary.stubs_failed > 0 ? 2 : 0);
   } finally {
     releaseLock();
