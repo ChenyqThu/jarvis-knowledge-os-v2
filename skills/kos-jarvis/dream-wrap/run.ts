@@ -62,6 +62,7 @@ import {
   mkdirSync,
   writeFileSync,
   existsSync,
+  readFileSync,
   symlinkSync,
   unlinkSync,
   renameSync,
@@ -73,6 +74,12 @@ const GBRAIN_BIN = process.env.GBRAIN_BIN ?? "gbrain";
 // §6.41 iron rule: the embed path must never carry a relay base URL, and an
 // inherited ANTHROPIC_BASE_URL 404s gbrain's chat path (see memory pitfall).
 // launchd's env is already clean — this protects manual shell invocations.
+// Captured BEFORE the delete: reading process.env.OPENAI_BASE_URL after this
+// point always yields undefined, so a guard that checks it there is dead code
+// (same shape as the MIN_QUERY_EMBED_BUDGET_MS floor defeated by an
+// already-fired AbortSignal, §6.42). embedPathDirectFailure() reads this.
+const INHERITED_OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
+
 delete process.env.OPENAI_BASE_URL;
 delete process.env.ANTHROPIC_BASE_URL;
 
@@ -85,6 +92,88 @@ const RETRY_DELAY_MS = Math.max(
   1000,
   Number(process.env.DREAM_WRAP_RETRY_DELAY_MS) || 45 * 60 * 1000,
 );
+
+const EMBED_PROBE_URL = "https://api.openai.com/v1/embeddings";
+
+/**
+ * §6.41 iron-rule enforcement, added 2026-07-27.
+ *
+ * The `delete process.env.OPENAI_BASE_URL` above only cleans THIS process.
+ * The child is a bun script, and bun re-loads `.env` / `.env.local` from cwd
+ * (our WorkingDirectory is the repo root), so an uncommented relay line in
+ * either file lands back in the child's env after we cleared it. Deleting a
+ * var makes it *absent*, which is exactly the state bun's .env loader fills.
+ *
+ * Nothing errors when that happens — the embed just silently changes
+ * provider. Four cycles (2026-07-24..27) died at synthesize_concepts against
+ * a relay that no config plane admitted to, and the only visible symptom was
+ * `无可用渠道（distributor）` buried in stderr.
+ *
+ * So assert both halves before spending a cycle: (a) nothing can re-inject a
+ * base URL into the child, and (b) the key actually works against the
+ * official endpoint at the configured width. Returns a reason on failure,
+ * null when the path is provably direct.
+ */
+async function embedPathDirectFailure(): Promise<string | null> {
+  // An inherited value is NOT fatal — the delete above already scrubbed it and
+  // the child never sees it. That path is supported (manual shell runs); say so
+  // and carry on, because refusing here would break a case run.ts handles.
+  if (INHERITED_OPENAI_BASE_URL) {
+    console.error(
+      `[dream-wrap] scrubbed inherited OPENAI_BASE_URL=${INHERITED_OPENAI_BASE_URL} (child runs direct)`,
+    );
+  }
+
+  // (a) The one we cannot scrub: bun re-loads these files in the CHILD, after
+  // our delete. A live line here silently puts the relay back.
+  for (const name of [".env", ".env.local"]) {
+    const path = join(process.cwd(), name);
+    if (!existsSync(path)) continue;
+    const line = readFileSync(path, "utf8")
+      .split("\n")
+      .find((l) => /^\s*(export\s+)?OPENAI_BASE_URL\s*=/.test(l));
+    if (line) {
+      return `${name} carries a live OPENAI_BASE_URL line that bun re-loads into the child: ${line.trim()}`;
+    }
+  }
+
+  // (b) real embed, official endpoint, configured width.
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return "OPENAI_API_KEY is unset";
+  const want = Number(process.env.GBRAIN_EMBEDDING_DIMENSIONS) || 1536;
+
+  let res: Response;
+  try {
+    res = await fetch(EMBED_PROBE_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-large",
+        dimensions: want,
+        input: "dream-wrap preflight",
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (err) {
+    return `embed probe to ${EMBED_PROBE_URL} threw: ${(err as Error).message}`;
+  }
+
+  const body = await res.text();
+  if (!res.ok) return `embed probe HTTP ${res.status}: ${body.slice(0, 200)}`;
+
+  let dims: unknown;
+  try {
+    dims = JSON.parse(body)?.data?.[0]?.embedding?.length;
+  } catch {
+    return `embed probe returned non-JSON: ${body.slice(0, 200)}`;
+  }
+  if (dims !== want) return `embed probe returned ${dims} dims, expected ${want}`;
+
+  return null;
+}
 
 /**
  * TLS reachability probe. ANY HTTP response (401 expected without auth)
@@ -273,6 +362,20 @@ async function main() {
   const brainDir = resolveBrainDir();
 
   console.error(`[dream-wrap] brain=${brainDir}`);
+
+  // Startup gate, not a per-attempt one: a relay on the embed path is a
+  // configuration fault, and retrying 6 times over 4.5h will not un-set an
+  // env var. Fail loudly now instead of degrading quietly mid-cycle.
+  const relayReason = await embedPathDirectFailure();
+  if (relayReason) {
+    console.error(
+      `[dream-wrap] REFUSING TO RUN — embed path is not direct-to-OpenAI: ${relayReason}`,
+    );
+    console.error(
+      `[dream-wrap] §6.41 iron rule: no relay on the embedding path. Fix the plane above, then re-run.`,
+    );
+    process.exit(2);
+  }
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const lastAttempt = attempt === MAX_ATTEMPTS;
