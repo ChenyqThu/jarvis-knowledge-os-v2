@@ -16,39 +16,51 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.44 v0.42.64.0
-   upstream sync (2026-07-22, 20 commits / v0.42.63.0 → v0.42.64.0 / 74 files —
-   small single-release batch, **zero migrations** (schema stays v124), **one
-   modify/delete conflict**: `.github/workflows/test.yml`, deleted by the fork
-   in `1adab13b`, touched upstream in #3231 → kept deleted. `/sync-upstream`'s
-   auto-gathered delta reported **no new commits while there were 20** — always
-   confirm with `git log HEAD..upstream/master`. Fork territory zero-invasion;
-   **all 6 fork src/ patches survived byte-for-byte** (pre/post
-   `git diff upstream/master -- src/` stat identical: 6 files / +243/−27 — a
-   cheap survival check). **`link-extraction.ts`'s plural-`sources` DIR_PATTERN
-   patch is NOT superseded by upstream #2866** (that only fixes the generic
-   wikilink pass and is flag-gated behind `link_resolution.global_basename`;
-   ours makes `sources/` *qualified*, covers markdown links, unconditional) —
-   don't delete it just because upstream touched the file. Green: typecheck 0,
-   check:all 22/22, `bun test test/ai/` 405 pass / 0 fail (was 393). Prod
-   27,553 pages / 71,337 chunks / 0 NULL, byte-identical across the deploy;
-   both /health → 0.42.64.0; brain_score **84/100** (+3), FAILs 3→1 (only
-   `cycle_freshness`). **`orphan_ratio` 25% + OK is the fork's own
-   orphan-reduction pass (`7cc00641`, 62%→25%), NOT upstream #3015** — #3015's
-   exclusion policy barely moved the denominator (20,722→20,700). **#1410
-   smoke** (this batch's one externally-visible win): `/mcp` 401 now carries
-   `resource_metadata=…/.well-known/oauth-protected-resource` with the correct
-   *public* issuer through cloudflared, and existing clients are unbroken
-   (lucien-cli client_credentials → token → tools/list OK, 7/7 clients
-   consistent). Daemon again did **not** self-relaunch after `bun run build`
-   overwrote its binary — explicit bootout+bootstrap needed, 4 batches running,
-   treat as constant. **Found, pre-existing not introduced**: retrieval top-1
-   depends on `--limit` and is non-monotone (`知识管理` → 0.8391/0.8996/0.9200 at
-   limit 1/3/5, three different heads); proven pre-existing by A/B-ing a
-   0.42.63.0 binary against the same prod DB — identical output, which also
-   proves this batch had zero retrieval impact. CJK smoke should henceforth run
-   `limit ∈ {1,5}`)**.
-   Previous: §6.43 v0.42.63.0 sync (2026-07-21, **106 commits** / 443 files —
+   operates ↔ OpenClaw executes). Latest sync story: **§6.45 v0.42.66.1
+   upstream sync (2026-07-28, **265 commits** across 2 releases /
+   v0.42.64.0 → v0.42.66.1 / 446 files — **largest batch to date**; schema
+   **v124→v125**, one migration. Two conflicts: `.github/workflows/test.yml`
+   modify/delete **again** (same file, same cause as §6.44 — expect it every
+   batch, keep the deletion), and `link-extraction.ts`, where the fork's plural
+   `sources` and upstream's new `reference` (#2071) are **independent additions
+   to the same alternation — keep both**. Upstream self-reports 147 "verified
+   fixes" but the log is full of `Revert`→`reland` round-trips: **judge by the
+   final diff, not the commit count.** **§6.44's stat-conservation survival
+   check FAILED — and that was good news**: fork src 6 files/+243/−27 → **4
+   files/+187/−23** because upstream *absorbed* two fork patches
+   (`extract-atoms.ts` concept stamping → `eb6cb4a1` #2123/#2124;
+   `extract-atoms-drain.ts` zero-yield tombstoning → `8cd87968` #2144/#2145),
+   all 7 semantics verified present. **Treat stat conservation as a "look
+   closer" signal, never a pass/fail gate.** **§6.39's P0: root cause REFUTED,
+   not fixed** — replaying v121's verbatim `sql` block through the same
+   `reserved.unsafe()` path now PASSES while `runMigrationSQL`/`runUnsafe` are
+   byte-identical to §6.40 and postgres.js has been 3.4.9 all along, so the
+   postgres.js batch-parse attribution cannot be right; the symptom was real,
+   the diagnosis was not, and **it is sitting in public upstream issue #2667
+   awaiting a correction (Lucien's call)**. Green: typecheck 0, check:all
+   **23/23** (new #3463 symlink gate — resolved via the ALLOWLIST upstream left
+   for in-repo relative links, **the fork's first upstream-script edit**;
+   exports-count baseline 20→21), `bun test test/ai/` **467 pass / 0 fail**.
+   Prod **29,698 pages / 78,258 chunks / 0 NULL**, no loss; both /health →
+   0.42.66.1; brain_score 84/100; `embedding_provider` **349ms** and
+   **`embed_staleness: no stale chunks`** (no signature drift). Daemon again
+   did **not** self-relaunch after `bun run build` — 5 batches running, a
+   constant. **Retrieval A/B vs a 0.42.64.0 binary on the same prod DB: 8/8
+   identical → zero retrieval impact**; the `--limit` non-monotonicity is
+   pre-existing and **bidirectional** (`Karpathy` higher at limit 5,
+   `竞品分析` lower). MCP wire green; `whoami` now returns `source_id` +
+   `federated_read` (#3279). **Three new open items**: `sources.config`
+   corrupted by upstream #2829 on `gbrain-docs` + `mailagent-emails` (P0, prod
+   data write, needs Lucien); dream cycle stalled **162h** + `enrich-sweep`
+   `disabled` in launchd (P1, pre-existing, **and note §6.44's plist check only
+   verified file env, not whether the job was loaded** — always check
+   `launchctl list` AND `print-disabled` too); whether #2846 retires the
+   embedding-label-normalize cron (P2, unverified this batch))**.
+   Previous: §6.44 v0.42.64.0 sync (2026-07-22, 20 commits / 74 files —
+   zero-migration v124; #1410 gave `/mcp` 401 a correct *public*
+   `resource_metadata` through cloudflared; `orphan_ratio` 25%+OK was the
+   fork's own `7cc00641` pass, **not** upstream #3015);
+   §6.43 v0.42.63.0 sync (2026-07-21, **106 commits** / 443 files —
    largest batch to date, yet zero-conflict; schema v122→v124, two migrations;
    **`merge-tree`'s "changed in both" is a verify-list, NOT a conflict
    forecast** — 3 rewrite-scale hits on fork src patches all auto-resolved;
@@ -58,12 +70,16 @@ working on this codebase, before touching anything else:
    v122, provider-agnostic gateway; note its "litellm recipe unusable" caveat
    retirement still stands);
    §6.39 v0.42.57.0 sync (2026-07-07, 3 commits, schema v119→v122
-   3-step; **OPEN P0 INCIDENT** — `gbrain init --migrate-only` broken on real
-   Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations (postgres.js
-   conn.unsafe batch parse-time validation; PGLite tolerates so upstream missed
-   it), reported garrytan/gbrain#2667, see
-   docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md; v0.42.59.0
-   #2724 may address the root but UNVERIFIED — no migration ran this batch);
+   3-step; the P0 it filed — `gbrain init --migrate-only` failing on real
+   Postgres for multi-statement ADD-COLUMN+CREATE-INDEX migrations — had its
+   **root cause REFUTED in §6.45**: the postgres.js `conn.unsafe` batch
+   parse-time explanation cannot be right, because v121's verbatim SQL now
+   replays cleanly through byte-identical code on the same postgres.js 3.4.9.
+   **The symptom was real, the diagnosis was not, and the trigger is still
+   unidentified**; the three fork workarounds in
+   docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md are
+   **not currently needed**, and garrytan/gbrain#2667 still carries the wrong
+   diagnosis pending a correction);
    §6.38 v0.42.53.0 sync (2026-06-26, zero-migration schema v119). Note §6.32
    (2026-05-31) was the embedding convergence, not a sync.
    **§6.41 embedding incident (2026-07-14, NOT a sync — RESOLVED)**: avman's te3
