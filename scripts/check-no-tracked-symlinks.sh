@@ -28,8 +28,24 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
-# Paths permitted to be tracked symlinks. Empty by design.
-ALLOWLIST=()
+# Paths permitted to be tracked symlinks.
+#
+# Fork (jarvis-knowledge-os-v2): the three below are the case this file's
+# header calls defensible — relative links whose targets are themselves
+# tracked, so they resolve in any fresh clone, not just on one machine:
+#
+#   workers/kos-worker/.agents/INSTRUCTIONS.md  (tracked)
+#   workers/kos-worker/.agents/skills/          (tracked, 9 files)
+#
+# They exist because the vendored kos-worker keeps its agent instructions
+# in one place under `.agents/` and exposes them under the names the
+# tools look for. Replacing them with real files would fork that content
+# into three copies that drift.
+ALLOWLIST=(
+  "workers/kos-worker/AGENTS.md"
+  "workers/kos-worker/CLAUDE.md"
+  "workers/kos-worker/.claude/skills"
+)
 
 # Git records symlinks with mode 120000. Field 4 of `ls-files -s` is the path
 # (tab-separated from the stage number), so cut on the tab to keep paths with
