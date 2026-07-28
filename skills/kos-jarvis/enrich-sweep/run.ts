@@ -49,16 +49,18 @@ type Flags = {
   onlyKind?: EntityKind;
   limit?: number;
   resume: boolean;
+  tavily: boolean;
   help: boolean;
 };
 
 function parseFlags(argv: string[]): Flags {
-  const f: Flags = { dry: false, plan: false, maxTier2: 30, tier3Only: false, minMentions: 2, resume: false, help: false };
+  const f: Flags = { dry: false, plan: false, maxTier2: 30, tier3Only: false, minMentions: 2, resume: false, tavily: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry") f.dry = true;
     else if (a === "--plan") f.plan = true;
     else if (a === "--max-tier2") f.maxTier2 = Number(argv[++i]);
+    else if (a === "--tavily") f.tavily = true;
     else if (a === "--tier3-only") f.tier3Only = true;
     else if (a === "--min-mentions") f.minMentions = Number(argv[++i]);
     else if (a === "--kind") f.onlyKind = argv[++i] as EntityKind;
@@ -81,7 +83,10 @@ function usage() {
 Flags:
   --dry                 Plan only; no Haiku calls, no Tavily, no writes
   --plan                Haiku NER + Tier decisions, no stub writes, no Tavily
-  --max-tier2 N         Cap Tavily calls (default 30)
+  --max-tier2 N         Cap Tavily calls (default 30; only applies with --tavily)
+  --tavily              Enable Tavily web augmentation (OFF by default: it
+                        resolves internal-corpus names against the public web
+                        and routinely returns a different person)
   --tier3-only          Skip all Tavily Tier 2 augmentation (brain-only synthesis;
                         right default for company-internal corpora where web
                         search returns wrong people / misses internal projects)
@@ -227,6 +232,59 @@ function resolveSourceId(): string {
   const r = spawnSync("psql", [dbUrl, "-At", "-c", sql], { encoding: "utf-8" });
   if (r.status !== 0) return process.env.GBRAIN_SOURCE || "default";
   return r.stdout.trim() || "default";
+}
+
+// The source entity stubs are WRITTEN to. This is deliberately separate from
+// the NER corpus source (resolveSourceId): the sweep reads emails out of
+// `mailagent-emails` but the entity pages it creates live in the personal
+// brain. Conflating the two is what made this destructive — see
+// listEntityPages() below.
+function resolveEntitySource(): string {
+  return process.env.KOS_ENTITY_SOURCE || "default";
+}
+
+// Existing entity pages in the WRITE target, so pageExists() can see them.
+//
+// This function exists because its absence destroyed data. gbrainList() (the
+// NER corpus enumerator) is scoped to the corpus source AND deliberately
+// excludes entity types — so knownSlugs never contained a single entity page,
+// while writeStub() persisted with a bare `gbrain put` that resolved to
+// `default`. Existence was checked in one source and the write landed in
+// another: every entity page already in `default` was invisible, judged "new",
+// and overwritten with a template stub.
+//
+// On 2026-07-27 that clobbered 614 pages in one run (411 with real content);
+// stub-date forensics show the same bug firing on every successful sweep back
+// to 2026-04-17. Restored from the 03:34 backup; snapshot of the clobbered
+// state kept in pages_clobber_snapshot_20260727.
+//
+// The tell was in the log the whole time: "3237 to write, 0 already exist" —
+// zero collisions against a brain holding 2,990 entity pages is not a clean
+// run, it is proof the existence check is looking somewhere else.
+function listEntityPages(entitySource: string): ListRow[] {
+  const dbUrl = process.env.DATABASE_URL
+    ?? `postgresql://${process.env.USER ?? 'chenyuanquan'}@127.0.0.1:5432/gbrain`;
+  const sql = `
+    SELECT slug,
+           type,
+           to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS updated,
+           COALESCE(NULLIF(title, ''), slug) AS title
+    FROM pages
+    WHERE source_id = '${entitySource.replace(/'/g, "''")}'
+      AND deleted_at IS NULL
+    ORDER BY id;
+  `;
+  const r = spawnSync("psql", [dbUrl, "-At", "-F", "\t", "-c", sql], { encoding: "utf-8" });
+  // Hard-fail: a silent empty result here is exactly the failure mode above.
+  if (r.status !== 0) throw new Error(`psql entity-page enumerate failed: ${r.stderr}`);
+  return r.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      return { slug: parts[0], type: parts[1] ?? "", updated: parts[2] ?? "", title: parts.slice(3).join("\t") ?? "" };
+    });
 }
 
 function gbrainGet(slug: string): string {
@@ -472,6 +530,7 @@ async function runWritePhase(
   summary: Summary,
   flags: Flags,
   sourceId: string,
+  entitySource: string,
 ): Promise<void> {
   // ── Phase D: write stubs (with Tavily for Tier 2) ──
   console.log("[D] Writing stubs …");
@@ -487,7 +546,14 @@ async function runWritePhase(
   for (let di = 0; di < newCandidates.length; di++) {
     const cand = newCandidates[di];
     let tavilyBlock: string | undefined;
-    if (cand.tier === 2 && tavilyBudget > 0 && (cand.canonical.kind === "person" || cand.canonical.kind === "company")) {
+    // Tavily is OFF unless explicitly asked for. It resolves a bare name
+    // against the public web, and these names come from an internal corpus
+    // where they are colleagues, not public figures — so the top hit is
+    // routinely a different person entirely. people/shuo-han was filled in as
+    // a Duke professor of biochemistry; the actual Shuo Han is a TP-Link
+    // colleague. Wrong facts stated confidently on a page are worse than the
+    // blank the stub would otherwise carry.
+    if (flags.tavily && cand.tier === 2 && tavilyBudget > 0 && (cand.canonical.kind === "person" || cand.canonical.kind === "company")) {
       const q = buildEntityQuery(cand.canonical.name, cand.canonical.kind);
       const result = await tavilySearch(q);
       summary.tavily_calls++;
@@ -516,7 +582,7 @@ async function runWritePhase(
       tier1_blocked: cand.tier1_blocked,
     };
 
-    const res = writeStub(input, false);
+    const res = writeStub(input, false, entitySource);
     if (res.ok) {
       summary.stubs_written++;
       summary.created_slugs.push(cand.slug);
@@ -596,14 +662,18 @@ async function main() {
 
   try {
     const sourceId = resolveSourceId();
-    console.log(`source: ${sourceId}`);
+    const entitySource = resolveEntitySource();
+    console.log(`source: ${sourceId} (NER corpus)  →  entity source: ${entitySource} (writes)`);
 
     // ── --resume: skip NER/dedupe, re-run Phase D only from the candidates cache ──
     if (flags.resume) {
       console.log("[resume] loading candidates cache (no NER) …");
       const rows = gbrainList();
-      const knownSlugs = new Set(rows.map((r) => r.slug));
-      const aliasIndex = buildAliasIndex(rows);
+      // Union: corpus pages (slug collisions) + existing entity pages in the
+      // write target (the ones the old code was blind to).
+      const existing = [...rows, ...listEntityPages(entitySource)];
+      const knownSlugs = new Set(existing.map((r) => r.slug));
+      const aliasIndex = buildAliasIndex(existing);
       const cached = loadCandidates(candidatesCachePath(sourceId));
       if (!cached || cached.length === 0) {
         console.error(`✗ no candidates cache at ${candidatesCachePath(sourceId)} — run a full sweep (or --plan) first.`);
@@ -634,7 +704,7 @@ async function main() {
       }
       summary.unique_entities = cached.length;
       console.log(`[resume] ${resumeCandidates.length} to write, ${skipped} already exist (skipped)`);
-      await runWritePhase(resumeCandidates, summary, flags, sourceId);
+      await runWritePhase(resumeCandidates, summary, flags, sourceId, entitySource);
       process.exit(summary.aborted ? 1 : summary.stubs_failed > 0 ? 2 : 0);
     }
 
@@ -645,8 +715,9 @@ async function main() {
     summary.total_pages = rows.length;
     console.log(`    ${rows.length} pages`);
 
-    const knownSlugs = new Set(rows.map((r) => r.slug));
-    const aliasIndex = buildAliasIndex(rows);
+    const existing = [...rows, ...listEntityPages(entitySource)];
+    const knownSlugs = new Set(existing.map((r) => r.slug));
+    const aliasIndex = buildAliasIndex(existing);
 
     const extractions: Extraction[] = [];
     if (flags.dry) {
@@ -764,7 +835,7 @@ async function main() {
       process.exit(0);
     }
 
-    await runWritePhase(newCandidates, summary, flags, sourceId);
+    await runWritePhase(newCandidates, summary, flags, sourceId, entitySource);
     process.exit(summary.aborted ? 1 : summary.stubs_failed > 0 ? 2 : 0);
   } finally {
     releaseLock();

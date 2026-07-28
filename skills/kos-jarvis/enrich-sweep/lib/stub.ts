@@ -207,12 +207,17 @@ export function renderStub(input: StubInput): string {
   return `${fm}\n\n${body}\n`;
 }
 
-export function writeStub(input: StubInput, dryRun: boolean): WriteResult {
+export function writeStub(input: StubInput, dryRun: boolean, entitySource: string): WriteResult {
   const md = renderStub(input);
   if (dryRun) {
-    return { slug: input.slug, ok: true, message: `[dry] would write ${md.length}B to ${input.slug}` };
+    return { slug: input.slug, ok: true, message: `[dry] would write ${md.length}B to ${entitySource}/${input.slug}` };
   }
-  const r = spawnSync("gbrain", ["put", input.slug, "--content", md], {
+  // --source is mandatory, and precedes the slug. Slugs are not unique across
+  // sources, so a bare `gbrain put` resolves wherever it likes — it silently
+  // landed in `default` while the caller's existence check read the corpus
+  // source, and overwrote real pages that check could not see. Naming the
+  // source makes the write target the same one listEntityPages() inspects.
+  const r = spawnSync("gbrain", ["put", "--source", entitySource, input.slug, "--content", md], {
     encoding: "utf-8",
   });
   if (r.status === 0) {

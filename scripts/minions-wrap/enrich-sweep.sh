@@ -5,9 +5,20 @@ set -eu
 
 GBRAIN="/Users/chenyuanquan/.bun/bin/gbrain"
 
+# DISABLED 2026-07-27 (launchctl disable com.jarvis.enrich-sweep). Do not
+# re-enable until the questions in skills/kos-jarvis/enrich-sweep/SKILL.md
+# "When to run" are answered: the skill was designed as a ONE-SHOT over an
+# 86-page brain producing ~20-40 stubs for a human to review, and its own doc
+# says a recurring cron is "not wired in v1.0; too expensive at full-brain
+# scale". It was wired to a weekly cron anyway. The brain is now 30k pages, so
+# the same algorithm yields 3,237 stubs a week — not a review queue, just bulk.
+#
+# `--max-tier2 30` was dropped: Tavily is now opt-in (--tavily) because it
+# resolves internal-corpus names against the public web and returns the wrong
+# person. Nine pages had to be scrubbed of it on 2026-07-27.
 PARAMS=$(cat <<'JSON'
 {
-  "cmd": "cd /Users/chenyuanquan/Projects/jarvis-knowledge-os-v2 && set -a && . ./.env.local && set +a && /Users/chenyuanquan/.bun/bin/bun run skills/kos-jarvis/enrich-sweep/run.ts --min-mentions 3 --max-tier2 30",
+  "cmd": "cd /Users/chenyuanquan/Projects/jarvis-knowledge-os-v2 && set -a && . ./.env.local && set +a && /Users/chenyuanquan/.bun/bin/bun run skills/kos-jarvis/enrich-sweep/run.ts --min-mentions 3",
   "cwd": "/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2"
 }
 JSON
