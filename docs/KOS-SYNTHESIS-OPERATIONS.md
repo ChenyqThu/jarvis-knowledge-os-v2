@@ -40,6 +40,36 @@ ls -t ~/brain/.agent/dream-cycles/*.json | head -3
 
 失败时 `archiveReport()` 根本不写归档，所以 `latest.json` 可能长期指向一次白天的手动运行而**伪装成健康**。看时间戳：定时运行的归档应该是 UTC 10:xx（= PT 03:11）。
 
+### ⚠️ 改了 plist 不等于改了 cron
+
+**launchd 在 bootstrap 那一刻把 plist 的 `EnvironmentVariables` 拷进内存，之后再改磁盘上的 plist 完全无效**，直到你 bootout + bootstrap。
+
+这不是理论问题。§6.41（2026-07-14）把 4 个 plist 从 avman 中继切到官方 OpenAI 直连，但只有 `gbrain-serve-http` 被重新 bootstrap 了。`com.jarvis.dream-cycle` 在内存里继续带着 `OPENAI_BASE_URL=https://api.avman.ai/v1` 和那把作废的中继 key，**整整 14 个晚上每次都死在 `synthesize_concepts` 的 `无可用渠道（distributor）` 上**。
+
+更要命的是它怎么骗过验证的：**从磁盘读 plist 复现环境的脚本会通过**，因为磁盘上的 plist 是对的。手动跑绿了，cron 照样红。要验就得验 launchd 自己那份：
+
+```bash
+# 唯一可信的一份 —— launchd 实际会交给进程的环境
+launchctl print gui/$(id -u)/com.jarvis.dream-cycle | grep -E 'OPENAI_(BASE_URL|API_KEY)'
+
+# 全量体检：任何一行输出都说明那个 job 还挂在中继上
+for p in ~/Library/LaunchAgents/com.jarvis.*.plist; do
+  j=$(basename "$p" .plist)
+  launchctl print "gui/$(id -u)/$j" 2>/dev/null | grep -q avman && echo "STALE: $j"
+done
+```
+
+改完 plist 一律跟一遍：
+
+```bash
+launchctl bootout   gui/$(id -u)/com.jarvis.dream-cycle
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.dream-cycle.plist
+```
+
+真验一次（**不花钱**）：`launchctl kickstart -k` 起真身，看日志里出现的是 `REFUSING TO RUN` 还是 `invoking: gbrain dream`，然后在 ~40 秒内（`synthesize_concepts` 之前）`launchctl kill TERM` 掉。前面几个阶段都是只读审计，中断无害。
+
+> 注意日志里**不会**实时出现 `[cycle.*]` 行——dream-wrap 用 `spawnSync`，子进程 stderr 要等它退出才一次性刷出来。别把"没输出"当成"没在跑"。
+
 ---
 
 ## 二、`synthesis-topup` —— 把富余预算变成知识
@@ -213,6 +243,7 @@ pg_restore -d gbrain_restore_check -t pages --no-owner --no-acl ~/.gbrain/backup
 3. **零碰撞是危险信号**，不是干净信号
 4. **判据要抽样验证再批量执行**——清 Tavily 时第一版判据会误删 229 个合法页（把老版 stub 模板的 `- Role: unknown` 当成了 Tavily 散文），抽了 14 个样本才发现
 5. **跑完整 `bun test` 会污染生产配置**——`test/schema-cli.test.ts` 等会写 `~/.gbrain/config.json`，曾把 `schema_pack` 从 `gbrain-everything` 冲成 `gbrain-base-v2`，导致两个综合阶段被静默跳过
+6. **验证要打在真身上，不能打在复刻的副本上**——"用 plist 复现 launchd 环境"的脚本读的是磁盘，而 launchd 跑的是它 bootstrap 时的内存快照；两者不一致时手动跑全绿、cron 全红（见 §一"改了 plist 不等于改了 cron"）
 
 ---
 
