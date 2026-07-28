@@ -234,13 +234,25 @@ function resolveSourceId(): string {
   return r.stdout.trim() || "default";
 }
 
-// The source entity stubs are WRITTEN to. This is deliberately separate from
-// the NER corpus source (resolveSourceId): the sweep reads emails out of
-// `mailagent-emails` but the entity pages it creates live in the personal
-// brain. Conflating the two is what made this destructive — see
-// listEntityPages() below.
-function resolveEntitySource(): string {
-  return process.env.KOS_ENTITY_SOURCE || "default";
+// The source entity stubs are WRITTEN to: the same source the mentions were
+// extracted from, unless KOS_ENTITY_SOURCE overrides it.
+//
+// It used to be an unconditional `default`, which is how ~1,000 duplicate
+// shells ended up in the personal brain for people who already had synthesized
+// dossiers in `mailagent-emails`. Measured 2026-07-28 before the cleanup:
+//
+//   source            person   company   entity(sweep output)
+//   mailagent-emails   99%       98%       0% synthesized
+//   default            99%       99%       0% synthesized  ← 1,044 shells,
+//                                             989 of which duplicated a
+//                                             finished page in the corpus source
+//
+// Work-derived entities belong beside the corpus that produced them, so the
+// cycle's synthesis (which is per-source) can actually reach them. Writing them
+// to `default` instead put them where nothing was going to enrich them, and
+// where they shadowed the real pages in search results.
+function resolveEntitySource(corpusSourceId: string): string {
+  return process.env.KOS_ENTITY_SOURCE || corpusSourceId;
 }
 
 // Existing entity pages in the WRITE target, so pageExists() can see them.
@@ -662,7 +674,7 @@ async function main() {
 
   try {
     const sourceId = resolveSourceId();
-    const entitySource = resolveEntitySource();
+    const entitySource = resolveEntitySource(sourceId);
     console.log(`source: ${sourceId} (NER corpus)  →  entity source: ${entitySource} (writes)`);
 
     // ── --resume: skip NER/dedupe, re-run Phase D only from the candidates cache ──
