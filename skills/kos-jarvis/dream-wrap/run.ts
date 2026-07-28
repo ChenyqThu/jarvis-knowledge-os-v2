@@ -192,10 +192,58 @@ async function embedTransportHealthy(): Promise<boolean> {
   }
 }
 
+/**
+ * Gateway-level routing failures — a multi-channel relay (one-api/new-api
+ * shape) reporting it has no upstream for the model. Distinct from the
+ * connection-layer signatures below: the TLS handshake succeeded and the
+ * relay answered, it just refused to route.
+ *
+ * Kept separate because seeing ANY of these is itself a §6.41 violation —
+ * the embed path is supposed to go direct to api.openai.com, where an error
+ * would never come back as Chinese distributor text.
+ */
+const RELAY_ROUTING_FAILURE = /无可用渠道|distributor|当前分组.*不可用|上游负载已饱和|no available channel/;
+
+/**
+ * The startup gate proves the embed path is direct BEFORE the child starts.
+ * If a relay signature still shows up in the child's stderr, something put one
+ * back at runtime through a plane the gate cannot see — say so explicitly,
+ * because the retry below will otherwise bury it as a generic transport blip.
+ */
+function warnIfRelayOnEmbedPath(stderr: string): void {
+  const m = stderr.match(RELAY_ROUTING_FAILURE);
+  if (!m) return;
+  console.error(
+    `[dream-wrap] §6.41 VIOLATION: a relay answered on the embed path (matched ${JSON.stringify(m[0])}).`,
+  );
+  console.error(
+    `[dream-wrap] The embed path must go direct to api.openai.com — api.openai.com does not emit this error shape.`,
+  );
+  console.error(
+    `[dream-wrap] Check every plane: 4 plists, .env / .env.local, ~/.gbrain/config.json, DB config, sources.config, launchctl getenv.`,
+  );
+}
+
 /** Matches the failure shapes the ai.gateway transport retry logs emit. */
 function looksLikeTransportFailure(stderr: string): boolean {
-  return /UNABLE_TO_VERIFY_LEAF_SIGNATURE|unable to verify the first certificate|SELF_SIGNED_CERT|CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED|embed transport gave up|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED/.test(
-    stderr,
+  // Added 2026-07-28: the 07-27 03:11 cron died on
+  // `分组 *** 下模型 text-embedding-3-large 无可用渠道（distributor）` and this
+  // regex did not match it, so the run got zero retries — and because
+  // archiveReport() only fires on success, it left no archive either. Six
+  // consecutive nights failed inside cycle.synthesize_concepts that way while
+  // latest.json kept pointing at a daytime manual run, so the cycle looked
+  // healthy from every angle except the stderr log nobody was reading.
+  //
+  // Retrying a routing error is admittedly a coin flip — if a relay is on the
+  // embed path because of a config fault, six attempts over 4.5h will not
+  // un-set it. It is still strictly better than the current single-shot death:
+  // the retries are logged, and a relay whose channel is merely down (avman's
+  // te3 channel, §6.41) can recover within the window.
+  return (
+    RELAY_ROUTING_FAILURE.test(stderr) ||
+    /UNABLE_TO_VERIFY_LEAF_SIGNATURE|unable to verify the first certificate|SELF_SIGNED_CERT|CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED|embed transport gave up|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED/.test(
+      stderr,
+    )
   );
 }
 
@@ -306,6 +354,7 @@ function runDreamOnce(brainDir: string, passthrough: string[]): DreamOutcome {
     console.error(
       `[dream-wrap] gbrain dream produced no JSON on stdout (exit=${r.status}, elapsed=${elapsedMs}ms)`,
     );
+    warnIfRelayOnEmbedPath(r.stderr ?? "");
     if (looksLikeTransportFailure(r.stderr ?? "")) {
       return { kind: "transport", detail: `exit=${r.status}, no JSON, transport signature in stderr` };
     }
