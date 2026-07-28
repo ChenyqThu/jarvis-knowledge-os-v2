@@ -501,7 +501,22 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 ---
 
-## P0 — `sources.config` 被上游 #2829 损坏(生产数据,added 2026-07-28, §6.45)
+## P0 — `sources.config` 被上游 #2829 损坏 — **DONE 2026-07-28**(Lucien 授权后当日执行)
+
+**已修复。** 快照存 `/tmp/sources-config-before-fix-2026-07-28.txt`,然后事务内
+`UPDATE sources SET config = (config #>> '{}')::jsonb WHERE … AND
+jsonb_typeof(config)='string'`(跑两遍,第二遍匹配 **0 行** → 证实只有单层包裹,
+无需 doctor 那条 depth<10 的递归 SQL)。结果 4/4 源均为 object:
+`gbrain-docs` → `{"federated": false}`、`mailagent-emails` → `{}`,
+`default`/`omada` 未触碰。验证:doctor `source_config_shape` →
+**OK: All source config values are JSON objects**;检索行为与 §6.45 A/B 基线
+逐位一致(`知识管理` 0.9123 / `Karpathy` 1.1908)—— 符合预期,因为坏字符串
+此前读不出来等效于 no-config,修复后 `gbrain-docs` 显式 false、
+`mailagent-emails` 空对象,federated 语义不变。再犯概率低:本批已带上游
+#2829 的 re-wrapping 修复(`540b86ff`)+ #3420 的写路径自愈(`16782aee`)。
+原始条目留档如下。
+
+### 原始条目(2026-07-28, §6.45)
 
 v0.42.66.1 新增的 doctor 检查 `source_config_shape` 在生产库上直接报出来:
 
@@ -525,7 +540,27 @@ v0.42.66.1 新增的 doctor 检查 `source_config_shape` 在生产库上直接�
 
 ---
 
-## P1 — dream cycle 停摆 162h + `enrich-sweep` 被 disabled(added 2026-07-28, §6.45)
+## P1 — dream cycle 停摆 162h + `enrich-sweep` 被 disabled — **(a) 已由另一 session 修复,(b) 仍 OPEN**(复核 2026-07-28)
+
+**(a) dream-cycle:另一个 session 已于 2026-07-28 修复**(launchd 内存环境滞留
+14 晚带着废弃 avman 中继,bootout+bootstrap 换干净环境,同时 reload 了
+kos-patrol;全过程见记忆 `pitfall-launchd-env-stale` 与
+`docs/KOS-SYNTHESIS-OPERATIONS.md` §一)。本 session 复核佐证:
+`dream.stderr.log` 末行(09:09)已是 `invoking: gbrain dream`(**过了 REFUSING
+守卫**),launchctl 里 dream-cycle 的 -15 退出码正是那次「kickstart 起真身 +
+40 秒内 TERM」零成本验证的痕迹。**残余:`last_full_cycle_at` 仍停在
+2026-07-21T22:19Z** —— 环境修了,但还没有一轮完整 cycle 跑完;今晚 03:11 定时
+触发后 doctor `cycle_freshness` 应自行转 OK,`links_extraction_lag` 89% 随
+cycle 的 extract phase 消化。**明早看一眼 doctor 即可关账。**
+
+**(b) enrich-sweep:仍 disabled,OPEN。** 复核确认 `launchctl print-disabled
+gui/501` 依旧报 `"com.jarvis.enrich-sweep" => disabled`,另一 session 未动它。
+是花钱的 LLM 作业,启用与否需 Lucien 决定(若要启用:
+`launchctl enable gui/501/com.jarvis.enrich-sweep` + bootstrap plist)。
+
+原始条目留档如下。
+
+### 原始条目(2026-07-28, §6.45)
 
 两件都**不是本次 sync 造成的**,是部署 smoke 时撞见的既存状态。
 
