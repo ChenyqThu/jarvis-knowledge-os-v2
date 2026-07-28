@@ -1,6 +1,60 @@
-# kos-jarvis — Outstanding Work (post v0.42.64.0 sync, 2026-07-22)
+# kos-jarvis — Outstanding Work (post v0.42.66.1 sync, 2026-07-28)
 
-> **Sync 2026-07-22** (§6.44, v0.42.63.0 → v0.42.64.0, **20 commits**, 74 files,
+> **Sync 2026-07-28** (§6.45, v0.42.64.0 → v0.42.66.1, **265 commits** across 2
+> releases, 446 files, +29,791/−2,430): **the largest batch to date.** Two
+> conflicts, one real migration (schema **v124 → v125**). Conflicts:
+> `.github/workflows/test.yml` modify/delete **again** (same file, same cause as
+> §6.44 — expect it every batch; keep the fork's deletion), and
+> `src/core/link-extraction.ts`, where the fork's plural `sources` and upstream's
+> new `reference` (#2071) are **independent additions to the same alternation** —
+> keep both. Upstream self-reports 147 "verified fixes" but the log is full of
+> `Revert` → `reland` round-trips; **judge the batch by the final diff, not the
+> commit count.**
+>
+> **§6.44's "stat conservation" survival check FAILED this batch — and that was
+> good news.** Fork src went 6 files / +243/−27 → **4 files / +187/−23** because
+> upstream *absorbed* two fork patches outright: `extract-atoms.ts` concept
+> stamping (→ `eb6cb4a1`, #2123/#2124) and `extract-atoms-drain.ts` zero-yield
+> tombstoning (→ `8cd87968`, #2144/#2145). All 7 semantics verified present
+> post-merge. **Lesson: treat stat conservation as a "look closer" signal, not a
+> pass/fail gate** — a shrinking delta can mean a patch was swallowed (bad) or
+> upstream took it (good), and only line-level checking tells you which.
+>
+> **§6.39's multi-statement-DDL P0: root cause REFUTED, not fixed.** v125 is the
+> first multi-statement `sql:` migration since it was filed and it applied
+> cleanly — but its statements are independent, so that proves nothing on its
+> own. Replaying **v121's verbatim `sql` block** (the one that failed
+> deterministically in §6.39) through the same `reserved.unsafe()` path now
+> **passes**, while `runMigrationSQL` + `runUnsafe` are **byte-identical** to the
+> §6.40-era code and postgres.js has been **3.4.9 all along**. Nothing changed,
+> so the postgres.js batch-parse explanation cannot be right. The symptom was
+> real; the diagnosis was not, and it is sitting in a public upstream issue.
+> **Action: post a correction on garrytan/gbrain#2667** (not yet done — outward
+> facing, Lucien's call). Details in
+> `docs/UPSTREAM-PATCHES/v0.42.57.0-migrate-only-multistatement-ddl.md`.
+>
+> Green: typecheck 0, `check:all` **23/23** (new symlink gate; `exports-count`
+> baseline 20 → 21), `bun test test/ai/` **467 pass / 0 fail** (was 405).
+> Upstream's new zero-tolerance tracked-symlink guard (#3463) fired on 3
+> pre-existing fork symlinks under `workers/kos-worker/`; resolved via the
+> `ALLOWLIST` upstream left for exactly this case (relative, targets tracked) —
+> **the fork's first modification of an upstream script**, with a negative
+> control proving the guard still catches new symlinks.
+>
+> Production **29,698 pages / 78,258 chunks / 0 NULL**, no loss across the
+> deploy; both /health → **0.42.66.1**; schema **125**; `brain_score` **84/100**
+> (level with §6.44); `embedding_provider` **349ms** (§6.43 724ms, §6.44 1312ms)
+> and **`embed_staleness: no stale chunks`** — no signature drift, no accidental
+> re-embed. Daemon again did **not** self-relaunch after `bun run build`
+> (5th batch running — a constant). **Retrieval A/B vs a 0.42.64.0 binary on the
+> same prod DB: 8/8 identical → this batch has zero retrieval impact**, and the
+> `--limit` non-monotonicity is confirmed pre-existing (it is also **bidirectional**:
+> `Karpathy` scores *higher* at limit 5, `竞品分析` scores *lower*).
+> **MCP wire**: #1410's 401 `resource_metadata` still correct through cloudflared,
+> existing clients unbroken, and `whoami` now returns `source_id` +
+> `federated_read` on the wire (#3279). **Three new items below.** See §6.45.
+>
+> **Previous — Sync 2026-07-22** (§6.44, v0.42.63.0 → v0.42.64.0, **20 commits**, 74 files,
 > +2,503/−228): small single-release batch, **zero migrations** (schema stays
 > v124), **one modify/delete conflict** — `.github/workflows/test.yml`, which the
 > fork deleted in `1adab13b` and upstream touched in #3231; resolved by keeping
@@ -444,6 +498,76 @@ pending), brain_score 80/100。doctor status: warnings (resolver_health 51 issue
 全是 ~/.openclaw/workspace AGENTS.md 跨 boundary 引用,不是 fork 责任)。生产
 Postgres 17 + pgvector 0.8.2 已升到 schema v45 (35 tables 全 RLS,新增 facts +
 oauth_*),WAL fork patch retained for brain-db.ts。
+
+---
+
+## P0 — `sources.config` 被上游 #2829 损坏(生产数据,added 2026-07-28, §6.45)
+
+v0.42.66.1 新增的 doctor 检查 `source_config_shape` 在生产库上直接报出来:
+
+| source | 现状 | 应为 |
+|---|---|---|
+| `gbrain-docs` | 字符串 `"{\"federated\":false}"` | 对象 `{"federated": false}` |
+| `mailagent-emails` | 字符串 `"{}"` | 对象 `{}` |
+| `default` / `omada` | 对象,完好 | — |
+
+成因是上游 #2829 的 config re-wrapping bug(每次写入把对象再包一层字符串)。
+影响:**这两个源的 federation / ACL 设置读不出来**。
+
+**本批之后这条的优先级上升了** —— `8160236a` (#2561) 让
+`sources.config.federated` 真正参与本地 CLI 的 unqualified search,在此之前
+这个字段基本没人读,坏了也不显形。注意 `default`(`{"federated": true}`)是好的,
+所以主路径未受影响。
+
+修法(上游 `16782aee` / #3420 已给自愈):跑任一 `gbrain sources` config 写入即可
+自愈嵌套字符串,或按 doctor 打印的 SQL 直接 `UPDATE sources SET config = …`。
+**是生产数据写入,需 Lucien 决定后执行。** 改完复跑 `gbrain doctor` 确认该检查转 OK。
+
+---
+
+## P1 — dream cycle 停摆 162h + `enrich-sweep` 被 disabled(added 2026-07-28, §6.45)
+
+两件都**不是本次 sync 造成的**,是部署 smoke 时撞见的既存状态。
+
+**(a) dream cycle 自 2026-07-21T22:19Z 起没跑过**(doctor 唯一 FAIL
+`cycle_freshness`,162h)。连带 `links_extraction_lag` 从 §6.44 的 38% 涨到
+**89%**(26,578/29,698 页有未抽取的边)。这是 `a37ef462` 那条 commit 在处理的
+"plist 编辑不触达已加载的 launchd job" 问题的延续。`dream.stderr.log` 里的链条:
+avman 中继报 `无可用渠道(distributor)` 打挂一轮 cycle → 之后 wrapper 的 §6.41
+自检探针拿到**另一把 key**(`sk-WginM…`,而 plist / `.env.local` 里都是
+`sk-proj-E2kJ…`)的 401 → 按铁律 `REFUSING TO RUN`。当前四个平面(plist /
+`.env` / `.env.local` / `launchctl getenv`)**都已查过,没有一个还带
+`sk-WginM`**,所以那条 REFUSING 应是历史记录 —— 但 cycle 至今没恢复,需要
+单独收口(手动跑一次 `gbrain dream --source default` 验证,再确认 03:11 的
+定时是否真的会触发)。
+
+**(b) `com.jarvis.enrich-sweep` 在 launchd 里是 `disabled`。** plist 文件完好
+(22:00,env 合规,无 `OPENAI_BASE_URL`),但 `launchctl print-disabled gui/501`
+明确报 disabled,`launchctl list` 里根本没有它。是花钱的 LLM 作业,未擅自启用 ——
+**需要先确认是当初有意关的还是误关的。**
+
+> **顺带纠正一条核查方法。** §6.44 写"4 个 plist 逐个确认在位",那句话只核了
+> **文件里的 env**,没核**作业是否被加载**。以后这类核对必须同时看
+> `launchctl list`(在不在)和 `launchctl print-disabled gui/501`(是不是被禁),
+> 光看 plist 内容会给出虚假的安全感。
+
+---
+
+## P2 — `#2846` 是否真的替掉了 embedding-label-normalize cron(added 2026-07-28, §6.45)
+
+上游 `e1919fab` (#2846) 让 `upsertChunks` 写 `content_chunks.model` 时改用
+gateway **运行时解析出的模型**,而不是编译期常量 `zeroentropyai:zembed-1` ——
+这正是 §6.32 那条 cosmetic 误标、也正是 `com.jarvis.embedding-label-normalize`
+日 cron 存在的全部理由。
+
+**本批拿不到证据**:部署后误标 20 行,其中 19 行写于 09:35–09:51,**早于
+10:03:56 的 daemon 重启**(旧二进制写的),重启后还没有新 chunk 落库。
+
+下次 sync(或任意一次新内容入库后)复查:
+`SELECT model, count(*) FROM content_chunks WHERE created_at > <重启时刻> GROUP BY 1;`
+若新写入的 chunk 标签正确 → 该 cron 可降级为纯历史数据修复,再择机退役
+(退役前记得它同时还兼着"config 平面一旦离开 te3 就拒跑"的守卫作用,
+别把守卫一起扔掉)。
 
 ---
 

@@ -165,29 +165,45 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.43 v0.42.63.0
-   upstream sync (2026-07-21, **106 commits** / v0.42.59.0 → v0.42.63.0 / 443
-   files — largest batch to date, yet **zero-conflict merge**. `merge-tree`
-   flagged 8 "changed in both" files incl. 3 rewrite-scale hits on fork src
-   patches (gateway.ts +378/−186, pglite-engine.ts +203/−38, extract-atoms.ts
-   +112/−82); all auto-resolved by the recursive virtual base — **`changed in
-   both` is a verify-list, NOT a conflict forecast**. Schema **v122 → v124, two
-   migrations applied** (v123 configurable FTS language, no backfill at our
-   `english` default; v124 drops compiled_truth from pages.search_vector, #2704
-   tsvector 1MB overflow). **§6.39's multi-statement-DDL P0 still did not
-   trigger — this time genuinely verified**: both migrations are `sql: ''` +
-   handler with per-statement executeRaw, structurally unable to reach the
-   `conn.unsafe` batch path. **P0 stays OPEN and unproven** — needs a
-   multi-statement `sql:` migration to settle. Fork territory zero-invasion,
-   5 fork src/ patches survived (gateway.ts embed-retry block stayed *inside*
-   upstream's `__embedInputTypeStore` context — §6.35 composition intact).
-   Prod 27,469 pages / 71,415 chunks / 0 NULL / te3@1536 (6 cosmetic mislabels,
-   was 48); brain_score 81/100 (+1), FAILs 3→2 as orphan_ratio fell 92%→62%;
-   doctor embedding_provider ✓ **724ms — 16× faster than §6.40's 11,848ms via
-   the avman relay**, quantifying §6.41's direct-connect win; both /health →
-   0.42.63.0; CJK modal query 3/3 stable with scores up 2–3× (upstream
-   `184b6cb8` title-candidate arm — recall gain, head ordering unchanged))**.
-   Previous: §6.40 v0.42.59.0 sync (2026-07-13, 7 commits, zero-migration
+   operates ↔ OpenClaw executes). Latest sync story: **§6.44 v0.42.64.0
+   upstream sync (2026-07-22, 20 commits / v0.42.63.0 → v0.42.64.0 / 74 files —
+   small single-release batch, **zero migrations** (schema stays v124), **one
+   modify/delete conflict**: `.github/workflows/test.yml`, deleted by the fork
+   in `1adab13b`, touched upstream in #3231 → kept deleted. `/sync-upstream`'s
+   auto-gathered delta reported **no new commits while there were 20** — always
+   confirm with `git log HEAD..upstream/master`. Fork territory zero-invasion;
+   **all 6 fork src/ patches survived byte-for-byte** (pre/post
+   `git diff upstream/master -- src/` stat identical: 6 files / +243/−27 — a
+   cheap survival check). **`link-extraction.ts`'s plural-`sources` DIR_PATTERN
+   patch is NOT superseded by upstream #2866** (that only fixes the generic
+   wikilink pass and is flag-gated behind `link_resolution.global_basename`;
+   ours makes `sources/` *qualified*, covers markdown links, unconditional) —
+   don't delete it just because upstream touched the file. Green: typecheck 0,
+   check:all 22/22, `bun test test/ai/` 405 pass / 0 fail (was 393). Prod
+   27,553 pages / 71,337 chunks / 0 NULL, byte-identical across the deploy;
+   both /health → 0.42.64.0; brain_score **84/100** (+3), FAILs 3→1 (only
+   `cycle_freshness`). **`orphan_ratio` 25% + OK is the fork's own
+   orphan-reduction pass (`7cc00641`, 62%→25%), NOT upstream #3015** — #3015's
+   exclusion policy barely moved the denominator (20,722→20,700). **#1410
+   smoke** (this batch's one externally-visible win): `/mcp` 401 now carries
+   `resource_metadata=…/.well-known/oauth-protected-resource` with the correct
+   *public* issuer through cloudflared, and existing clients are unbroken
+   (lucien-cli client_credentials → token → tools/list OK, 7/7 clients
+   consistent). Daemon again did **not** self-relaunch after `bun run build`
+   overwrote its binary — explicit bootout+bootstrap needed, 4 batches running,
+   treat as constant. **Found, pre-existing not introduced**: retrieval top-1
+   depends on `--limit` and is non-monotone (`知识管理` → 0.8391/0.8996/0.9200 at
+   limit 1/3/5, three different heads); proven pre-existing by A/B-ing a
+   0.42.63.0 binary against the same prod DB — identical output, which also
+   proves this batch had zero retrieval impact. CJK smoke should henceforth run
+   `limit ∈ {1,5}`)**.
+   Previous: §6.43 v0.42.63.0 sync (2026-07-21, **106 commits** / 443 files —
+   largest batch to date, yet zero-conflict; schema v122→v124, two migrations;
+   **`merge-tree`'s "changed in both" is a verify-list, NOT a conflict
+   forecast** — 3 rewrite-scale hits on fork src patches all auto-resolved;
+   doctor embedding_provider **724ms vs §6.40's 11,848ms via the avman relay**,
+   quantifying §6.41's direct-connect win);
+   §6.40 v0.42.59.0 sync (2026-07-13, 7 commits, zero-migration
    v122, provider-agnostic gateway; note its "litellm recipe unusable" caveat
    retirement still stands);
    §6.39 v0.42.57.0 sync (2026-07-07, 3 commits, schema v119→v122
@@ -2304,14 +2320,17 @@ GBrain is tuned for the Supabase **Transaction pooler** (port 6543): it
 auto-disables prepared statements there and routes `engine.transaction()`
 (migrations, DDL, sync imports) to a derived **direct** connection
 (`db.<ref>.supabase.co:5432`). That direct host is IPv6-only, so on an
-IPv4-only host, reads work but sync **silently skips most pages**. This is the
-number one cause of "sync ran but nothing happened."
+IPv4-only host it is unreachable. When that happens gbrain now falls back to
+the pooler automatically (one stderr warning, then single-pool mode for the
+rest of the process) — but the pooler's ~2-min statement timeout can truncate
+very long migrations or bulk imports.
 
 Fix: make the direct connection reachable over IPv4. Either set
 `GBRAIN_DIRECT_DATABASE_URL` to the **Session pooler** string (port 5432 on the
-`pooler.supabase.com` host, IPv4), or enable Supabase's IPv4 add-on. Verify by
-running `gbrain sync` and checking that the page count in `gbrain stats` matches
-the syncable file count in the repo.
+`pooler.supabase.com` host, IPv4), or enable Supabase's IPv4 add-on.
+`GBRAIN_DISABLE_DIRECT_POOL=1` skips the direct pool (and the fallback warning)
+entirely. Verify by running `gbrain sync` and checking that the page count in
+`gbrain stats` matches the syncable file count in the repo.
 
 ### The Primitives
 
@@ -3485,6 +3504,43 @@ the user owns the machine.
 
 See [ALTERNATIVES.md](ALTERNATIVES.md) for a comparison of ngrok, Tailscale
 Funnel, and cloud hosts (Fly.io, Railway).
+
+### Co-located Docker workloads (self-hosted Postgres)
+
+OAuth scopes and source scoping guard the `gbrain serve --http` path. They do
+NOT guard raw Postgres. If the brain's Postgres runs as a container on the same
+Docker host as other workloads (agent runtimes, n8n, staging fixtures), any
+container sharing Docker's default `bridge` network can open a direct DB
+session — no OAuth token required — and read every source. That silently
+recreates a privileged path underneath the isolation you configured at the MCP
+layer.
+
+Network-zone the host so untrusted containers can never reach Postgres:
+
+```
+Docker host
+├── gbrain-net          ← ONLY the brain's Postgres (+ gbrain serve, if containerized)
+├── agent-<id>-net      ← each untrusted agent runtime, isolated
+└── default bridge      ← no secret-bearing databases
+```
+
+Operator checklist:
+
+```text
+[ ] Postgres is on a user-defined Docker network, not the default bridge
+    (or nothing else runs on that bridge)
+[ ] If Postgres publishes a host port at all, it binds loopback only
+    (`-p 127.0.0.1:5432:5432`, never `0.0.0.0`)
+[ ] Untrusted agent containers have no DATABASE_URL or Postgres password
+[ ] Untrusted agents reach the brain via OAuth/Bearer against serve --http only
+    (host loopback via host.docker.internal / host gateway — never gbrain-net)
+[ ] OAuth clients are least-privilege: scoped --source / --federated-read,
+    pre-minted short-lived tokens preferred over long-lived client secrets
+[ ] Isolation verified: a team-scoped client cannot read internal-only sources
+```
+
+Optional defense-in-depth: a dedicated Postgres role (or RLS) limited to the
+allowed `source_id`s, so even a leaked connection string can't read everything.
 
 ## Troubleshooting
 
