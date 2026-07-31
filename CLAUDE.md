@@ -47,12 +47,18 @@ working on this codebase, before touching anything else:
    `embedding_provider` **360ms** and **`embed_staleness: no stale chunks`**.
    Daemon again did **not** self-relaunch after `bun run build` — **6 batches,
    a constant**. **Retrieval A/B vs a 0.42.66.1 binary on the same prod DB: 7/8
-   identical, 1 changed *for the better*** (`竞品分析` L=1:
-   `competitive-benchmarking` 0.8296 → `competitive-analysis` 0.8384);
-   nondeterminism ruled out first (4× per binary, 4/4 stable each), likely
-   #3677. **Method: never compare against a previous sync's A/B table** — the
-   corpus moved (29,698→29,968), so an A/B is only valid same-moment,
-   same-corpus, two binaries. MCP wire green (#1410 `resource_metadata` still
+   identical, 1 changed** (`竞品分析` L=1: `competitive-benchmarking` 0.8296 →
+   `competitive-analysis` 0.8384); nondeterminism ruled out first (4× per
+   binary, 4/4 stable each), likely #3677. **This was first written up as "for
+   the better" — retracted the same day**: sweeping `--limit` shows top-1's
+   *identity* flips non-monotonically (L=1 analysis / **L=2 benchmarking** /
+   L=3,5,10 analysis, each 3/3 deterministic), and **at L=2 the new binary
+   returns exactly the old binary's L=1 answer** — the difference is one sample
+   inside an unstable ordering, not a quality gain. **It also sharpens the
+   known defect**: not just top-1 *score* but *which page* varies with `--limit`
+   (upstream, pre-existing). **Method: never compare against a previous sync's
+   A/B table** — the corpus moved (29,698→29,968), so an A/B is only valid
+   same-moment, same-corpus, two binaries. MCP wire green (#1410 `resource_metadata` still
    correct through cloudflared). **Two new open items, both pre-existing**:
    a `sync_failures` FAIL that is **test pollution** (`source_id: srcE`,
    `notes/bad.md` absent, written 2026-07-27 during §6.45) making `doctor` exit

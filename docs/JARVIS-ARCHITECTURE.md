@@ -6397,14 +6397,31 @@ entity 分类、#3514 compiled_truth boost、#3677 knobs_hash 折进 FTS config�
 
 那条 DIFF **先排除了非确定性再下结论**:同一二进制各连打 4 次,
 old 4/4 稳定给 `competitive-benchmarking`,new 4/4 稳定给 `competitive-analysis`
-—— 两侧各自**完全确定**,所以这是真的代码归因变化,不是 `expandQuery` 的
-LLM 抖动。**方向是对的**:`竞品分析` 字面就是 "competitive analysis",新版把
-`concepts/competitive-analysis` 顶上来,比原来的 `competitive-benchmarking`
-更贴题。
+—— 两侧各自**完全确定**,所以"同一 limit 下新旧确实不同"这一条成立,不是
+`expandQuery` 的 LLM 抖动。
+
+> **更正(同日复核):最初把这条写成"变好",这是过度解读,已推翻。**
+> 事后在新二进制上把 `limit` 扫了一遍,发现 top-1 **身份本身**就随 limit 翻转,
+> 且非单调:
+>
+> | limit | 1 | 2 | 3 | 5 | 10 |
+> |---|---|---|---|---|---|
+> | top-1 | `competitive-analysis` | **`competitive-benchmarking`** | `competitive-analysis` | 同 | 同 |
+> | 分数 | 0.8384 | **0.8296** | 0.8442 | 0.8442 | 0.8442 |
+>
+> 每个 limit 各连打 3 次均稳定 —— **确定性的,不是抖动**。关键在于
+> **新二进制在 L=2 给出的恰恰就是旧二进制在 L=1 给的那一页**。
+> 所以那处差异是**落在一个已知不稳定的排序里的单点采样**,
+> **不能据此说新版更好**。"同 limit 下新旧不同"仍然成立;"新版更贴题"不成立。
+
+**顺带把既存缺陷的定性改严**:§6.44/§6.45 记的是"top-1 分数依赖 `--limit`",
+实际比那更糟 —— **top-1 是哪一页都会随 limit 变,而且非单调**(L=1 与 L=3 一致,
+夹在中间的 L=2 反而不同)。这违反"top-1 应是与 k 无关的全局 argmax"。
+**上游既存,本批未引入也未修**;定性已在 TODO 的 P2 条目里同步改写。
 
 归因**未坐实**:两个页面 frontmatter 都不带 `compiled_truth`,所以 #3514 不像;
 最可能是 **#3677**(把 FTS configuration name 折进 `knobs_hash`,使旧的缓存/
-重排行失效)。没有进一步深挖 —— 变化方向有利且规模是 1/8,不值得。
+重排行失效)。鉴于差异本身就埋在 limit 不稳定性里,没有进一步深挖的价值。
 
 > **顺带记一条方法论**:§6.45 的表里 `竞品分析 --limit 1` 记的是
 > `competitive-analysis` 0.8442,而今天 **old 二进制**给的是

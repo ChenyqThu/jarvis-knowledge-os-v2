@@ -47,15 +47,25 @@
 > `bun run build` (**6th batch — a constant**).
 >
 > **Retrieval A/B vs a 0.42.66.1 binary on the same prod DB: 7/8 identical, 1
-> changed — and it changed for the better.** `竞品分析` at limit 1 moved from
-> `concepts/competitive-benchmarking` (0.8296) to `concepts/competitive-analysis`
-> (0.8384) — a better literal match. **Nondeterminism was ruled out first**: each
-> binary was run 4× and was 4/4 stable, so this is code-attributable, not
-> `expandQuery` LLM jitter. Likely #3677 (FTS config folded into `knobs_hash`),
-> not conclusively attributed. **Method note: do NOT compare against a previous
-> sync's A/B table** — the corpus grew 29,698 → 29,968 pages since §6.45, so the
-> old binary legitimately answers differently now than it did then; an A/B is
-> only valid same-moment, same-corpus, two binaries.
+> changed.** `竞品分析` at limit 1 moved from `concepts/competitive-benchmarking`
+> (0.8296) to `concepts/competitive-analysis` (0.8384). **Nondeterminism was ruled
+> out first**: each binary ran 4× and was 4/4 stable, so "the two binaries differ
+> at the same limit" is real, not `expandQuery` jitter. Likely #3677 (FTS config
+> folded into `knobs_hash`), not conclusively attributed.
+> **CORRECTION (same-day re-check): this was first written up as "changed for the
+> better" — that was over-reading, and it is retracted.** Sweeping `--limit` on
+> the new binary shows the **identity** of top-1 flips non-monotonically
+> (L=1 `analysis` 0.8384 / L=2 **`benchmarking` 0.8296** / L=3,5,10 `analysis`
+> 0.8442; every limit 3/3 deterministic). **At L=2 the new binary returns exactly
+> what the old one returned at L=1** — so the A/B difference is a single sample
+> inside a known-unstable ordering and cannot support a quality claim.
+> **This also sharpens the pre-existing defect**: §6.44/§6.45 recorded it as
+> "top-1 *score* depends on `--limit`"; it is worse — **which page is top-1
+> changes**, and non-monotonically. Upstream, pre-existing, untouched this batch.
+> **Method note: do NOT compare against a previous sync's A/B table** — the corpus
+> grew 29,698 → 29,968 pages since §6.45, so the old binary legitimately answers
+> differently now than it did then; an A/B is only valid same-moment,
+> same-corpus, two binaries.
 >
 > **Two new items below** (both pre-existing, neither caused by this sync). See §6.46.
 >
@@ -560,6 +570,29 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 ---
 
+## P1 — `sync_failures` 测试污染 — **DONE 2026-07-31**(Lucien 授权后当场执行)
+
+**已清除。** 备份 `~/.gbrain/sync-failures.jsonl.polluted-backup-2026-07-31`
+(428B,原样保留),然后把 `~/.gbrain/sync-failures.jsonl` 截为空。
+清除前逐条复核确认是污染而非真数据:
+
+- 生产库 `sources` 表只有 **4 个源**(`default` 13,372 / `mailagent-emails`
+  13,308 / `omada` 3,142 / `gbrain-docs` 147);`SELECT count(*) FROM sources
+  WHERE id='srcE'` → **0**。
+- `SELECT count(*) FROM pages WHERE slug LIKE '%notes/bad%'` → **0**。
+- 文件里**总共就 1 行**,就是这条。
+
+**验证:`gbrain doctor` 退出码 0 —— 目的达成**(此前因这一条 FAIL 整体非零,
+会拖住任何以 doctor 为门的 cron)。FAIL 数 **1 → 0**,doctor 现在报
+"All checks OK (some warnings)",overall 30/100 → **50/100**,
+`brain_score` 仍 **83/100**(未受影响,它算的是别的维度)。
+
+**残余(上游侧,未做)**:测试不该往全局 `~/.gbrain/` 写状态。值得给上游报一条
+—— 这次是良性的 fixture 记录,但同一条路径下次可能污染的是别的东西。
+
+<details>
+<summary>原始条目(2026-07-31 发现时)</summary>
+
 ## P1 — `sync_failures` 里有一条测试污染,正让 `gbrain doctor` 非零退出(added 2026-07-31, §6.46)
 
 `gbrain doctor` 报唯一一个 **FAIL**:
@@ -588,6 +621,46 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 **sync 期间刻意没动** —— 不在 sync 里擅自改生产状态。
 顺带值得提一条上游 issue:测试不应写全局 `~/.gbrain/`。
+
+</details>
+
+---
+
+## P1 — reranker 已静默失效 **10 周**(auth 失败,added 2026-07-31, §6.46 健康复核)
+
+doctor 报 `reranker_health: 42 reranker auth failure(s) in last 7 days`。
+本以为是新问题,查了审计文件发现**远不止**:
+
+```
+~/.gbrain/audit/rerank-failures-2026-W{21..31}.jsonl
+最早一条:2026-05-22        ← 约 10 周,每天都在失败
+```
+
+每天都有(07-21:16、07-24:24、07-28:24、07-31:21…),节奏基本是
+**每条走 rerank 的 query 失败一次**,而不是某天突然坏掉。
+今天那 21 条里有一大半是本次 sync 的 smoke / A-B query 打出来的 —— 也就是说
+**每次查询都在尝试 rerank、auth 失败、静默回落到未重排的 hybrid 顺序**。
+
+**配置面查证:哪儿都没有 key。** `~/.gbrain/config.json` 无 rerank 键;
+daemon 内存环境(`launchctl print`)无 `ZEROENTROPY_API_KEY`;
+DB config 平面 `%rerank%` / `%zero%` 查询 **0 行**。
+上游默认 reranker 走 ZeroEntropy,而 §6.32 embedding 收敛之后 ZE key 在本 fork
+是 **vestigial** —— CLAUDE.md 里写的"ZeroEntropy key 对 **embedding** 已无用"
+是对的,但**没人注意到 reranker 还在用它**。
+
+**影响定性(要诚实)**:不是故障,是**质量降级** —— 检索仍然返回合理结果
+(本批 A/B 8 条都在跑,结果都说得通),只是我们**一直以为有重排、其实没有**。
+它不报错、不进 FAIL、只在这条 WARN 里露头,所以挂了 10 周没人看见。
+
+**待定(需要 Lucien)**:
+1. **要不要 reranker?** 若要 → 配一个可用的 `ZEROENTROPY_API_KEY`(4 plist +
+   `.env.local`,注意 §6.32 那条 label-normalize cron 的联动),或按上游
+   `gbrain models doctor` 换一个 provider;
+2. 若不要 → **显式关掉它**,别让每条 query 都白打一次失败的 auth 往返
+   (也顺手让这条 WARN 消失,避免它继续当噪音掩盖真问题)。
+
+**建议先做 2 再评估 1** —— 现在的状态是最坏的:既没有重排收益,又每查询付一次
+失败往返,还留着一条长期 WARN。
 
 ---
 
