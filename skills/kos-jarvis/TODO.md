@@ -1,6 +1,65 @@
-# kos-jarvis — Outstanding Work (post v0.42.66.1 sync, 2026-07-28)
+# kos-jarvis — Outstanding Work (post v0.42.68.1 sync, 2026-07-31)
 
-> **Sync 2026-07-28** (§6.45, v0.42.64.0 → v0.42.66.1, **265 commits** across 2
+> **Sync 2026-07-31** (§6.46, v0.42.66.1 → v0.42.68.1, **54 commits**, 185 files,
+> +9,078/−911): one release, **zero migrations** (schema stays **v125** on both
+> sides — `init --migrate-only` reported "Schema up to date"). Size back to the
+> pre-§6.43 norm.
+>
+> **Upstream closed the fork's own issue #2028.** `f75dbb4e` (#3690) fixes the
+> §6.42 query-embed deadline: the shared `AbortSignal` arrived already aborted,
+> making the 2s `MIN_QUERY_EMBED_BUDGET_MS` floor dead code and silently
+> degrading hybrid search to keyword-only — which on this Chinese-first brain
+> means **empty results** for compound CJK. Fixed with a fresh
+> `AbortSignal.timeout(remaining)` at `hybrid.ts:873`; verified in-tree, 4/4
+> deadline tests pass. **`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` STAYS** in all 4
+> plists + `.env.local` — it is now belt-and-braces rather than the only defense,
+> but retiring an env var whose failure mode is *silent empty Chinese results* is
+> its own change with its own load verification. See P2 below.
+>
+> **The batch's real operational lesson: a clean merge is not a clean semantic
+> merge.** Upstream #3651 absorbed the fork's google embedding batch-cap patch
+> (the **third** absorption after §6.45's two), but inserted its block at a
+> *different offset* in the same object literal than the fork's. Git therefore
+> auto-merged with **no conflict marker at all**, producing duplicate
+> `max_batch_tokens` / `chars_per_token` keys — and JS object literals let the
+> **last one silently win**, so the fork's deliberately-chosen value was already
+> overridden. The only thing that caught it was **TypeScript (TS1117)**.
+> **Never skip the green gate because the merge reported no conflicts.**
+> Resolved by taking upstream verbatim via `git checkout upstream/master --`
+> (not a hand-edit of `src/`; the fork-boundary hook correctly blocked that).
+> Fork src surface **4 → 3 files**.
+>
+> Conflicts (5): `.github/workflows/test.yml` modify/delete for the **third
+> consecutive batch** — this is now a constant, keep the deletion, stop
+> re-deciding it; `CLAUDE.md` → `--ours`; `llms-full.txt` → regenerate; and the
+> two fork test patches that existed only to assert the absorbed google cap →
+> take upstream. `docs/CLAUDE-UPSTREAM.md` **did** need a refresh (+13 lines:
+> upstream's new engine-live static-import rule, #3596); re-derived with the 5
+> established privacy scrubs, zero leakage.
+>
+> Green: typecheck 0, `check:all` **24/24** (upstream added
+> `check-engine-dynamic-import.sh`; `exports-count` baseline still 21; §6.45's
+> symlink ALLOWLIST still holding), `bun test test/ai/` **480 pass / 0 fail**
+> (was 467). Production **29,968 pages / 77,863 chunks / 0 NULL** — byte-identical
+> before and after the deploy; both /health → **0.42.68.1**; `brain_score`
+> **83/100**; `embedding_provider` **360ms** and **`embed_staleness: no stale
+> chunks`** (no signature drift); daemon again did not self-relaunch after
+> `bun run build` (**6th batch — a constant**).
+>
+> **Retrieval A/B vs a 0.42.66.1 binary on the same prod DB: 7/8 identical, 1
+> changed — and it changed for the better.** `竞品分析` at limit 1 moved from
+> `concepts/competitive-benchmarking` (0.8296) to `concepts/competitive-analysis`
+> (0.8384) — a better literal match. **Nondeterminism was ruled out first**: each
+> binary was run 4× and was 4/4 stable, so this is code-attributable, not
+> `expandQuery` LLM jitter. Likely #3677 (FTS config folded into `knobs_hash`),
+> not conclusively attributed. **Method note: do NOT compare against a previous
+> sync's A/B table** — the corpus grew 29,698 → 29,968 pages since §6.45, so the
+> old binary legitimately answers differently now than it did then; an A/B is
+> only valid same-moment, same-corpus, two binaries.
+>
+> **Two new items below** (both pre-existing, neither caused by this sync). See §6.46.
+>
+> **Previous — Sync 2026-07-28** (§6.45, v0.42.64.0 → v0.42.66.1, **265 commits** across 2
 > releases, 446 files, +29,791/−2,430): **the largest batch to date.** Two
 > conflicts, one real migration (schema **v124 → v125**). Conflicts:
 > `.github/workflows/test.yml` modify/delete **again** (same file, same cause as
@@ -501,6 +560,61 @@ oauth_*),WAL fork patch retained for brain-db.ts。
 
 ---
 
+## P1 — `sync_failures` 里有一条测试污染,正让 `gbrain doctor` 非零退出(added 2026-07-31, §6.46)
+
+`gbrain doctor` 报唯一一个 **FAIL**:
+
+```
+[FAIL] sync_failures: 1 unresolved sync failure(s) [SLUG_MISMATCH=1].
+       notes/bad.md (Frontmatter slug "wrong-slug" does not match path-derived sl)
+```
+
+**这不是真数据问题,是测试污染。** 证据(`~/.gbrain/sync-failures.jsonl`):
+
+- `source_id` 是 **`srcE`** —— fixture id。真实源只有 `default` /
+  `mailagent-emails` / `gbrain-docs` / `omada`。
+- `notes/bad.md` 在盘上**不存在**。
+- 写入时间 **2026-07-27T21:38Z**,即 **§6.45 sync 期间**,比本批早 4 天。
+
+某个测试没做好隔离,把 fixture 的失败写进了**全局**状态文件
+`~/.gbrain/sync-failures.jsonl`。
+
+**为什么值得修**:doctor 因这一条 FAIL 整体退出非零(overall 30/100),任何以
+`gbrain doctor` 退出码为门的 cron / CI 都会被它拖住。
+
+**修法(二选一,都需要 Lucien 点头 —— 动的是生产状态文件)**:
+1. 直接删掉 `~/.gbrain/sync-failures.jsonl` 里那一行(文件仅 428 字节,就这一条);
+2. 或 `bin/gbrain sync --skip-failed` 确认掉。
+
+**sync 期间刻意没动** —— 不在 sync 里擅自改生产状态。
+顺带值得提一条上游 issue:测试不应写全局 `~/.gbrain/`。
+
+---
+
+## P2 — google embedding recipe 的 `chars_per_token` 已按英文密度取值(added 2026-07-31, §6.46)
+
+上游 #3651 收编了 fork 的 google embedding batch-cap patch,本批**取上游版、丢掉
+fork patch**(Lucien 决定),于是 `src/core/ai/recipes/google.ts` 现在是:
+
+```ts
+max_batch_tokens: 20_000,
+chars_per_token: 4,      // 上游:英文 SentencePiece 密度
+safety_factor: 0.8,
+```
+
+fork 原来的值是 **`chars_per_token: 2`**,按 **CJK 密度**定的(中文约 1.5
+字符/token,英文约 4)。对中文语料,`4` 会把 token 数**低估约一倍** → 预切的批次
+过大 → 有 429 风险。
+
+**当前零影响**:§6.41 之后 embedding **直连官方 OpenAI te3**,Gemini embedding
+这条路根本没在用,是休眠代码。
+
+**触发条件**:哪天真要切回 Gemini embedding(或任何走 google recipe 的 embedding),
+**必须先把 `chars_per_token` 按 CJK 重新调**,否则批次会切得过大。
+届时按 fork 规矩不能改 `src/*` —— 走上游 issue,或在 config 平面覆盖。
+
+---
+
 ## P0 — `sources.config` 被上游 #2829 损坏 — **DONE 2026-07-28**(Lucien 授权后当日执行)
 
 **已修复。** 快照存 `/tmp/sources-config-before-fix-2026-07-28.txt`,然后事务内
@@ -552,6 +666,21 @@ kos-patrol;全过程见记忆 `pitfall-launchd-env-stale` 与
 2026-07-21T22:19Z** —— 环境修了,但还没有一轮完整 cycle 跑完;今晚 03:11 定时
 触发后 doctor `cycle_freshness` 应自行转 OK,`links_extraction_lag` 89% 随
 cycle 的 extract phase 消化。**明早看一眼 doctor 即可关账。**
+
+**复核 2026-07-31(§6.46):(a) 确认自愈,(b) 上面那条预测错了一半。**
+
+- **`cycle_freshness` 已恢复**:从 §6.45 的**停滞 162h** 变成 **11h 前跑过** ——
+  dream 确实重新在跑了,(a) 可以关账。
+- **但 `links_extraction_lag` 不但没被消化,反而从 89% 涨到 100%**
+  (29,893/29,968 页)。**预测失败,记下来。** 原因是这条检查**不看有没有链接,
+  只看 `links_extracted_at` 时间戳**:`page_links` 表里实有 **215,698 行**,
+  链接一直都在;存量页该列为 NULL,而语料还在涨(29,698 → 29,968),所以分子
+  只会跟着变大。dream 的 extract phase **并不回填这个时间戳**。
+  上游代码注释本身就描述了这个形态("a just-upgraded 280K-page brain
+  (every page NULL → 100% stale) gets a loud WARN, never a non-zero exit"),
+  且 warn-only,**不会让 doctor 失败**。
+  **结论:它不是 cycle 健康度的代理指标,别再拿它当 dream 是否干活的证据。**
+  真要清掉得跑 `gbrain extract --stale`(全量,未做,非本批范围)。
 
 **(b) enrich-sweep:仍 disabled,OPEN。** 复核确认 `launchctl print-disabled
 gui/501` 依旧报 `"com.jarvis.enrich-sweep" => disabled`,另一 session 未动它。

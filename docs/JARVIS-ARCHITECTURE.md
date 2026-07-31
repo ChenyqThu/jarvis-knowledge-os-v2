@@ -6249,6 +6249,214 @@ fallback" 把既有状态显性化了 —— 按 §6.41,ZE key 对我们已是 v
 
 ---
 
+## 6.46 Upstream v0.42.68.1 sync (2026-07-31)
+
+**54 commits / 185 文件 / +9,078 / −911,跨一个 release
+(v0.42.66.1 → v0.42.67.0 → v0.42.68.1),零迁移**(schema 两侧同为
+**v125**,`init --migrate-only` 直接报 "Schema up to date")。merge-base
+`fd8be831`。规模回落到 §6.43 之前的常态(§6.45 是 265 commits / 446 文件)。
+
+本批有两件事值得单独记:**上游把 fork 报的 #2028 修了**,以及
+**一个不报冲突的重复键陷阱**。
+
+### 上游关掉了 §6.42 的 issue —— query-embed deadline
+
+`f75dbb4e` (#3690) 明确写着 "This also closes verified issue #2028"。
+§6.42 定位的正是这条:`embedQueryBounded` 收到的 shared `AbortSignal`
+**到手就已经 aborted**,导致那个 2s `MIN_QUERY_EMBED_BUDGET_MS` 下限是
+**死代码** —— hybrid search 静默退化成纯 keyword,而对本库的复合 CJK 查询,
+纯 keyword 意味着**空结果**。修法是在同一个 shared seam 上新开一个
+`AbortSignal.timeout(remaining)`:
+
+```
+src/core/search/hybrid.ts:872  const remaining = Math.max(MIN_QUERY_EMBED_BUDGET_MS, dl.deadlineAt - Date.now());
+src/core/search/hybrid.ts:873  const signal = AbortSignal.timeout(remaining);   // ← #3690
+```
+
+合并后逐条确认该行在树里,`bun test test/search/query-embed-deadline.test.ts`
+**4 pass / 0 fail**(其中一条正是"signal 已 aborted 时仍要给足 floor")。
+
+> **`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` 本批不动,继续留在 4 个 plist +
+> `.env.local`。** 理由:sync 不是改生产配置的场合,而这条 env 守的是中文查询,
+> 失效形态是**静默空结果**(不报错)。现在它从"唯一防线"降级为
+> **belt-and-braces**;要退休它得单独做,带自己的负载验证。已在 TODO 记 P2。
+> 重启后复验 daemon 内存环境仍带 `GBRAIN_QUERY_EMBED_TIMEOUT_MS => 30000`
+> (`launchctl print`,不是从磁盘 plist 复刻 —— §6.44 那条教训)。
+
+### 一个不报冲突的重复键陷阱(本批最该记住的操作教训)
+
+`63e79838` (#3651) 给 google embedding recipe 加了 `max_batch_tokens` ——
+**和 fork 自带的那块 patch 是同一件事**。这是继 §6.45 两条之后,上游
+**第三次收编 fork patch**。
+
+但收编方式很危险:fork 把块插在 `cost_per_1m_tokens_usd` **之前**,上游插在
+**之后**。同一个对象字面量、不同 offset,于是 **git 判定可以 auto-merge,
+一个冲突标记都不给**,结果是:
+
+```ts
+      max_batch_tokens: 20_000,
+      chars_per_token: 2,          // fork
+      cost_per_1m_tokens_usd: 0.15,
+      max_batch_tokens: 20_000,
+      chars_per_token: 4,          // upstream —— 重复键,JS 里后者胜
+      safety_factor: 0.8,
+```
+
+**JS 对象字面量重复键不报错,后者静默覆盖前者** —— 也就是说,即便没人发现,
+fork 精心选的 `chars_per_token: 2` 也已经被上游的 `4` 悄悄顶掉了。真正拦住它的
+是 **TypeScript(TS1117)**,`bun run typecheck` 会报错。
+
+> **教训:merge 干净 ≠ 语义干净。** 上游收编 fork patch 时,只要落点 offset
+> 不同,冲突机制**完全不会触发**。§6.45 立的"统计量不守恒 → 去细看"信号在这里
+> 依然有效(fork src 4 → 3 文件),但**它是事后信号**;真正的前置防线是
+> **每批 sync 必跑 typecheck**,别因为"没有冲突"就跳过绿门。
+
+**决定:取上游版,丢掉 fork patch**(Lucien 拍板)。做法是
+`git checkout upstream/master -- src/core/ai/recipes/google.ts`,**不手改
+`src/`** —— fork-boundary hook 也确实拦住了 Edit,这是对的:用 git 整文件取回
+上游,正好是"丢掉 fork patch"最干净的表达,且保住了该文件"零手工 src 编辑"。
+两个只为断言这块 cap 而存在的 fork 测试补丁(`test/ai/adaptive-embed-batch.test.ts`、
+`test/ai/no-batch-cap-suppression.serial.test.ts`,本批**唯二的真冲突**)一并取
+上游版。
+
+**代价记在案**:上游 `chars_per_token: 4` 是按英文 SentencePiece 密度定的,
+fork 原来的 `2` 是按 CJK 密度定的。对中文语料,4 会**低估 token 数约一倍**→
+批次切得过大 → 可能 429。**当前无影响**:§6.41 之后 embedding 直连官方 OpenAI,
+Gemini embedding 这条路**根本没在用**,是休眠代码。已记 TODO **P2**:若哪天真
+切回 Gemini embedding,必须重新按 CJK 调 `chars_per_token`。
+
+### fork 完整性
+
+fork src 面 **4 → 3 文件**(`gateway.ts` 172、`link-extraction.ts` 10、
+`pglite-engine.ts` 21;+180/−23),又一次实质收缩。逐条复验:
+
+- `link-extraction.ts`:fork 的复数 `sources` 与上游 `reference` **仍并存**于
+  同一条 alternation,且 `sources` 排在 `source` 之前(§6.45 的解法未被冲掉)。
+- `pglite-engine.ts`:WAL durability patch(`SELECT pg_switch_wal()`)完整,已
+  折进上游 snapshot+try/finally 结构。注意上游本批新加了
+  `check-engine-dynamic-import.sh`(#3596)约束这三个 engine-live 文件的静态
+  import 边界 —— fork 这块是 `db.query` 不是 import,**不受影响**,门也过了。
+- `gateway.ts`:各 compat shim 与 1536 维 passthrough 齐在。
+
+**fork territory 零侵入**:`skills/kos-jarvis/ server/ workers/ scripts/launchd/
+skills/RESOLVER.md CLAUDE.md` 的 diff 全空。
+
+### 冲突(5 处,4 处按既定规矩)
+
+1. **`.github/workflows/test.yml`(modify/delete)** —— **连续第三批**同一文件、
+   同一成因。**保持删除**。已可确认是常量,不必再每批重新判断。
+2. `CLAUDE.md` → `--ours`(fork-only,上游内容镜像在 `docs/CLAUDE-UPSTREAM.md`)。
+3. `llms-full.txt` → 取上游后 `bun run build:llms` 重生成(+445/−842),`chore:` 单提。
+4. + 5. 上面那两个 google cap 测试补丁 → 取上游。
+
+`docs/CLAUDE-UPSTREAM.md` 本批**需要刷新**(上游 `CLAUDE.md` +13 行:#3596 那条
+engine-live 静态 import 规则)。按 §6.43 的规矩重新派生:取
+`upstream/master:CLAUDE.md`,重贴 **5 处既定隐私 scrub**(私有 agent fork 代号 →
+`openclaw-reference`;上游自己的文档规则就是"永远别写那个名字"),套回未改动的
+21 行 fork wrapper 头。结果与上游正文逐行 diff **只剩那 13 行新内容**,零泄漏。
+
+### 绿门
+
+`bun install` 无新增包;`bun run build` → **`gbrain 0.42.68.1`**;
+`typecheck` **0 错**;`check:all` **24/24**(§6.45 是 23/23,本批上游新增
+`check-engine-dynamic-import.sh`;`exports-count` 基线仍 **21**,未动;
+§6.45 那个 symlink ALLOWLIST **继续生效**,`check-no-tracked-symlinks` OK);
+`bun test test/ai/` **480 pass / 0 fail**(§6.45 是 467)。
+
+### 生产部署 + smoke
+
+备份 `pg_dump` **869MB**(`/tmp/pg-pre-sync-v0.42.68.1-2026-07-31.dump.gz`)
++ config 副本(`~/.gbrain/config.json.before-sync-v0.42.68.1`)。
+daemon 在 `bun run build` 覆写二进制后**依旧未自触发 relaunch** ——
+**连续第六批,彻底是常量**,受控 bootout + bootstrap。
+
+`init --migrate-only` → **"Schema up to date"**(零迁移,v125 两侧一致)。
+**部署前后零丢失,且是逐字相等**:活页 **29,968 → 29,968**、
+chunks **77,863 → 77,863**、NULL 向量 **0 → 0**。
+两个 `/health`(本地 + `https://kos.chenge.ink`)均报 **0.42.68.1 / postgres** ✓。
+
+MCP wire:裸 POST `/mcp` → `HTTP/2 401` + `www-authenticate: … resource_metadata=
+"https://kos.chenge.ink/.well-known/oauth-protected-resource"` —— §6.44 的
+#1410 行为穿过 cloudflared 后 issuer 仍是公网 hostname,未被本批打破。
+
+### 检索 A/B:8 条里 **7 条同分同头名,1 条变了 —— 且是变好**
+
+本批动了至少 5 处检索代码(#3690 query-embed deadline、#3616 first-person
+entity 分类、#3514 compiled_truth boost、#3677 knobs_hash 折进 FTS config、
+#3499 OpenRouter query expansion),按 §6.44 立的规矩,从 `master` 拉 worktree
+编出 **0.42.66.1** 二进制,与新二进制打**同一个生产库**:
+
+| query | limit | old (0.42.66.1) | new (0.42.68.1) | A/B |
+|---|---|---|---|---|
+| `知识管理` | 1 / 5 | `concepts/knowledge-management` 0.9142 | 同 | 同 |
+| `竞品分析` | **1** | `concepts/competitive-benchmarking` **0.8296** | `concepts/competitive-analysis` **0.8384** | **变** |
+| `竞品分析` | 5 | `concepts/competitive-analysis` 0.8442 | 同 | 同 |
+| `Karpathy` | 1 | `people/andrej-karpathy` 0.9339 | 同 | 同 |
+| `Karpathy` | 5 | `people/karpathy` 1.1908 | 同 | 同 |
+| `向量` | 1 / 5 | `entities/jarvis` 0.8527 | 同 | 同 |
+
+那条 DIFF **先排除了非确定性再下结论**:同一二进制各连打 4 次,
+old 4/4 稳定给 `competitive-benchmarking`,new 4/4 稳定给 `competitive-analysis`
+—— 两侧各自**完全确定**,所以这是真的代码归因变化,不是 `expandQuery` 的
+LLM 抖动。**方向是对的**:`竞品分析` 字面就是 "competitive analysis",新版把
+`concepts/competitive-analysis` 顶上来,比原来的 `competitive-benchmarking`
+更贴题。
+
+归因**未坐实**:两个页面 frontmatter 都不带 `compiled_truth`,所以 #3514 不像;
+最可能是 **#3677**(把 FTS configuration name 折进 `knobs_hash`,使旧的缓存/
+重排行失效)。没有进一步深挖 —— 变化方向有利且规模是 1/8,不值得。
+
+> **顺带记一条方法论**:§6.45 的表里 `竞品分析 --limit 1` 记的是
+> `competitive-analysis` 0.8442,而今天 **old 二进制**给的是
+> `competitive-benchmarking` 0.8296。这**不矛盾** —— 语料自 §6.45 已从 29,698
+> 涨到 29,968 页。**跨 sync 比对历史表格是无效的**,A/B 必须是同一时刻、同一
+> 语料、两个二进制对打。
+
+§6.44/§6.45 记的 **top-1 依赖 `--limit` 且非单调**依然存在(新版 `竞品分析`
+L=1 得 0.8384、L=5 得 0.8442,同一页不同分),**上游既存,本批未引入也未修**。
+
+### 部署后健康快照
+
+1. **embedding 全绿**:`embedding_provider ✓ **360ms**, 1536 dims, DB aligned`
+   (§6.45 是 349ms,持平);**`embed_staleness: No stale chunks`** —— 最要紧的
+   一条,证明本批没有意外改动 `embedding_signature`、没触发任何重嵌;
+   `~/.gbrain/config.json` 仍 te3@1536;daemon 内存环境**零 `OPENAI_BASE_URL`**
+   (§6.41 规则未被侵蚀)。
+2. **pages 29,968 / chunks 77,863 / 0 NULL**;schema **125**;
+   `brain_score` **83/100**(§6.45 是 84,差在 timeline density 1/15,既存);
+   `orphan_ratio` 32%(7,473/23,007)。
+3. **一个 FAIL,但与本批无关 —— 是测试污染**:`sync_failures` 报
+   `notes/bad.md` SLUG_MISMATCH。查 `~/.gbrain/sync-failures.jsonl`,该条
+   `source_id` 是 **`srcE`**(fixture id —— 真实源只有 `default` /
+   `mailagent-emails` / `gbrain-docs` / `omada`),文件在盘上**不存在**,
+   写入时间 **2026-07-27 21:38**,即 **§6.45 sync 期间**。结论:某个测试没做好
+   隔离,把 fixture 失败写进了全局状态文件,比本批早 4 天。**sync 期间不擅自改
+   生产状态**,记 TODO P1(它会让 `gbrain doctor` 非零退出,可能拖垮以 doctor
+   为门的 cron)。一行修法:删掉该行,或 `gbrain sync --skip-failed` 确认。
+4. **`links_extraction_lag` 报 100% 看着吓人,但是既存 + 预期内 —— 同时它推翻了
+   §6.45 的一条预测**:`29,893/29,968 页 (100%) have un-extracted edges`,而
+   `page_links` 表里**实有 215,698 行** —— 链接是抽过的。该检查靠
+   `links_extracted_at` 时间戳判定,存量页该列为 NULL。上游代码注释直说了这个
+   形态:"a just-upgraded 280K-page brain (every page NULL → 100% stale) gets a
+   loud WARN, never a non-zero exit"。且 `git show fd8be831:src/commands/doctor.ts`
+   里该检查**已存在**(5 处),本批 doctor.ts diff **零涉及** → **既存,非本批
+   引入**,§6.45 只是没记。warn-only,不会 fail。
+   **但要记一笔:§6.45 写的是"`links_extraction_lag` 89% 随 cycle 的 extract
+   phase 消化",而它从 89% **涨到了 100%**。预测错了。** dream 的 extract phase
+   **并不回填这个时间戳**,而语料还在涨(29,698 → 29,968),分子只会更大。
+   **教训:别拿这条当 dream 是否在干活的代理指标** —— 它测的是时间戳回填,不是
+   链接存在性。真要清掉得单独跑 `gbrain extract --stale`(未做,非本批范围)。
+5. **dream cycle 恢复了**:`cycle_freshness` 报 `default` **11h 前**跑过 ——
+   §6.45 记的是**停滞 162h**。§6.45 那条 P1 的 (a) 半边可以关账(注意:能证明
+   它自愈的是 `cycle_freshness`,**不是**上面第 4 条)。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-07-31)
+- §6.42(query-embed deadline,本批被上游 #3690 修掉根因)、§6.41(embedding 直连)、§6.45(上一批 sync)
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |

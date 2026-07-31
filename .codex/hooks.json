@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/.codex/hooks/guard-fork-boundary.sh'"
+          },
+          {
+            "type": "command",
+            "command": "bash '/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/.codex/hooks/guard-secrets.sh'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/chenyuanquan/Projects/jarvis-knowledge-os-v2/.codex/hooks/guard-secrets.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}
