@@ -67,6 +67,7 @@ type Flags = {
   charCap: number;
   tokenBudget: number; // budget in tokens (×1.5 → chars; CJK-measured)
   concurrency: number;
+  delayMs: number; // pause after each entity, per worker (rate-limit courtesy)
   shardIndex: number;
   shardTotal: number;
   refreshStale: boolean;
@@ -83,6 +84,7 @@ function parseFlags(argv: string[]): Flags {
     charCap: 4000,
     tokenBudget: WANT_1M ? 900_000 : 450_000,
     concurrency: 4,
+    delayMs: 0,
     shardIndex: 0,
     shardTotal: 1,
     refreshStale: false,
@@ -102,6 +104,7 @@ function parseFlags(argv: string[]): Flags {
     else if (a === "--char-cap") f.charCap = parseInt(next(), 10);
     else if (a === "--token-budget") f.tokenBudget = parseInt(next(), 10);
     else if (a === "--concurrency") f.concurrency = parseInt(next(), 10);
+    else if (a === "--delay-ms") f.delayMs = parseInt(next(), 10);
     else if (a === "--shard") { const [i, n] = next().split("/").map((x) => parseInt(x, 10)); f.shardIndex = i; f.shardTotal = n; }
     else if (a === "--refresh-stale") f.refreshStale = true;
     else if (a === "--stale-delta") f.staleDelta = parseInt(next(), 10);
@@ -123,6 +126,7 @@ const HELP = `synthesis-sweep — per-entity dossier synthesis (Wisdom layer, ${
   --token-budget N     Total gathered-context token budget per entity
                        (default ${WANT_1M ? "900000 (SYNTH_CONTEXT_1M)" : "450000"} tok; hubs cap + log dropped)
   --concurrency N      Entities synthesized in parallel (default 4)
+  --delay-ms N         Pause N ms after each entity, per worker (default 0)
   --plan               Select + preview targets, no LLM, no writes
   --dry                Alias of --plan
   --resume             Skip entities already in the checkpoint
@@ -202,10 +206,29 @@ function markDone(path: string, rec: { slug: string; source_id: string; neighbor
   appendFileSync(path, JSON.stringify(rec) + "\n");
 }
 
+// A killed run never reaches releaseLock's finally, so the lock outlives it and
+// wedges every later run — the same failure enrich-sweep hit in 2026-06-21 and
+// hardened against (§6.38). Probe the holder with signal 0 and take over when
+// it is dead; only a live holder is a real conflict. (A stale lock from
+// 2026-07-28 blocked this sweep for 6 days before this was ported over.)
 function acquireLock(): void {
   if (existsSync(lockFile)) {
-    console.error(`Another synthesis-sweep is running (lock: ${lockFile}). Remove it if stale.`);
-    process.exit(1);
+    const holderPid = Number((readFileSync(lockFile, "utf-8").split("\n")[0] || "").trim());
+    let holderAlive = false;
+    if (Number.isInteger(holderPid) && holderPid > 0) {
+      try {
+        process.kill(holderPid, 0); // liveness probe, no-op if alive
+        holderAlive = true;
+      } catch {
+        holderAlive = false; // ESRCH (dead) or EPERM (recycled) → stale
+      }
+    }
+    if (holderAlive) {
+      console.error(`Another synthesis-sweep is running (live pid ${holderPid}, lock: ${lockFile}).`);
+      process.exit(1);
+    }
+    console.warn(`⚠ clearing stale lock (dead pid ${holderPid || "?"}) at ${lockFile}`);
+    try { unlinkSync(lockFile); } catch { /* noop */ }
   }
   writeFileSync(lockFile, String(process.pid));
 }
@@ -435,6 +458,9 @@ async function main() {
   const workers = Array.from({ length: nWorkers }, async () => {
     while (queue.length && !summary.aborted) {
       await processEntity(queue.shift()!);
+      if (f.delayMs > 0 && queue.length && !summary.aborted) {
+        await new Promise((r) => setTimeout(r, f.delayMs));
+      }
     }
   });
   try { await Promise.all(workers); } finally { releaseLock(); }
