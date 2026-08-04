@@ -6474,6 +6474,214 @@ L=1 得 0.8384、L=5 得 0.8442,同一页不同分),**上游既存,本批未引�
 
 ---
 
+## 6.47 Upstream v0.42.73.0 sync (2026-08-04)
+
+**73 commits / 224 文件 / +17,853 / −1,121,跨 6 次版本号
+(v0.42.69.0 → .70.0 → .71.0 → .72.0 → .72.1 → .73.0),零迁移**
+(schema 两侧同为 **v125**,`init --migrate-only` 报 "Schema up to date")。
+merge-base `f84bfb57`。规模介于 §6.46(54)与 §6.45(265)之间。
+
+本批的方法论收获比代码收获大:**两处"看起来该担心"的东西,都是靠双二进制
+同库对打把结论钉死的,而不是靠读注释或读分数。**
+
+### 上游第四次收编 fork patch —— 这次用实测判定,不靠注释
+
+`f08a51d9`(#2576/#3560)+ `78391e8b`(#3161)重写了链接抽取,与 fork 的
+`link-extraction.ts` patch 撞车 —— 这是**本批唯一的内容冲突**。fork 那条 patch
+是往 `DIR_PATTERN` 里加复数 `sources`(本库 9k+ 邮件页落在 `sources/email/<id>`,
+少了复数就永远收不到入边,已报 garrytan/gbrain#3188)。
+
+上游的注释说白名单"仅作为 pass-2b wikilink 的 typed fast-path 存活,非白名单
+`[[dir/...]]` 在 pass 2c 拿等价待遇"。**"等价"是个需要验证的断言,不是可以直接
+采信的说明。** 做法是把 `sources` 加回**新代码**,与上游原样各跑一遍同一组用例:
+
+| 形态 | 语料中页数 | 带 patch | 不带 patch |
+|---|---|---|---|
+| `[[sources/email/x]]` | 1,170 | `sources/email/x` mentions markdown | **同** |
+| `[[sources/email/x\|别名]]` | — | 同上 | **同** |
+| `[x](sources/email/y.md)` | 4,893 | 同上 | **同** |
+| 裸路径散文引用 | — | 同上 | **同** |
+| `[[源id:sources/email/x]]` | **0** | 同上 | **NO CANDIDATES** |
+
+四个真实形态 `targetSlug` / `linkType` / `linkSource` **逐字段相同**。唯一落空的
+是 qualified 形态 —— `QUALIFIED_WIKILINK_RE` 仍然吃 `DIR_PATTERN`,而 pass 2c 显式
+跳过含 `:` 的 token。但先查了库:**该形态全库 0 页**(任何 qualified wikilink 都
+是 0)。`sources/` 下 12,585 页、34,483 条入边不受影响。
+
+**决定:取上游版**(`git checkout upstream/master -- src/core/link-extraction.ts`,
+不手改 `src/`;fork-boundary hook 同样正确拦下了 Edit)。fork src 面 **3 → 2 文件**
+(只剩 `gateway.ts` 172、`pglite-engine.ts` 21)。
+
+> **与 §6.46 的对照值得记一笔**:§6.46 是"上游收编 → 冲突机制静默失效 →
+> typecheck 兜住";本批是"上游收编 → 正常报冲突 → 但**注释里的'等价'需要实测**"。
+> 两次的共同点是:**收编发生时,判断依据必须是代码行为,不是文档措辞。**
+> 休眠代价已记 TODO **P2**:哪天真写出 `[[源id:sources/...]]`,链接会被静默丢弃。
+
+### doctor 总分从 55 掉到 50 —— 是量表变了,不是脑子退化
+
+部署后 `doctor` 报 `Overall health score: 50/100`。把 §6.44 立的"同库同时刻双二进制"
+规矩从检索**推广到 doctor 本身**,拿 0.42.68.1 的二进制打同一个生产库:
+
+| | old 0.42.68.1 | new 0.42.73.0 |
+|---|---|---|
+| Overall health score | **55/100** | **50/100** |
+| Brain checks | 65/100 | 60/100 |
+| **Weighted brain score** | **83/100** | **83/100** |
+| 检查项总数 | 86 | **91** |
+
+把两侧的检查名取差集:**新增 5 项、删除 0 项** —— `undeclared_db_only_pages`、
+`content_hash_duplicates`、`db_only_collector_collision`(均来自 `7cbb99ff`
+的 silent-failure 批 #2250/#2784/#2787/#2788)、`skills_manifest_integrity`
+(#159/#3453)、`alternative_providers`。
+
+**结论:降分完全由新检查引入,`brain_score` 两侧同为 83/100,语料本身没有任何
+退化。** 教训与 §6.46 的"别跨 sync 比历史表格"同源:**doctor 的总分是版本相关的
+量表,跨版本比较总分是无意义的;要比就同时刻双二进制对打,并把差异归因到具体
+检查项。**
+
+### 上游新增 skills tamper-evidence manifest —— 以及它的一个设计缺口
+
+`aa5b9e6e`(#159/#3453)给 `skills/` 加了 `skills.lock.json`、生成器、CI 新鲜度门
+(`check:skills-manifest`,挂在 `bun run verify` 上,**不在 `check:all` 里**)和一个
+**WARN-only、永不 fail** 的 doctor 检查。
+
+上游发的 manifest 描述的是**上游的** skills 树,在本 fork 天生就是陈旧的:缺全部
+14 个 kos-jarvis skill,且 `RESOLVER.md` 的哈希是上游版(fork 在尾部追加了自己的
+extensions 段)。已重新生成 —— 让 manifest 描述它本该背书的那棵树。部署后
+`doctor` 报 `skills_manifest_integrity: 210 bundled skill files match` ✓。
+
+> **新常规(与 `llms-full.txt` 同形状):`skills/skills.lock.json` 冲突时,先取上游,
+> 再 `bun run scripts/generate-skills-manifest.ts` 重生成。**
+
+**顺带发现一个上游缺口**:生成器**没有任何排除机制**,`skills/` 下每个普通文件
+都会被哈希,包括 gitignore 的本地垃圾。本 fork 的 `skills/` 里正躺着一个
+`skills/.omc/state/last-tool-error.json`(2026-05-02 的 OMC 错误面包屑,untracked +
+gitignored)。若不清掉就重生成,等于把**一个机器本地文件的哈希写进 tracked 的
+tamper-evidence manifest** —— 在任何别的机器上都无法复现,且 OMC 一旦重写该文件
+manifest 立刻又陈旧。已删除该垃圾目录后再生成。记 TODO **P2**:值得报上游
+(manifest 生成器应尊重 `.gitignore` 或至少跳过点目录)。
+
+> **顺带定一条 sync 的动作顺序**:本批写完 sync 故事后,`skills.lock.json`
+> **当场又陈旧了** —— manifest 会哈希 `skills/kos-jarvis/TODO.md`,而
+> `llms-full.txt` 内嵌 `CLAUDE.md`。**这两个生成物都吃 fork 文档,所以必须在
+> §6.x 故事 + TODO header + CLAUDE.md 指针全部写完之后才生成**,否则提交进去的
+> 就是过期版本。(已复核 `build:llms` 是确定性的:连跑两次逐字节相同,所以 diff
+> 一定来自输入变化,不是生成器抖动。)
+
+### 检索 A/B:8/8 完全相同
+
+本批动了检索的至少 4 处(#3613 把 `hnsw.ef_search` 提到与向量候选数匹配、
+#3564 chunker 预算、#3161/#2576 链接抽取、#3563 by-mention Unicode 分词),
+其中 #3613 直接影响召回,有充分理由预期差异。同库同时刻双二进制对打:
+
+| query | limit | old 0.42.68.1 | new 0.42.73.0 | A/B |
+|---|---|---|---|---|
+| `知识管理` | 1 / 5 | `concepts/knowledge-management` 0.8973 | 同 | 同 |
+| `竞品分析` | 1 | `concepts/competitive-analysis` 0.8404 | 同 | 同 |
+| `竞品分析` | 5 | `concepts/competitive-analysis` 0.8367 | 同 | 同 |
+| `Karpathy` | 1 | `people/andrej-karpathy` 0.9339 | 同 | 同 |
+| `Karpathy` | 5 | `people/karpathy` 1.1908 | 同 | 同 |
+| `向量` | 1 / 5 | `entities/jarvis` 0.8527 | 同 | 同 |
+
+**8/8 同头名同分,逐位相等** —— `ef_search` 的提高没能撼动这些查询的 top-1。
+(按 §6.46 的方法论:**不与 §6.46 的表格比对**,语料已从 29,968 涨到 30,107。)
+
+§6.44/§6.45/§6.46 记的 **top-1 分数随 `--limit` 变**依然在(`竞品分析` L=1 得
+0.8404、L=5 得 0.8367,同一页不同分)。**上游既存,本批未引入也未修。**
+
+### 冲突(2 处,均按既定规矩)
+
+1. **`.github/workflows/test.yml`(modify/delete)** —— **连续第四批**。§6.46 已把它
+   定为常量:**保持删除**,不再每批重新判断。
+2. `src/core/link-extraction.ts` —— 见上,取上游。
+
+**`CLAUDE.md` 本批没有冲突,`docs/CLAUDE-UPSTREAM.md` 也无需刷新** —— 上游本批
+**根本没动 `CLAUDE.md`**(`git log master..upstream/master -- CLAUDE.md` 为空)。
+已复核不是漏做:我们的派生版与 `upstream/master:CLAUDE.md` 逐行 diff 恰好只剩
+**5 处既定隐私 scrub(10 行)**,零其他差异。
+
+### 绿门
+
+`bun install` 拉了 3 个包(4 条 CVE override bump:`fast-uri`、`hono`、
+`ip-address`,以及 `e5dee4fb`);`bun run build` → **`gbrain 0.42.73.0`**;
+`typecheck` **0 错**(本批没有 §6.46 那种重复键陷阱);`check:all` **24/24**
+(`exports-count` 基线仍 **21**;新的 `check:skills-manifest` 不在 `check:all` 内,
+单独跑并已转绿);`bun test test/ai/` **488 pass / 0 fail**(§6.46 是 480);
+联邦作用域 5 个测试文件 **86 pass / 0 fail**。
+
+**fork territory 零侵入**:`skills/kos-jarvis/ server/ workers/ scripts/launchd/
+skills/RESOLVER.md CLAUDE.md` 的 diff 全空。
+
+### 生产部署 + smoke
+
+备份 `pg_dump` **917MB**(`/tmp/pg-pre-sync-v0.42.73.0-2026-08-04.dump.gz`)
++ config 副本(`~/.gbrain/config.json.before-sync-v0.42.73.0`)。
+`init --migrate-only` → **"Schema up to date (engine: postgres)"**。
+(附带一提:本批 `1ca1a14f`(#3085)刚修掉"schema 落后却报 up to date"的假阳性,
+所以这句话现在比上一批更可信。)
+
+daemon 在 `bun run build` 覆写二进制后**依旧未自触发 relaunch**(重启前
+`/health` 仍报 0.42.68.1)—— **连续第七批**。受控 bootout + bootstrap。
+
+> **新操作记录:`launchctl bootstrap` 第一次返回 `Bootstrap failed: 5:
+> Input/output error`,服务处于已注销、未启动状态(约 1 分钟停机)。原样重试
+> 一次即 `rc=0` 正常拉起。** 成因是 bootout 尚未落定时立刻 bootstrap 的竞态。
+> **下次直接在 bootout 与 bootstrap 之间留一拍**,别把首次 EIO 当成 plist 坏了。
+
+**部署前后逐字相等**:活页 **30,107 → 30,107**、chunks **83,249 → 83,249**、
+NULL 向量 **0 → 0**、links **205,404 → 205,404**。
+两个 `/health`(本地 + `https://kos.chenge.ink`)均报 **0.42.73.0 / postgres** ✓。
+
+MCP wire:裸 POST `/mcp` → `HTTP/2 401` + `www-authenticate: … resource_metadata=
+"https://kos.chenge.ink/.well-known/oauth-protected-resource"` —— §6.44 的 #1410
+行为穿过 cloudflared 后 issuer 仍是公网 hostname,未被 `v0.42.72.0` 的写栅栏打破。
+
+### 部署后健康快照
+
+1. **embedding 全绿**:`embedding_provider ✓ **314ms**, 1536 dims, DB aligned`
+   (§6.46 是 360ms);**`embed_staleness: No stale chunks`** —— 证明本批没有意外
+   改动 `embedding_signature`、没触发任何重嵌;daemon 内存环境经 `launchctl print`
+   复验(**不是**从磁盘 plist 复刻,§6.44 的教训):
+   `GBRAIN_QUERY_EMBED_TIMEOUT_MS => 30000` 在、`GBRAIN_EMBEDDING_MODEL =>
+   openai:text-embedding-3-large`、`GBRAIN_EMBEDDING_DIMENSIONS => 1536`、
+   **零 `OPENAI_BASE_URL`**(§6.41 规则未被侵蚀)。
+2. `doctor` **EXIT=0**,0 个 FAIL / 15 个 WARN;`brain_score` **83/100**
+   (与 §6.46 持平);`oauth_confidential_client_health: 7 个 client,auth 形状一致`。
+3. **§6.46 的 P1 可以关账**:`~/.gbrain/sync-failures.jsonl` 现在是 **0 字节**
+   (2026-07-31 16:06 清空,即 `f991cc5b` 那次),`srcE` 测试污染行已不存在,
+   doctor 因此恢复零退出。检查本身仍在 `doctor.ts` 里(6 处引用),只是无话可说。
+4. **一个新 WARN,值得单独跟**:`undeclared_db_only_pages` 报 **2,633 个 DB 页**
+   没有落盘文件、且不在任何 declared/default `db_only` 路径下 → **对文件通道的
+   备份/恢复不可见**。这是上游本批新加的检查(见上文 doctor A/B),**不是本批
+   引入的状态** —— 这些页一直如此,只是以前没人看得见。记 TODO **P1**。
+5. **既存项复核**:`links_extraction_lag` 报 **99%**(29,741/30,107)—— §6.46 已定性
+   为既存 + 预期内(时间戳判定、warn-only、`page_links` 实有 20 万+ 行),
+   **且再次证明它不是 dream 是否在干活的代理指标**;`cycle_freshness` **10h**,
+   dream 健康;`reranker_health` 报 7 天内 **50 次认证失败**(ZEROENTROPY_API_KEY)
+   —— 与 `f991cc5b` 记的"10 周静默 reranker outage"是同一件事,**既存,未修**。
+
+### 一件没验成的事(如实记录)
+
+本批动了联邦读(`8e369915` #2928/#3533 让 unfederate 对非限定读生效、
+`273bd0e2` #3550 收紧残留联邦读),而 `mailagent` 依赖
+`federated_read = {default, mailagent-emails, omada}` 跨三源读。
+
+**端到端验证没做成**:走 OAuth `client_credentials` 需要读取并发送
+`~/.gbrain/oauth-clients/mailagent.json` 里的明文 secret,该操作被权限分类器拦下
+(拦得对,没有绕)。**替代证据有两条,但请注意它们证明的不是同一件事**:
+(a) DB 里 7 个 client 的 `federated_read` 配置逐条复核无误,mailagent 仍是
+`{default,mailagent-emails,omada}`;(b) 5 个联邦作用域测试文件 **86 pass / 0 fail**。
+**这两条证明的是"逻辑对 + 配置在",不是"这套部署上 mailagent 真能跨源读到"。**
+下次 sync 或 Lucien 手头有 token 时补一次真实跨源查询即可。
+
+### Linked docs
+
+- [`skills/kos-jarvis/TODO.md`](../skills/kos-jarvis/TODO.md) — post-sync header(更新至 2026-08-04)
+- §6.46(上一批 sync,本批沿用其"收编即细看"与"不跨 sync 比表格"两条方法论)、
+  §6.44(双二进制 A/B 规矩的出处,本批推广到 doctor)、§6.41(embedding 直连)
+
+---
+
 ## 8. Cost and performance snapshot
 
 | Metric | v1 | v2 |
