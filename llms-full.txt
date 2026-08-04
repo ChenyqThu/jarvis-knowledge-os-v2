@@ -165,60 +165,78 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.46 v0.42.68.1
-   upstream sync (2026-07-31, 54 commits / one release /
-   v0.42.66.1 → v0.42.68.1 / 185 files; **zero-migration**, schema stays
-   **v125** on both sides. **Upstream closed the fork's own issue #2028**:
-   `f75dbb4e` (#3690) fixes §6.42's query-embed deadline — the shared
-   `AbortSignal` arrived already aborted, making the 2s
-   `MIN_QUERY_EMBED_BUDGET_MS` floor dead code and silently degrading hybrid
-   search to keyword-only (= **empty results** for compound CJK here); fixed
-   with a fresh `AbortSignal.timeout(remaining)` at `hybrid.ts:873`.
-   **`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` STAYS** — now belt-and-braces, but
-   retiring it is its own change (P2). **The batch's key lesson: a clean merge
-   is NOT a clean semantic merge.** Upstream #3651 absorbed the fork's google
-   embedding batch-cap patch (**3rd absorption** after §6.45's two) but inserted
-   at a different offset in the same object literal → git auto-merged with **no
-   conflict marker**, leaving **duplicate `max_batch_tokens`/`chars_per_token`
-   keys**, where JS silently lets the last win. Only **TypeScript (TS1117)**
-   caught it — **never skip the green gate because there were no conflicts.**
-   Resolved by `git checkout upstream/master -- <file>` (not a hand-edit; the
-   fork-boundary hook correctly blocked that); fork src **4→3 files**. Conflicts
-   (5): `.github/workflows/test.yml` modify/delete for the **3rd consecutive
-   batch** (now a constant — keep the deletion, stop re-deciding); `CLAUDE.md`
-   →ours; `llms-full.txt` →regen; two fork test patches for the absorbed google
-   cap →upstream. `docs/CLAUDE-UPSTREAM.md` refreshed (+13 lines, #3596
-   engine-live static-import rule). Green: typecheck 0, check:all **24/24**
-   (new `check-engine-dynamic-import.sh`; exports-count still 21; §6.45's
-   symlink ALLOWLIST holding), `bun test test/ai/` **480 pass / 0 fail**.
-   Prod **29,968 pages / 77,863 chunks / 0 NULL** — byte-identical across the
-   deploy; both /health → 0.42.68.1; brain_score 83/100;
-   `embedding_provider` **360ms** and **`embed_staleness: no stale chunks`**.
-   Daemon again did **not** self-relaunch after `bun run build` — **6 batches,
-   a constant**. **Retrieval A/B vs a 0.42.66.1 binary on the same prod DB: 7/8
-   identical, 1 changed** (`竞品分析` L=1: `competitive-benchmarking` 0.8296 →
-   `competitive-analysis` 0.8384); nondeterminism ruled out first (4× per
-   binary, 4/4 stable each), likely #3677. **This was first written up as "for
-   the better" — retracted the same day**: sweeping `--limit` shows top-1's
-   *identity* flips non-monotonically (L=1 analysis / **L=2 benchmarking** /
-   L=3,5,10 analysis, each 3/3 deterministic), and **at L=2 the new binary
-   returns exactly the old binary's L=1 answer** — the difference is one sample
-   inside an unstable ordering, not a quality gain. **It also sharpens the
-   known defect**: not just top-1 *score* but *which page* varies with `--limit`
-   (upstream, pre-existing). **Method: never compare against a previous sync's
-   A/B table** — the corpus moved (29,698→29,968), so an A/B is only valid
-   same-moment, same-corpus, two binaries. MCP wire green (#1410 `resource_metadata` still
-   correct through cloudflared). **Two new open items, both pre-existing**:
-   a `sync_failures` FAIL that is **test pollution** (`source_id: srcE`,
-   `notes/bad.md` absent, written 2026-07-27 during §6.45) making `doctor` exit
-   non-zero (P1, prod state file, needs Lucien); google recipe
-   `chars_per_token` now 4 (English) where the fork used 2 (CJK) — dormant
-   since embedding is direct-OpenAI, but must be re-tuned if Gemini embedding
-   ever returns (P2). Also: `links_extraction_lag` reporting **100%** is
-   **pre-existing and expected** (timestamp-based; `page_links` really holds
-   215,698 rows; warn-only by upstream design), and §6.45's **162h dream stall
-   self-healed** — `cycle_freshness` now 11h)**.
-   Previous: §6.45 v0.42.66.1 sync (2026-07-28, **265 commits** across 2
+   operates ↔ OpenClaw executes). Latest sync story: **§6.47 v0.42.73.0
+   upstream sync (2026-08-04, 73 commits / six version bumps /
+   v0.42.68.1 → v0.42.73.0 / 224 files; **zero-migration**, schema stays
+   **v125** on both sides. **The batch's takeaway is methodological: both of
+   the things that looked worrying were settled by running two binaries against
+   the same DB at the same moment — not by reading comments or reading a
+   score.** (1) **Upstream absorbed a fork patch for the 4th time**, and this
+   time the equivalence claim was *tested*: #2576/#3560 + #3161 rewrote link
+   extraction, colliding with the fork's plural `sources` in `DIR_PATTERN`
+   (#3188, the patch keeping 9k+ `sources/email/<id>` pages from orphaning).
+   Upstream's comment asserts pass 2c gives "equivalent treatment"; adding
+   `sources` back into the *new* code and A/B-ing the cases shows all **four**
+   link forms present in this corpus (1,170 plain wikilinks, 4,893 markdown
+   links, aliased, bare prose) are **field-for-field identical**. Only
+   `[[srcid:sources/...]]` diverges — `QUALIFIED_WIKILINK_RE` still gates on
+   `DIR_PATTERN` — and that form has **0 occurrences** here. Took upstream via
+   `git checkout upstream/master --`; fork src **3→2 files**
+   (`gateway.ts`, `pglite-engine.ts`); dormant gap → P2.
+   (2) **`doctor` overall dropped 55→50, and that is a ruler change, not a
+   regression**: the 0.42.68.1 binary on the same prod DB scores 55, the new
+   one 50, but `brain_score` is **83/100 on both**, and the check-name diff is
+   **+5 / −0** (86→91: `undeclared_db_only_pages`, `content_hash_duplicates`,
+   `db_only_collector_collision`, `skills_manifest_integrity`,
+   `alternative_providers`). **Never compare doctor totals across versions.**
+   **Retrieval A/B: 8/8 identical, byte-equal scores** — even though #3613
+   raised `hnsw.ef_search`; per §6.46's rule, *not* compared against §6.46's
+   table (corpus 29,968→30,107). New upstream mechanism the fork must keep fed:
+   #159/#3453's `skills/skills.lock.json` + `check:skills-manifest` (on
+   `bun run verify`, **not** `check:all`) + a WARN-only doctor check — upstream's
+   manifest is stale on arrival here (misses all 14 kos-jarvis skills), so
+   **standing rule, same shape as `llms-full.txt`: on conflict take upstream,
+   then regenerate**. Its generator honors no ignore list (hashes gitignored
+   local junk → P2). Conflicts (2): `.github/workflows/test.yml` modify/delete
+   for the **4th consecutive batch** (settled constant — keep the deletion);
+   `link-extraction.ts` →upstream. **`CLAUDE.md` did not conflict and
+   `docs/CLAUDE-UPSTREAM.md` needed no refresh** — upstream did not touch
+   `CLAUDE.md` at all (verified: still exactly the 5 privacy scrubs apart).
+   Green: typecheck 0, check:all **24/24** (exports-count still 21),
+   `bun test test/ai/` **488 pass / 0 fail**, federation-scope suites 86/0.
+   Prod **30,107 pages / 83,249 chunks / 0 NULL / 205,404 links** —
+   byte-identical across the deploy; both /health → 0.42.73.0; brain_score
+   83/100; `embedding_provider` **314ms** and **`embed_staleness: no stale
+   chunks`**; doctor **exit 0** (0 FAIL / 15 WARN — §6.46's `sync_failures`
+   P1 is **closed**, the state file is 0 bytes since `f991cc5b`). Daemon again
+   did **not** self-relaunch after `bun run build` — **7 batches**. Two ops
+   notes: `launchctl bootstrap` returned **EIO on the first try** (service left
+   down ~1 min) and succeeded on an identical retry — a bootout-still-settling
+   race, so **pause a beat between bootout and bootstrap**; and **one thing was
+   NOT verified** — this batch touched federated reads (#2928/#3533, #3550) and
+   the end-to-end `mailagent` cross-source check needs the client's plaintext
+   secret, which the permission classifier blocked (correctly, not worked
+   around); the substitutes (all 7 clients' `federated_read` rows intact, 86
+   federation-scope tests green) prove the logic and config, **not** that this
+   deployment really serves the read. New open items: `undeclared_db_only_pages`
+   **2,633 pages** invisible to file-lane backup/recovery (P1, pre-existing,
+   newly visible); the qualified-wikilink gap (P2); the manifest generator's
+   missing ignore list (P2))**.
+   Previous: §6.46 v0.42.68.1 sync (2026-07-31, 54 commits / 185 files,
+   zero-migration v125; **upstream closed the fork's own #2028** — `f75dbb4e`
+   (#3690) fixed §6.42's query-embed deadline with a fresh
+   `AbortSignal.timeout(remaining)` at `hybrid.ts:873`, so
+   `GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` is now belt-and-braces and **still
+   stays**; and the batch's own lesson, **a clean merge is NOT a clean semantic
+   merge** — upstream #3651 absorbed the fork's google embedding batch-cap patch
+   at a *different offset in the same object literal*, so git auto-merged with
+   **no conflict marker** and left duplicate `max_batch_tokens`/`chars_per_token`
+   keys where JS silently lets the last win; only **TypeScript (TS1117)** caught
+   it, so **never skip the green gate because there were no conflicts**. Also
+   established: **never compare against a previous sync's A/B table** — an A/B is
+   only valid same-moment, same-corpus, two binaries; and top-1 *identity*, not
+   just score, varies non-monotonically with `--limit` (upstream, pre-existing));
+   §6.45 v0.42.66.1 sync (2026-07-28, **265 commits** across 2
    releases / 446 files — largest batch to date; schema v124→v125; upstream
    *absorbed* two fork patches, so **§6.44's stat-conservation check FAILED and
    that was good news** — treat it as a "look closer" signal, never a pass/fail

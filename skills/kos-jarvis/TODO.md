@@ -1,6 +1,88 @@
-# kos-jarvis — Outstanding Work (post v0.42.68.1 sync, 2026-07-31)
+# kos-jarvis — Outstanding Work (post v0.42.73.0 sync, 2026-08-04)
 
-> **Sync 2026-07-31** (§6.46, v0.42.66.1 → v0.42.68.1, **54 commits**, 185 files,
+> **Sync 2026-08-04** (§6.47, v0.42.68.1 → v0.42.73.0, **73 commits**, 224 files,
+> +17,853/−1,121): six version bumps (v0.42.69.0 → .70.0 → .71.0 → .72.0 →
+> .72.1 → .73.0), **zero migrations** (schema stays **v125** on both sides).
+>
+> **The batch's takeaway is methodological: both of the things that looked
+> worrying turned out to be settled by running two binaries against the same
+> DB at the same moment — not by reading comments or reading a score.**
+>
+> **Upstream absorbed a fork patch for the fourth time — and this time the claim
+> of equivalence was tested, not trusted.** #2576/#3560 + #3161 rewrote link
+> extraction and collided with the fork's plural `sources` entry in
+> `DIR_PATTERN` (the patch that keeps 9k+ `sources/email/<id>` pages from being
+> orphaned, garrytan/gbrain#3188). Upstream's comment asserts non-whitelisted
+> dirs now get "equivalent treatment" in pass 2c. Verified by adding `sources`
+> back into the *new* code and running both variants over the same cases: for
+> all **four** link forms that occur in this corpus (1,170 plain wikilinks,
+> 4,893 markdown links, aliased wikilinks, bare prose refs) the candidates are
+> **field-for-field identical** (`targetSlug` / `linkType` / `linkSource`). The
+> only divergence is `[[srcid:sources/...]]`, which `QUALIFIED_WIKILINK_RE`
+> still gates on `DIR_PATTERN` — and which has **zero occurrences** in the
+> corpus. Took upstream verbatim via `git checkout upstream/master --` (no
+> hand-edit of `src/`; the fork-boundary hook correctly blocked Edit).
+> Fork src surface **3 → 2 files** (`gateway.ts`, `pglite-engine.ts`).
+> Dormant cost recorded as P2 below.
+>
+> **`doctor` overall score dropped 55 → 50, and that is a ruler change, not a
+> regression.** Ran the 0.42.68.1 binary's doctor against the same production
+> DB: overall **55 vs 50**, brain checks **65 vs 60**, but **`brain_score`
+> 83/100 on both**. Diffing the check names shows **5 added, 0 removed**
+> (86 → 91 checks): `undeclared_db_only_pages`, `content_hash_duplicates`,
+> `db_only_collector_collision` (all from #2250/#2784/#2787/#2788),
+> `skills_manifest_integrity` (#159/#3453), `alternative_providers`.
+> **Never compare doctor totals across versions** — the total is a
+> version-dependent ruler; A/B two binaries and attribute the delta to
+> specific checks.
+>
+> **Retrieval A/B: 8/8 identical, scores byte-for-byte equal** — even though
+> #3613 raised `hnsw.ef_search` to match the vector candidate request. Per
+> §6.46's method rule, this was **not** compared against §6.46's table (the
+> corpus grew 29,968 → 30,107).
+>
+> **New upstream mechanism the fork has to keep fed**: #159/#3453 added
+> `skills/skills.lock.json` + `check:skills-manifest` (on `bun run verify`, not
+> `check:all`) + a WARN-only doctor check. Upstream's manifest describes
+> upstream's skills tree, so it arrives stale here (missing all 14 kos-jarvis
+> skills, wrong `RESOLVER.md` hash). Regenerated. **Standing rule, same shape
+> as `llms-full.txt`: on conflict take upstream, then regenerate.**
+>
+> Conflicts (2): `.github/workflows/test.yml` modify/delete for the **fourth
+> consecutive batch** (settled constant — keep the deletion), and
+> `link-extraction.ts` above. **`CLAUDE.md` did not conflict and
+> `docs/CLAUDE-UPSTREAM.md` needed no refresh** — upstream did not touch
+> `CLAUDE.md` at all this batch (verified: our derived copy still differs from
+> `upstream/master:CLAUDE.md` by exactly the 5 established privacy scrubs).
+>
+> Green: typecheck 0, `check:all` **24/24** (`exports-count` baseline still 21),
+> `bun test test/ai/` **488 pass / 0 fail** (was 480), federation-scope suites
+> **86 pass / 0 fail**. Production **30,107 pages / 83,249 chunks / 0 NULL /
+> 205,404 links** — byte-identical before and after the deploy; both /health →
+> **0.42.73.0**; `brain_score` **83/100**; `embedding_provider` **314ms** and
+> **`embed_staleness: no stale chunks`**; `doctor` **exit 0**, 0 FAIL / 15 WARN;
+> daemon again did not self-relaunch after `bun run build` (**7th batch**).
+>
+> **Two operational notes.** (1) `launchctl bootstrap` returned `Bootstrap
+> failed: 5: Input/output error` on the first try, leaving the service
+> unregistered and down (~1 min); an immediate identical retry succeeded — it is
+> a bootout-still-settling race, so **pause a beat between bootout and
+> bootstrap** and don't read the first EIO as a broken plist. (2) **§6.46's
+> `sync_failures` P1 is closed**: `~/.gbrain/sync-failures.jsonl` is now 0 bytes
+> (cleared 2026-07-31 by `f991cc5b`), so doctor exits 0 again.
+>
+> **One thing that was NOT verified, stated plainly:** this batch touched
+> federated reads (#2928/#3533, #3550) and `mailagent` depends on
+> `federated_read = {default, mailagent-emails, omada}`. The end-to-end check
+> needs the client's plaintext secret and was blocked by the permission
+> classifier (correctly; not worked around). Substitutes: all 7 clients'
+> `federated_read` rows verified intact in the DB, and 86 federation-scope tests
+> pass. **Those prove the logic and the config, not that this deployment really
+> serves mailagent a cross-source read.** Worth one real query next sync.
+>
+> **Two new items below** (both pre-existing, neither caused by this sync). See §6.47.
+>
+> **Previous — Sync 2026-07-31** (§6.46, v0.42.66.1 → v0.42.68.1, **54 commits**, 185 files,
 > +9,078/−911): one release, **zero migrations** (schema stays **v125** on both
 > sides — `init --migrate-only` reported "Schema up to date"). Size back to the
 > pre-§6.43 norm.
@@ -567,6 +649,77 @@ pending), brain_score 80/100。doctor status: warnings (resolver_health 51 issue
 全是 ~/.openclaw/workspace AGENTS.md 跨 boundary 引用,不是 fork 责任)。生产
 Postgres 17 + pgvector 0.8.2 已升到 schema v45 (35 tables 全 RLS,新增 facts +
 oauth_*),WAL fork patch retained for brain-db.ts。
+
+---
+
+## P1 — 2,633 个 DB 页在文件通道的备份/恢复里不可见(added 2026-08-04, §6.47)
+
+上游本批新加的 `undeclared_db_only_pages` 检查(#2250/#2784/#2787/#2788)在生产报:
+
+```
+[WARN] undeclared_db_only_pages: 2633 DB page(s) have no backing file and sit
+outside every declared/default db_only path — invisible to file-lane
+backup/recovery.
+Sample: concepts/device-compatibility (src=default);
+        concepts/enterprise-security-baseline (src=default);
+        concepts/product-security-governance (src=default);
+        concepts/switch-performance (src=default);
+        concepts/platform-device-decoupling (src=default)
+```
+
+**这不是本批引入的状态** —— 这些页一直如此,只是以前没有检查看得见它们
+(见 §6.47 的 doctor 双二进制 A/B:本批 doctor 新增 5 项检查、删除 0 项)。
+样本全是 `concepts/*`,像是 dream 的 `synthesize_concepts` 产物 —— 与
+[[cycle-pages-never-chunked]](#2163)是同一族问题的另一面:cycle 生的页
+既不落盘、也不在 `db_only` 声明里。
+
+**为什么是 P1**:pg_dump 当然覆盖它们(生产备份走 DB 通道,§6.47 的 917MB dump
+是完整的),但**任何走文件通道的恢复路径会静默丢掉这 2,633 页**。
+
+**下一步**(未做,需 Lucien 定):二选一 —— (a) 在 `gbrain.yml` 的
+`storage.db_only` 下声明这些前缀(derive-phase 默认已覆盖 `life/ events/
+atoms/ extracts/ dream-cycle-summaries/`,`concepts/` 不在其中);或
+(b) 把它们导出成文件。先跑一次分布统计再决定:
+`SELECT split_part(slug,'/',1), count(*) FROM pages WHERE deleted_at IS NULL …`
+
+---
+
+## P2 — `[[源id:sources/...]]` 这一形态现在会被静默丢弃(added 2026-08-04, §6.47)
+
+§6.47 取上游版 `link-extraction.ts`(上游第 4 次收编 fork patch)后的**已知休眠
+代价**:`QUALIFIED_WIKILINK_RE` 仍然用 `DIR_PATTERN` 做门,而上游的白名单里只有
+单数 `source`;pass 2c 又显式跳过含 `:` 的 token。所以
+`[[default:sources/email/x]]` 这种**限定源的 wikilink** 会两头落空,不产生任何
+候选边。
+
+**当前无影响,已实测**:该形态全库 **0 页**(任何 qualified wikilink 都是 0 页),
+而真正在用的四种形态(1,170 条 `[[sources/...]]`、4,893 条 `](sources/...)`、
+别名 wikilink、裸路径散文引用)在取上游后逐字段等价 —— 见 §6.47 的对照表。
+
+**触发条件**:哪天有人(或某个 skill / 外部 writer)开始写限定源 wikilink 指向
+`sources/`,链接会**静默消失**,没有报错。届时的修法是往上游提 PR 让
+`QUALIFIED_WIKILINK_RE` 也走 `ANY_DIR_SEGMENT`(与 #2576 对 markdown 链接所做的
+一致),而不是在 fork 里把 patch 加回来。
+
+---
+
+## P2 — skills manifest 生成器不尊重 `.gitignore`,值得报上游(added 2026-08-04, §6.47)
+
+上游 #159/#3453 的 `scripts/generate-skills-manifest.ts` / `src/core/
+skills-integrity.ts` **没有任何排除机制**,`skills/` 下每个普通文件都会被哈希进
+`skills/skills.lock.json`。
+
+§6.47 里这直接咬了一口:fork 的 `skills/` 下躺着
+`skills/.omc/state/last-tool-error.json`(2026-05-02 的 OMC 错误面包屑,
+**untracked + 被 `.gitignore` 忽略**)。若不清掉就重生成,等于把一个**机器本地
+文件的哈希写进 tracked 的 tamper-evidence manifest** —— 在任何别的机器上都无法
+复现,且该文件一旦被重写 manifest 立刻又陈旧。已删除后重生成,
+`doctor` 现报 `skills_manifest_integrity: 210 bundled skill files match` ✓。
+
+**上游侧的修法**:生成器应尊重 `.gitignore`,或至少跳过点目录 —— 一个把
+untracked 本地状态纳入的 tamper-evidence manifest 是不可复现的。
+**fork 侧的常规已定**(与 `llms-full.txt` 同形状):每批 sync 冲突时先取上游,
+再 `bun run scripts/generate-skills-manifest.ts` 重生成。
 
 ---
 
