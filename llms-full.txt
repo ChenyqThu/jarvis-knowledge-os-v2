@@ -165,47 +165,68 @@ working on this codebase, before touching anything else:
    full migration story (v1 Python/shell → v2 GBrain TS + Gemini shim),
    current deployment (launchd / kos.chenge.ink / Notion Knowledge Agent
    / OpenClaw feishu), and the Jarvis triangle (KOS compiles ↔ Notion
-   operates ↔ OpenClaw executes). Latest sync story: **§6.45 v0.42.66.1
-   upstream sync (2026-07-28, **265 commits** across 2 releases /
-   v0.42.64.0 → v0.42.66.1 / 446 files — **largest batch to date**; schema
-   **v124→v125**, one migration. Two conflicts: `.github/workflows/test.yml`
-   modify/delete **again** (same file, same cause as §6.44 — expect it every
-   batch, keep the deletion), and `link-extraction.ts`, where the fork's plural
-   `sources` and upstream's new `reference` (#2071) are **independent additions
-   to the same alternation — keep both**. Upstream self-reports 147 "verified
-   fixes" but the log is full of `Revert`→`reland` round-trips: **judge by the
-   final diff, not the commit count.** **§6.44's stat-conservation survival
-   check FAILED — and that was good news**: fork src 6 files/+243/−27 → **4
-   files/+187/−23** because upstream *absorbed* two fork patches
-   (`extract-atoms.ts` concept stamping → `eb6cb4a1` #2123/#2124;
-   `extract-atoms-drain.ts` zero-yield tombstoning → `8cd87968` #2144/#2145),
-   all 7 semantics verified present. **Treat stat conservation as a "look
-   closer" signal, never a pass/fail gate.** **§6.39's P0: root cause REFUTED,
-   not fixed** — replaying v121's verbatim `sql` block through the same
-   `reserved.unsafe()` path now PASSES while `runMigrationSQL`/`runUnsafe` are
-   byte-identical to §6.40 and postgres.js has been 3.4.9 all along, so the
-   postgres.js batch-parse attribution cannot be right; the symptom was real,
-   the diagnosis was not, and **it is sitting in public upstream issue #2667
-   awaiting a correction (Lucien's call)**. Green: typecheck 0, check:all
-   **23/23** (new #3463 symlink gate — resolved via the ALLOWLIST upstream left
-   for in-repo relative links, **the fork's first upstream-script edit**;
-   exports-count baseline 20→21), `bun test test/ai/` **467 pass / 0 fail**.
-   Prod **29,698 pages / 78,258 chunks / 0 NULL**, no loss; both /health →
-   0.42.66.1; brain_score 84/100; `embedding_provider` **349ms** and
-   **`embed_staleness: no stale chunks`** (no signature drift). Daemon again
-   did **not** self-relaunch after `bun run build` — 5 batches running, a
-   constant. **Retrieval A/B vs a 0.42.64.0 binary on the same prod DB: 8/8
-   identical → zero retrieval impact**; the `--limit` non-monotonicity is
-   pre-existing and **bidirectional** (`Karpathy` higher at limit 5,
-   `竞品分析` lower). MCP wire green; `whoami` now returns `source_id` +
-   `federated_read` (#3279). **Three new open items**: `sources.config`
-   corrupted by upstream #2829 on `gbrain-docs` + `mailagent-emails` (P0, prod
-   data write, needs Lucien); dream cycle stalled **162h** + `enrich-sweep`
-   `disabled` in launchd (P1, pre-existing, **and note §6.44's plist check only
-   verified file env, not whether the job was loaded** — always check
-   `launchctl list` AND `print-disabled` too); whether #2846 retires the
-   embedding-label-normalize cron (P2, unverified this batch))**.
-   Previous: §6.44 v0.42.64.0 sync (2026-07-22, 20 commits / 74 files —
+   operates ↔ OpenClaw executes). Latest sync story: **§6.46 v0.42.68.1
+   upstream sync (2026-07-31, 54 commits / one release /
+   v0.42.66.1 → v0.42.68.1 / 185 files; **zero-migration**, schema stays
+   **v125** on both sides. **Upstream closed the fork's own issue #2028**:
+   `f75dbb4e` (#3690) fixes §6.42's query-embed deadline — the shared
+   `AbortSignal` arrived already aborted, making the 2s
+   `MIN_QUERY_EMBED_BUDGET_MS` floor dead code and silently degrading hybrid
+   search to keyword-only (= **empty results** for compound CJK here); fixed
+   with a fresh `AbortSignal.timeout(remaining)` at `hybrid.ts:873`.
+   **`GBRAIN_QUERY_EMBED_TIMEOUT_MS=30000` STAYS** — now belt-and-braces, but
+   retiring it is its own change (P2). **The batch's key lesson: a clean merge
+   is NOT a clean semantic merge.** Upstream #3651 absorbed the fork's google
+   embedding batch-cap patch (**3rd absorption** after §6.45's two) but inserted
+   at a different offset in the same object literal → git auto-merged with **no
+   conflict marker**, leaving **duplicate `max_batch_tokens`/`chars_per_token`
+   keys**, where JS silently lets the last win. Only **TypeScript (TS1117)**
+   caught it — **never skip the green gate because there were no conflicts.**
+   Resolved by `git checkout upstream/master -- <file>` (not a hand-edit; the
+   fork-boundary hook correctly blocked that); fork src **4→3 files**. Conflicts
+   (5): `.github/workflows/test.yml` modify/delete for the **3rd consecutive
+   batch** (now a constant — keep the deletion, stop re-deciding); `CLAUDE.md`
+   →ours; `llms-full.txt` →regen; two fork test patches for the absorbed google
+   cap →upstream. `docs/CLAUDE-UPSTREAM.md` refreshed (+13 lines, #3596
+   engine-live static-import rule). Green: typecheck 0, check:all **24/24**
+   (new `check-engine-dynamic-import.sh`; exports-count still 21; §6.45's
+   symlink ALLOWLIST holding), `bun test test/ai/` **480 pass / 0 fail**.
+   Prod **29,968 pages / 77,863 chunks / 0 NULL** — byte-identical across the
+   deploy; both /health → 0.42.68.1; brain_score 83/100;
+   `embedding_provider` **360ms** and **`embed_staleness: no stale chunks`**.
+   Daemon again did **not** self-relaunch after `bun run build` — **6 batches,
+   a constant**. **Retrieval A/B vs a 0.42.66.1 binary on the same prod DB: 7/8
+   identical, 1 changed** (`竞品分析` L=1: `competitive-benchmarking` 0.8296 →
+   `competitive-analysis` 0.8384); nondeterminism ruled out first (4× per
+   binary, 4/4 stable each), likely #3677. **This was first written up as "for
+   the better" — retracted the same day**: sweeping `--limit` shows top-1's
+   *identity* flips non-monotonically (L=1 analysis / **L=2 benchmarking** /
+   L=3,5,10 analysis, each 3/3 deterministic), and **at L=2 the new binary
+   returns exactly the old binary's L=1 answer** — the difference is one sample
+   inside an unstable ordering, not a quality gain. **It also sharpens the
+   known defect**: not just top-1 *score* but *which page* varies with `--limit`
+   (upstream, pre-existing). **Method: never compare against a previous sync's
+   A/B table** — the corpus moved (29,698→29,968), so an A/B is only valid
+   same-moment, same-corpus, two binaries. MCP wire green (#1410 `resource_metadata` still
+   correct through cloudflared). **Two new open items, both pre-existing**:
+   a `sync_failures` FAIL that is **test pollution** (`source_id: srcE`,
+   `notes/bad.md` absent, written 2026-07-27 during §6.45) making `doctor` exit
+   non-zero (P1, prod state file, needs Lucien); google recipe
+   `chars_per_token` now 4 (English) where the fork used 2 (CJK) — dormant
+   since embedding is direct-OpenAI, but must be re-tuned if Gemini embedding
+   ever returns (P2). Also: `links_extraction_lag` reporting **100%** is
+   **pre-existing and expected** (timestamp-based; `page_links` really holds
+   215,698 rows; warn-only by upstream design), and §6.45's **162h dream stall
+   self-healed** — `cycle_freshness` now 11h)**.
+   Previous: §6.45 v0.42.66.1 sync (2026-07-28, **265 commits** across 2
+   releases / 446 files — largest batch to date; schema v124→v125; upstream
+   *absorbed* two fork patches, so **§6.44's stat-conservation check FAILED and
+   that was good news** — treat it as a "look closer" signal, never a pass/fail
+   gate; **§6.39's P0 root cause REFUTED, not fixed** — v121's verbatim `sql`
+   replays cleanly through byte-identical code on the same postgres.js 3.4.9, so
+   the batch-parse attribution cannot be right, and public upstream issue #2667
+   still carries the wrong diagnosis awaiting a correction (Lucien's call));
+   §6.44 v0.42.64.0 sync (2026-07-22, 20 commits / 74 files —
    zero-migration v124; #1410 gave `/mcp` 401 a correct *public*
    `resource_metadata` through cloudflared; `orphan_ratio` 25%+OK was the
    fork's own `7cc00641` pass, **not** upstream #3015);
@@ -338,10 +359,16 @@ working on this codebase, before touching anything else:
   it just makes Chinese queries fail under load. Caveats: it **mitigates,
   not fixes** (4/6 → 1/6 on the measured distribution — a 41s expansion
   still blows 30s), and it is **load-dependent**, so passing queries on an
-  idle box prove nothing. Real fix is upstream
-  ([#2028](https://github.com/garrytan/gbrain/issues/2028), `src/*` = fork
-  no-go): the `MIN_QUERY_EMBED_BUDGET_MS` 2s floor is defeated by the
-  already-fired shared `AbortSignal`.
+  idle box prove nothing.
+  **UPDATE (§6.46, 2026-07-31): the upstream root cause is FIXED.**
+  [#2028](https://github.com/garrytan/gbrain/issues/2028) was closed by
+  upstream #3690 (`f75dbb4e`): the `MIN_QUERY_EMBED_BUDGET_MS` 2s floor was
+  dead code because the shared `AbortSignal` arrived already fired, and the
+  fix gives the embed a **fresh** `AbortSignal.timeout(remaining)`
+  (`src/core/search/hybrid.ts:873`). **Keep the env var anyway** — it is now
+  belt-and-braces rather than the only defense, and retiring an env var whose
+  failure mode is *silent empty Chinese results* deserves its own change with
+  its own under-load verification (TODO P2), not a quiet deletion during a sync.
 - **9 KOS page kinds coexist with GBrain's 20-dir MECE.** KOS `kind`
   frontmatter (source/entity/concept/project/decision/synthesis/comparison/
   protocol/timeline) is preserved on every page; it drives kos-jarvis
